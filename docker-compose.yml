@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  postgres:
+    container_name: fleet_postgres
+    image: postgres:15
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: fleetadmin
+      POSTGRES_PASSWORD: fleetpass
+      POSTGRES_DB: fleet_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
