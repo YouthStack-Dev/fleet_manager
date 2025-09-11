@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, func
+from sqlalchemy import Column, Integer, ForeignKey, DateTime, func, UniqueConstraint
 from sqlalchemy.orm import relationship
 from database.session import Base
+
 
 class Vendor(Base):
     __tablename__ = "vendors"
@@ -19,3 +20,25 @@ class Vendor(Base):
     vehicle_types = relationship("VehicleType", back_populates="vendor", cascade="all, delete-orphan")
     vehicles = relationship("Vehicle", back_populates="vendor", cascade="all, delete-orphan")
     vendor_users = relationship("VendorUser", back_populates="vendor", cascade="all, delete-orphan")
+
+    # Link to tenants
+    tenants = relationship("TenantVendor", back_populates="vendor", cascade="all, delete-orphan")
+
+
+class TenantVendor(Base):
+    __tablename__ = "tenant_vendors"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "vendor_id", name="uq_tenant_vendor"),
+    )
+
+    tenant_vendor_id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
+    vendor_id = Column(Integer, ForeignKey("vendors.vendor_id", ondelete="CASCADE"), nullable=False)
+
+    # Status fields
+    is_active = Column(Boolean, default=True, nullable=False)  # active/inactive link
+    linked_at = Column(DateTime, default=func.now(), nullable=False)
+
+    # Relationships
+    tenant = relationship("Tenant", back_populates="vendors")
+    vendor = relationship("Vendor", back_populates="tenants")

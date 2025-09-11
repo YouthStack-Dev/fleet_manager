@@ -1,7 +1,11 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, Text, ForeignKey, Enum, func, Index
+from sqlalchemy import (
+    Column, Integer, String, Boolean, DateTime, Float, Text,
+    ForeignKey, Enum, func, Index, UniqueConstraint
+)
 from sqlalchemy.orm import relationship
 from database.session import Base
 from enum import Enum as PyEnum
+
 
 class RouteStatusEnum(str, PyEnum):
     PLANNED = "Planned"
@@ -10,13 +14,19 @@ class RouteStatusEnum(str, PyEnum):
     COMPLETED = "Completed"
     CANCELLED = "Cancelled"
 
+
 class Route(Base):
     __tablename__ = "routes"
-    __table_args__ = (Index("ix_routes_shift_status", "shift_id", "status"),)
+    __table_args__ = (
+        Index("ix_routes_shift_status", "shift_id", "status"),
+        UniqueConstraint("tenant_id", "route_code", name="uq_route_code_per_tenant"),
+    )
 
     route_id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
+
     shift_id = Column(Integer, ForeignKey("shifts.shift_id", ondelete="CASCADE"))
-    route_code = Column(String(100), unique=True, nullable=False)
+    route_code = Column(String(100), nullable=False)
     status = Column(Enum(RouteStatusEnum, native_enum=False), default=RouteStatusEnum.PLANNED, nullable=False)
     planned_distance_km = Column(Float)
     planned_duration_minutes = Column(Integer)
@@ -25,7 +35,7 @@ class Route(Base):
     actual_start_time = Column(DateTime)
     actual_end_time = Column(DateTime)
     optimized_polyline = Column(Text)
-    
+
     # Current assignment (denormalized for fast reads)
     assigned_vendor_id = Column(Integer, ForeignKey("vendors.vendor_id", ondelete="SET NULL"))
     assigned_vehicle_id = Column(Integer, ForeignKey("vehicles.vehicle_id", ondelete="SET NULL"))
@@ -37,5 +47,6 @@ class Route(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
     # Relationships
+    tenant = relationship("Tenant", back_populates="routes")
     shift = relationship("Shift", back_populates="routes")
     bookings = relationship("RouteBooking", back_populates="route", cascade="all, delete-orphan")

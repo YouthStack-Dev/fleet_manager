@@ -1,4 +1,6 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Date, Text, ForeignKey, Enum, func
+from sqlalchemy import (
+    Column, Integer, String, Boolean, DateTime, Date, Text, ForeignKey, Enum, func, UniqueConstraint
+)
 from sqlalchemy.orm import relationship
 from database.session import Base
 from enum import Enum as PyEnum
@@ -15,13 +17,20 @@ class VerificationStatusEnum(str, PyEnum):
 
 class Driver(Base):
     __tablename__ = "drivers"
+    __table_args__ = (
+        UniqueConstraint("vendor_id", "email", name="uq_vendor_driver_email"),
+        UniqueConstraint("vendor_id", "phone", name="uq_vendor_driver_phone"),
+        UniqueConstraint("vendor_id", "badge_number", name="uq_vendor_driver_badge"),
+        UniqueConstraint("vendor_id", "license_number", name="uq_vendor_driver_license"),
+        UniqueConstraint("vendor_id", "alt_govt_id_number", name="uq_vendor_driver_alt_govt_id"),
+    )
 
     driver_id = Column(Integer, primary_key=True, index=True)
     vendor_id = Column(Integer, ForeignKey("vendors.vendor_id", ondelete="CASCADE"), nullable=False)
     name = Column(String(150), nullable=False)
     code = Column(String(50), nullable=False)
-    email = Column(String(150), unique=True, nullable=False)
-    phone = Column(String(20), unique=True, nullable=False)
+    email = Column(String(150), nullable=False)
+    phone = Column(String(20), nullable=False)
     gender = Column(Enum(GenderEnum, native_enum=False))
     password = Column(String(255), nullable=False)
     date_of_joining = Column(Date)
@@ -56,7 +65,7 @@ class Driver(Base):
     induction_date = Column(Date)
     induction_url = Column(Text)
     
-    badge_number = Column(String(100), unique=True)
+    badge_number = Column(String(100))
     badge_expiry_date = Column(Date)
     badge_url = Column(Text)
     

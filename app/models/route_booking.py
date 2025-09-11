@@ -1,10 +1,14 @@
-from sqlalchemy import Column, Integer, DateTime, ForeignKey, func, Index
+from sqlalchemy import Column, Integer, DateTime, ForeignKey, func, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 from database.session import Base
 
+
 class RouteBooking(Base):
     __tablename__ = "route_bookings"
-    __table_args__ = (Index("ix_route_bookings_route", "route_id"),)
+    __table_args__ = (
+        Index("ix_route_bookings_route", "route_id"),
+        UniqueConstraint("route_id", "booking_id", name="uq_route_booking_unique"),
+    )
 
     route_booking_id = Column(Integer, primary_key=True, index=True)
     route_id = Column(Integer, ForeignKey("routes.route_id", ondelete="CASCADE"), nullable=False)
