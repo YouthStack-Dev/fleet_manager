@@ -8,7 +8,7 @@ class Vendor(Base):
 
     vendor_id = Column(Integer, primary_key=True, index=True)
     name = Column(String(150), nullable=False)
-    code = Column(String(50), unique=True)
+    vendor_code = Column(String(50), unique=True)
     email = Column(String(150), unique=True)
     phone = Column(String(20), unique=True)
     is_active = Column(Boolean, default=True, nullable=False)
