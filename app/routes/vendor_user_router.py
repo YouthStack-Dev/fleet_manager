@@ -1,0 +1,91 @@
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy.orm import Session
+from typing import Optional
+from database.session import get_db
+from app.models.vendor_user import VendorUser
+from app.schemas.vendor_user import VendorUserCreate, VendorUserUpdate, VendorUserResponse, VendorUserPaginationResponse
+from app.utils.auth import get_password_hash
+from app.utils.pagination import paginate_query
+
+router = APIRouter(prefix="/vendor-users", tags=["vendor users"])
+
+@router.post("/", response_model=VendorUserResponse, status_code=status.HTTP_201_CREATED)
+def create_vendor_user(vendor_user: VendorUserCreate, db: Session = Depends(get_db)):
+    db_vendor_user = VendorUser(
+        **vendor_user.dict(exclude={"password"}),
+        password=get_password_hash(vendor_user.password)
+    )
+    db.add(db_vendor_user)
+    db.commit()
+    db.refresh(db_vendor_user)
+    return db_vendor_user
+
+@router.get("/", response_model=VendorUserPaginationResponse)
+def read_vendor_users(
+    skip: int = 0,
+    limit: int = 100,
+    name: Optional[str] = None,
+    email: Optional[str] = None,
+    vendor_id: Optional[int] = None,
+    is_active: Optional[bool] = None,
+    db: Session = Depends(get_db)
+):
+    query = db.query(VendorUser)
+    
+    # Apply filters
+    if name:
+        query = query.filter(VendorUser.name.ilike(f"%{name}%"))
+    if email:
+        query = query.filter(VendorUser.email.ilike(f"%{email}%"))
+    if vendor_id:
+        query = query.filter(VendorUser.vendor_id == vendor_id)
+    if is_active is not None:
+        query = query.filter(VendorUser.is_active == is_active)
+    
+    total, items = paginate_query(query, skip, limit)
+    return {"total": total, "items": items}
+
+@router.get("/{vendor_user_id}", response_model=VendorUserResponse)
+def read_vendor_user(vendor_user_id: int, db: Session = Depends(get_db)):
+    db_vendor_user = db.query(VendorUser).filter(VendorUser.vendor_user_id == vendor_user_id).first()
+    if not db_vendor_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vendor User with ID {vendor_user_id} not found"
+        )
+    return db_vendor_user
+
+@router.put("/{vendor_user_id}", response_model=VendorUserResponse)
+def update_vendor_user(vendor_user_id: int, vendor_user_update: VendorUserUpdate, db: Session = Depends(get_db)):
+    db_vendor_user = db.query(VendorUser).filter(VendorUser.vendor_user_id == vendor_user_id).first()
+    if not db_vendor_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vendor User with ID {vendor_user_id} not found"
+        )
+    
+    update_data = vendor_user_update.dict(exclude_unset=True)
+    
+    # Hash password if it's being updated
+    if "password" in update_data:
+        update_data["password"] = get_password_hash(update_data["password"])
+    
+    for key, value in update_data.items():
+        setattr(db_vendor_user, key, value)
+    
+    db.commit()
+    db.refresh(db_vendor_user)
+    return db_vendor_user
+
+@router.delete("/{vendor_user_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_vendor_user(vendor_user_id: int, db: Session = Depends(get_db)):
+    db_vendor_user = db.query(VendorUser).filter(VendorUser.vendor_user_id == vendor_user_id).first()
+    if not db_vendor_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vendor User with ID {vendor_user_id} not found"
+        )
+    
+    db.delete(db_vendor_user)
+    db.commit()
+    return None

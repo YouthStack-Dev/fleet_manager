@@ -1,0 +1,151 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-scripts
+data:
+  01_init.sql: |
+    -- Initialize database schema
+    
+    -- Create users table
+    CREATE TABLE users (
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(50) UNIQUE NOT NULL,
+        email VARCHAR(100) UNIQUE NOT NULL,
+        full_name VARCHAR(100) NOT NULL,
+        role VARCHAR(20) NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        last_login TIMESTAMP WITH TIME ZONE
+    );
+    
+    -- Create vehicles table
+    CREATE TABLE vehicles (
+        id SERIAL PRIMARY KEY,
+        license_plate VARCHAR(20) UNIQUE NOT NULL,
+        model VARCHAR(50) NOT NULL,
+        year INTEGER NOT NULL,
+        status VARCHAR(20) NOT NULL,
+        assigned_to INTEGER REFERENCES users(id),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    -- Create permissions
+    CREATE TYPE permission_level AS ENUM ('read', 'write', 'admin');
+    
+    CREATE TABLE user_permissions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        resource VARCHAR(50) NOT NULL,
+        permission permission_level NOT NULL,
+        granted_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        granted_by INTEGER REFERENCES users(id)
+    );
+  02_sample_data.sql: |
+    -- Insert sample user data
+    
+    -- Insert users
+    INSERT INTO users (username, email, full_name, role) VALUES
+    ('admin', 'admin@fleetmanager.com', 'Admin User', 'administrator'),
+    ('driver1', 'driver1@fleetmanager.com', 'John Doe', 'driver'),
+    ('driver2', 'driver2@fleetmanager.com', 'Jane Smith', 'driver'),
+    ('manager1', 'manager1@fleetmanager.com', 'Robert Johnson', 'manager'),
+    ('dispatcher1', 'dispatch@fleetmanager.com', 'Emily Davis', 'dispatcher');
+    
+    -- Insert vehicles
+    INSERT INTO vehicles (license_plate, model, year, status, assigned_to) VALUES
+    ('ABC123', 'Toyota Camry', 2020, 'active', 2),
+    ('XYZ789', 'Honda Civic', 2021, 'active', 3),
+    ('DEF456', 'Ford F-150', 2019, 'maintenance', NULL),
+    ('GHI789', 'Tesla Model 3', 2022, 'active', NULL),
+    ('JKL012', 'Chevrolet Malibu', 2018, 'inactive', NULL);
+    
+    -- Insert user permissions
+    INSERT INTO user_permissions (user_id, resource, permission, granted_by) VALUES
+    (1, 'all', 'admin', 1),
+    (2, 'vehicles', 'read', 1),
+    (3, 'vehicles', 'read', 1),
+    (4, 'users', 'write', 1),
+    (4, 'vehicles', 'write', 1),
+    (5, 'vehicles', 'write', 1);
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+type: Opaque
+data:
+  username: ZmxlZXRhZG1pbg==  # fleetadmin (base64 encoded)
+  password: ZmxlZXRwYXNz      # fleetpass (base64 encoded)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: username
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: password
+        - name: POSTGRES_DB
+          value: fleet_db
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        - name: init-scripts
+          mountPath: /docker-entrypoint-initdb.d
+        resources:
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: postgres-data
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+      - name: init-scripts
+        configMap:
+          name: postgres-init-scripts
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+  type: ClusterIP

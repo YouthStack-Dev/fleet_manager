@@ -1,0 +1,35 @@
+from sqlalchemy import Column, Integer, String, DateTime, Date, Float, ForeignKey, Enum, func
+from sqlalchemy.orm import relationship
+from database.session import Base
+from enum import Enum as PyEnum
+
+class BookingStatusEnum(str, PyEnum):
+    PENDING = "Pending"
+    CONFIRMED = "Confirmed"
+    ONGOING = "Ongoing"
+    COMPLETED = "Completed"
+    CANCELED = "Canceled"
+
+class Booking(Base):
+    __tablename__ = "bookings"
+
+    booking_id = Column(Integer, primary_key=True, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.employee_id", ondelete="CASCADE"), nullable=False)
+    shift_id = Column(Integer, ForeignKey("shifts.shift_id", ondelete="CASCADE"))
+    booking_date = Column(Date, nullable=False)
+    pickup_latitude = Column(Float)
+    pickup_longitude = Column(Float)
+    pickup_location = Column(String(255))
+    drop_latitude = Column(Float)
+    drop_longitude = Column(Float)
+    drop_location = Column(String(255))
+    status = Column(Enum(BookingStatusEnum, native_enum=False), default=BookingStatusEnum.PENDING)
+    team_id = Column(Integer, ForeignKey("teams.team_id", ondelete="SET NULL"))
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+    # Relationships
+    employee = relationship("Employee", back_populates="bookings")
+    shift = relationship("Shift", back_populates="bookings")
+    team = relationship("Team", back_populates="bookings")
+    route_bookings = relationship("RouteBooking", back_populates="booking", cascade="all, delete-orphan")

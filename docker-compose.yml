@@ -12,8 +12,32 @@ services:
       POSTGRES_DB: fleet_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./sql:/docker-entrypoint-initdb.d
+      - ./sql/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
     restart: unless-stopped
+    networks:
+      - fleet-network
+
+  api:
+    container_name: fleet_api
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://fleetadmin:fleetpass@postgres:5432/fleet_db
+      - ENV=development
+    volumes:
+      - ./app:/app
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    networks:
+      - fleet-network
+
+networks:
+  fleet-network:
+    driver: bridge
 
 volumes:
   postgres_data:
