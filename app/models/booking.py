@@ -12,6 +12,7 @@ class BookingStatusEnum(str, PyEnum):
 
 class Booking(Base):
     __tablename__ = "bookings"
+    __table_args__ = {'extend_existing': True}
 
     booking_id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)

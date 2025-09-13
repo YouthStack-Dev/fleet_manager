@@ -4,6 +4,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from database.session import Base
 from enum import Enum as PyEnum
+from app.models.vendor import Vendor
 
 class GenderEnum(str, PyEnum):
     MALE = "Male"
@@ -24,6 +25,8 @@ class Driver(Base):
         UniqueConstraint("vendor_id", "license_number", name="uq_vendor_driver_license"),
         UniqueConstraint("vendor_id", "alt_govt_id_number", name="uq_vendor_driver_alt_govt_id"),
     )
+    __table_args__ = {'extend_existing': True}
+
 
     driver_id = Column(Integer, primary_key=True, index=True)
     vendor_id = Column(Integer, ForeignKey("vendors.vendor_id", ondelete="CASCADE"), nullable=False)
@@ -79,5 +82,5 @@ class Driver(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
     
     # Relationships
-    vendor = relationship("Vendor", back_populates="drivers")
+    vendor = relationship("app.models.vendor.Vendor", back_populates="drivers")
     vehicles = relationship("Vehicle", back_populates="driver")

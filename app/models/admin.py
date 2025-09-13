@@ -3,6 +3,7 @@ from database.session import Base
 
 class Admin(Base):
     __tablename__ = "admins"
+    __table_args__ = {'extend_existing': True}
 
     admin_id = Column(Integer, primary_key=True, index=True)
     name = Column(String(150), nullable=False)

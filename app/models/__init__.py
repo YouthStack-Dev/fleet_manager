@@ -1,15 +1,15 @@
-# Import models for easier access
-from .admin import Admin
-from .driver import Driver, GenderEnum as DriverGenderEnum, VerificationStatusEnum
-from .vendor import Vendor
-from .vehicle import Vehicle
-from .vehicle_type import VehicleType
-from .vendor_user import VendorUser
-from .team import Team
-from .tenant import Tenant
-from .employee import Employee, GenderEnum as EmployeeGenderEnum
-from .shift import Shift, ShiftLogTypeEnum, PickupTypeEnum, GenderEnum as ShiftGenderEnum
-from .booking import Booking, BookingStatusEnum
-from .route import Route, RouteStatusEnum
-from .route_booking import RouteBooking
-from .weekoff_config import WeekoffConfig
+# Import all models here for easier access
+from app.models.admin import Admin
+from app.models.vendor import Vendor, TenantVendor
+from app.models.driver import Driver, GenderEnum, VerificationStatusEnum
+from app.models.vehicle import Vehicle
+from app.models.vehicle_type import VehicleType
+from app.models.vendor_user import VendorUser, TenantVendorUser
+from app.models.team import Team
+from app.models.tenant import Tenant
+from app.models.employee import Employee
+from app.models.shift import Shift
+from app.models.booking import Booking
+from app.models.route import Route
+from app.models.route_booking import RouteBooking
+from app.models.weekoff_config import WeekoffConfig

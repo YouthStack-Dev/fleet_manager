@@ -42,6 +42,7 @@ class Employee(Base):
         UniqueConstraint("tenant_id", "email", name="uq_employee_email_per_tenant"),
         UniqueConstraint("tenant_id", "phone", name="uq_employee_phone_per_tenant"),
     )
+    __table_args__ = {'extend_existing': True}
 
     # Relationships
     tenant = relationship("Tenant", back_populates="employees")

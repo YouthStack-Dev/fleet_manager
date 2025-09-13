@@ -7,6 +7,7 @@ class VehicleType(Base):
     __table_args__ = (
         UniqueConstraint("vendor_id", "name", name="uq_vendor_vehicle_type_name"),
     )
+    __table_args__ = {'extend_existing': True}
     
     vehicle_type_id = Column(Integer, primary_key=True, index=True)
     vendor_id = Column(Integer, ForeignKey("vendors.vendor_id", ondelete="CASCADE"), nullable=False)

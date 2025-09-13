@@ -15,6 +15,7 @@ class Team(Base):
 
     # Composite unique constraint: ensures name is unique per tenant
     __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_team_name_per_tenant"),)
+    __table_args__ = {'extend_existing': True}
 
     # Relationships
     tenant = relationship("Tenant", back_populates="teams")

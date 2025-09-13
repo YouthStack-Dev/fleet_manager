@@ -21,6 +21,7 @@ class Route(Base):
         Index("ix_routes_shift_status", "shift_id", "status"),
         UniqueConstraint("tenant_id", "route_code", name="uq_route_code_per_tenant"),
     )
+    __table_args__ = {'extend_existing': True}
 
     route_id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)

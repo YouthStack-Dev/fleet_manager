@@ -1,9 +1,11 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, func, UniqueConstraint
 from sqlalchemy.orm import relationship
 from database.session import Base
+from app.models.vendor import Vendor
 
 class VendorUser(Base):
     __tablename__ = "vendor_users"
+    __table_args__ = {'extend_existing': True}
 
     vendor_user_id = Column(Integer, primary_key=True, index=True)
     vendor_id = Column(Integer, ForeignKey("vendors.vendor_id", ondelete="CASCADE"), nullable=False)
@@ -15,7 +17,7 @@ class VendorUser(Base):
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
-    vendor = relationship("Vendor", back_populates="vendor_users")
+    vendor = relationship("app.models.vendor.Vendor", back_populates="vendor_users")
     tenants = relationship("TenantVendorUser", back_populates="vendor_user", cascade="all, delete-orphan")
 
 
@@ -24,6 +26,7 @@ class TenantVendorUser(Base):
     __table_args__ = (
         UniqueConstraint("tenant_id", "vendor_user_id", name="uq_tenant_vendor_user"),
     )
+    __table_args__ = {'extend_existing': True}
 
     tenant_vendor_user_id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)

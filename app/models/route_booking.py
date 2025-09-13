@@ -9,6 +9,7 @@ class RouteBooking(Base):
         Index("ix_route_bookings_route", "route_id"),
         UniqueConstraint("route_id", "booking_id", name="uq_route_booking_unique"),
     )
+    __table_args__ = {'extend_existing': True}
 
     route_booking_id = Column(Integer, primary_key=True, index=True)
     route_id = Column(Integer, ForeignKey("routes.route_id", ondelete="CASCADE"), nullable=False)
