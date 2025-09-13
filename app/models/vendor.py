@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, ForeignKey, DateTime, func, UniqueConstraint, String, Boolean
 from sqlalchemy.orm import relationship
-from database.session import Base
+from app.database.session import Base
 
 
 class Vendor(Base):

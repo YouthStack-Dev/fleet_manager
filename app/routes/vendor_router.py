@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import Optional
-from database.session import get_db
+from app.database.session import get_db
 from app.models.vendor import Vendor
 from app.schemas.vendor import VendorCreate, VendorUpdate, VendorResponse, VendorPaginationResponse
 from app.utils.pagination import paginate_query

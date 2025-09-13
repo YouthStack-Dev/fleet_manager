@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import Optional
-from database.session import get_db
+from app.database.session import get_db
 from app.models.weekoff_config import WeekoffConfig
 from app.schemas.weekoff_config import WeekoffConfigCreate, WeekoffConfigUpdate, WeekoffConfigResponse, WeekoffConfigPaginationResponse
 from app.utils.pagination import paginate_query

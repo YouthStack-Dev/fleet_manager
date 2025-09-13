@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import Optional
-from database.session import get_db
+from app.database.session import get_db
 from app.models.vehicle_type import VehicleType
 from app.schemas.vehicle_type import VehicleTypeCreate, VehicleTypeUpdate, VehicleTypeResponse, VehicleTypePaginationResponse
 from app.utils.pagination import paginate_query

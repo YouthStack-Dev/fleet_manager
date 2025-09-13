@@ -3,7 +3,7 @@ from sqlalchemy import (
     ForeignKey, Enum, func, Index, UniqueConstraint
 )
 from sqlalchemy.orm import relationship
-from database.session import Base
+from app.database.session import Base
 from enum import Enum as PyEnum
 
 

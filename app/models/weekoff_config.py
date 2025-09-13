@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, Boolean, DateTime, ForeignKey, func
 from sqlalchemy.orm import relationship
-from database.session import Base
+from app.database.session import Base
 
 class WeekoffConfig(Base):
     __tablename__ = "weekoff_configs"

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from typing import Optional, List
-from database.session import get_db
+from app.database.session import get_db
 from app.models.driver import Driver
 from app.schemas.driver import DriverCreate, DriverUpdate, DriverResponse, DriverPaginationResponse
 from app.utils.pagination import paginate_query

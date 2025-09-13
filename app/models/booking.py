@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, DateTime, Date, Float, ForeignKey, Enum, func
 from sqlalchemy.orm import relationship
-from database.session import Base
+from app.database.session import Base
 from enum import Enum as PyEnum
 
 class BookingStatusEnum(str, PyEnum):

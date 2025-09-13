@@ -6,7 +6,7 @@ from sqlalchemy.pool import StaticPool
 from typing import Generator
 
 from database.session import Base, get_db
-from main import app
+from app.main import app
 
 # Use in-memory SQLite for testing
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"

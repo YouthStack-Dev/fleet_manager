@@ -9,15 +9,13 @@ from fastapi import FastAPI, Depends, HTTPException, status, Query, BackgroundTa
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Dict, Any
 import uvicorn
-import subprocess
 import psycopg2
-import importlib
 import traceback  # For detailed error info
 from sqlalchemy.sql import text
+from app.database.session import get_db
 
-from database.session import get_db, Base, engine
 from sqlalchemy.orm import Session
-from routes import (
+from app.routes import (
     employee_router, 
     driver_router, 
     booking_router, 
@@ -91,16 +89,8 @@ async def root():
 
 
 @app.get("/health")
-async def health_check(db: Session = Depends(get_db)):
-    try:
-        # Try to execute a simple query to check DB connection
-        db.execute(text("SELECT 1"))
-        return {"status": "healthy", "database": "connected"}
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Database connection failed: {str(e)}"
-        )
+async def health_check():
+    return {"message": "I Am Alive!!"}
 
 
 @app.get("/db-tables")
@@ -141,41 +131,10 @@ async def get_db_tables(db: Session = Depends(get_db)):
         )
 
 
-def import_all_models():
-    """Import all model files to ensure they're registered with SQLAlchemy"""
-    model_modules = [
-        "app.models.admin",
-        "app.models.booking", 
-        "app.models.driver",
-        "app.models.employee", 
-        "app.models.route",
-        "app.models.team",
-        "app.models.tenant",
-        "app.models.vehicle",
-        "app.models.vehicle_type",
-        "app.models.vendor",
-        "app.models.vendor_user",
-        "app.models.weekoff_config"
-    ]
-    
-    loaded_models = []
-    for module in model_modules:
-        try:
-            mod = importlib.import_module(module)
-            print(f"Successfully imported {module}")
-            loaded_models.append(mod)
-        except ImportError as e:
-            print(f"Failed to import {module}: {str(e)}")
-    
-    # Return loaded modules so we can inspect them if needed
-    return loaded_models
-
-
 @app.post("/seed")
 async def seed_database(
     force: bool = Query(False, description="Force reinitialization of database"),
     use_models: bool = Query(False, description="Use SQLAlchemy models instead of SQL files"),
-    background_tasks: BackgroundTasks = None
 ) -> Dict[str, Any]:
     try:
         # Get connection parameters for logging
@@ -216,89 +175,6 @@ async def seed_database(
                 # Check if psql is available
                 psql_available = shutil.which('psql') is not None
                 
-                if psql_available:
-                    # Close the connection before running SQL scripts
-                    cursor.close()
-                    conn.close()
-                    
-                    # Create environment with password for psql
-                    env_with_password = dict(os.environ)
-                    env_with_password["PGPASSWORD"] = password
-                    
-                    # Execute initialization scripts
-                    result_init = subprocess.run([
-                        'psql', 
-                        f"-h{host}",
-                        f"-p{port}",
-                        f"-U{user}", 
-                        f"-d{database}", 
-                        '-f', init_script_path
-                    ], env=env_with_password, capture_output=True, text=True)
-                    
-                    if result_init.returncode != 0:
-                        raise Exception(f"Init script failed: {result_init.stderr}")
-                    
-                    # Execute sample data scripts
-                    result_sample = subprocess.run([
-                        'psql', 
-                        f"-h{host}",
-                        f"-p{port}",
-                        f"-U{user}", 
-                        f"-d{database}", 
-                        '-f', sample_script_path
-                    ], env=env_with_password, capture_output=True, text=True)
-                    
-                    if result_sample.returncode != 0:
-                        raise Exception(f"Sample data script failed: {result_sample.stderr}")
-                    
-                    return {
-                        "message": "Database initialized successfully using psql", 
-                        "init_output": result_init.stdout,
-                        "sample_output": result_sample.stdout
-                    }
-                else:
-                    print("psql command not found. Falling back to direct SQL execution.")
-                    # Fallback to direct SQL file execution via psycopg2
-                    
-                    # Use the combined initialization file that doesn't rely on servicemgr_user
-                    combined_script_path = os.path.join(sql_dir, "init-db.sql")
-                    execution_results = {}
-                    
-                    if os.path.exists(combined_script_path):
-                        print(f"Using combined initialization script: {combined_script_path}")
-                        execution_results["combined"] = execute_sql_file_improved(combined_script_path, conn)
-                    else:
-                        # Execute the initialization scripts using local file paths
-                        print("Using separate initialization scripts")
-                        execution_results["init"] = execute_sql_file_improved(init_script_path, conn)
-                        execution_results["sample"] = execute_sql_file_improved(sample_script_path, conn)
-                    
-                    cursor.close()
-                    conn.close()
-                    
-                    # Check if any tables were created
-                    verification_conn = get_psql_connection()
-                    verification_cursor = verification_conn.cursor()
-                    verification_cursor.execute("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'")
-                    new_table_count = verification_cursor.fetchone()[0]
-                    verification_cursor.close()
-                    verification_conn.close()
-                    
-                    # If no tables were created using SQL files, try using models
-                    if new_table_count == 0 and not force:
-                        print("No tables were created using SQL files. Trying with SQLAlchemy models...")
-                        create_tables_from_models()
-                        return {
-                            "message": "Database initialized successfully using SQLAlchemy models after SQL execution failed",
-                            "sql_execution": execution_results,
-                            "fallback": "Used SQLAlchemy models"
-                        }
-                    
-                    return {
-                        "message": "Database initialized successfully using direct SQL execution",
-                        "execution_results": execution_results,
-                        "tables_created": new_table_count
-                    }
             else:
                 cursor.close()
                 conn.close()
@@ -319,7 +195,7 @@ async def create_tables_endpoint():
     """Create tables using SQLAlchemy models"""
     try:
         
-        from scripts.validate_db import create_tables
+        from app.database.create_tables import create_tables
 
         create_tables()
 

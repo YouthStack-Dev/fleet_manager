@@ -2,7 +2,7 @@ from sqlalchemy import (
     Column, Integer, String, Boolean, DateTime, Date, Text, ForeignKey, func, UniqueConstraint
 )
 from sqlalchemy.orm import relationship
-from database.session import Base
+from app.database.session import Base
 from app.models.vendor import Vendor
 from app.models.driver import Driver
 from app.models.vehicle_type import VehicleType

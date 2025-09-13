@@ -1,7 +1,6 @@
 import pytest
 from sqlalchemy.orm import Session
-from datetime import datetime, date, time
-from app.utils.auth import get_password_hash
+from datetime import datetime, date, time, timedelta
 from app.models import (
     Admin, Vendor, Driver, Vehicle, VehicleType, VendorUser, Team, 
     Tenant, Employee, Shift, Booking, Route, RouteBooking, WeekoffConfig
@@ -22,7 +21,7 @@ def create_admin(db: Session, admin_data):
         name=admin_data["name"],
         email=admin_data["email"],
         phone=admin_data["phone"],
-        password=get_password_hash(admin_data["password"]),
+        password=admin_data["password"],
         is_active=True
     )
     db.add(admin)
@@ -63,7 +62,7 @@ def vendor_user_data(create_vendor):
 def create_vendor_user(db: Session, vendor_user_data):
     vendor_user = VendorUser(
         **{k: v for k, v in vendor_user_data.items() if k != 'password'},
-        password=get_password_hash(vendor_user_data["password"])
+        password=vendor_user_data["password"]
     )
     db.add(vendor_user)
     db.commit()
@@ -125,7 +124,7 @@ def driver_data(create_vendor):
 def create_driver(db: Session, driver_data):
     driver = Driver(
         **{k: v for k, v in driver_data.items() if k != 'password'},
-        password=get_password_hash(driver_data["password"])
+        password=driver_data["password"]
     )
     db.add(driver)
     db.commit()
@@ -138,6 +137,7 @@ def vehicle_type_data(create_vendor):
         "name": "Sedan",
         "vendor_id": create_vendor.vendor_id,
         "description": "A standard sedan car",
+        "capacity": 4,
         "is_active": True
     }
 
@@ -152,13 +152,13 @@ def create_vehicle_type(db: Session, vehicle_type_data):
 @pytest.fixture
 def vehicle_data(create_vehicle_type, create_vendor, create_driver):
     return {
+        "registration_number": "DL01AB1234",
+        "model": "Toyota Etios",
+        "year": 2020,
+        "capacity": 4,
         "vehicle_type_id": create_vehicle_type.vehicle_type_id,
         "vendor_id": create_vendor.vendor_id,
-        "driver_id": create_driver.driver_id,
-        "rc_number": "DL01AB1234",
-        "rc_expiry_date": date(2025, 12, 31),
-        "description": "White Toyota Etios",
-        "insurance_expiry_date": date(2024, 12, 31),
+        "current_driver_id": create_driver.driver_id,
         "is_active": True
     }
 
@@ -173,11 +173,10 @@ def create_vehicle(db: Session, vehicle_data):
 @pytest.fixture
 def shift_data():
     return {
-        "shift_code": "MORN_IN",
-        "log_type": "IN",
-        "shift_time": time(8, 0, 0),
-        "pickup_type": "Pickup",
-        "waiting_time_minutes": 15,
+        "name": "Morning Shift",
+        "start_time": time(9, 0),
+        "end_time": time(18, 0),
+        "description": "Regular day shift",
         "is_active": True
     }
 
@@ -202,7 +201,8 @@ def booking_data(create_employee, create_shift, create_team):
         "drop_longitude": 77.1025,
         "drop_location": "Office",
         "status": "Pending",
-        "team_id": create_team.team_id
+        "team_id": create_team.team_id,
+        "booking_type": "Regular"
     }
 
 @pytest.fixture
@@ -221,6 +221,7 @@ def route_data(create_shift):
         "status": "Planned",
         "planned_distance_km": 20.5,
         "planned_duration_minutes": 45,
+        "route_date": date.today(),
         "is_active": True
     }
 
@@ -237,7 +238,8 @@ def route_booking_data(create_route, create_booking):
     return {
         "route_id": create_route.route_id,
         "booking_id": create_booking.booking_id,
-        "planned_eta_minutes": 25
+        "planned_eta_minutes": 25,
+        "sequence_number": 1
     }
 
 @pytest.fixture
@@ -252,13 +254,8 @@ def create_route_booking(db: Session, route_booking_data):
 def weekoff_config_data(create_employee):
     return {
         "employee_id": create_employee.employee_id,
-        "monday": False,
-        "tuesday": False,
-        "wednesday": False,
-        "thursday": False,
-        "friday": False,
-        "saturday": True,
-        "sunday": True
+        "weekday": 6,  # Sunday
+        "is_weekoff": True
     }
 
 @pytest.fixture

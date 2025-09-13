@@ -1,5 +1,6 @@
 import pytest
 from sqlalchemy.orm import Session
+from datetime import date
 from app.models import (
     Admin, Vendor, Driver, Vehicle, VehicleType, VendorUser, Team, 
     Tenant, Employee, Shift, Booking, Route, RouteBooking, WeekoffConfig
@@ -144,6 +145,28 @@ def test_booking_model(db: Session, create_employee, create_shift, create_team, 
     assert fetched_booking.drop_location == booking_data["drop_location"]
     assert fetched_booking.status == booking_data["status"]
     assert fetched_booking.team_id == create_team.team_id
+    assert fetched_booking.booking_type == booking_data["booking_type"]
+
+def test_route_model(db: Session, create_shift, route_data):
+    # Create a route
+    route = Route(**route_data)
+    db.add(route)
+    db.commit()
+
+    # Fetch the route from the db
+    fetched_route = db.query(Route).filter(
+        Route.route_code == route_data["route_code"]
+    ).first()
+    
+    # Check that the route was created correctly
+    assert fetched_route is not None
+    assert fetched_route.shift_id == create_shift.shift_id
+    assert fetched_route.route_code == route_data["route_code"]
+    assert fetched_route.planned_distance_km == route_data["planned_distance_km"]
+    assert fetched_route.planned_duration_minutes == route_data["planned_duration_minutes"]
+    assert fetched_route.status == route_data["status"]
+    assert fetched_route.route_date == route_data["route_date"]
+    assert fetched_route.is_active == True
 
 def test_route_booking_relationship(db: Session, create_route, create_booking, route_booking_data):
     # Create a route booking
@@ -161,7 +184,28 @@ def test_route_booking_relationship(db: Session, create_route, create_booking, r
     assert fetched_route_booking.route_id == create_route.route_id
     assert fetched_route_booking.booking_id == create_booking.booking_id
     assert fetched_route_booking.planned_eta_minutes == route_booking_data["planned_eta_minutes"]
+    assert fetched_route_booking.sequence_number == route_booking_data["sequence_number"]
     
     # Test bidirectional relationships
     assert fetched_route_booking.route.route_id == create_route.route_id
     assert fetched_route_booking.booking.booking_id == create_booking.booking_id
+
+def test_weekoff_config(db: Session, create_employee, weekoff_config_data):
+    # Create a weekoff config
+    weekoff_config = WeekoffConfig(**weekoff_config_data)
+    db.add(weekoff_config)
+    db.commit()
+
+    # Fetch the weekoff config from db
+    fetched_weekoff_config = db.query(WeekoffConfig).filter(
+        WeekoffConfig.employee_id == create_employee.employee_id
+    ).first()
+    
+    # Check that the weekoff config was created correctly
+    assert fetched_weekoff_config is not None
+    assert fetched_weekoff_config.employee_id == create_employee.employee_id
+    assert fetched_weekoff_config.weekday == weekoff_config_data["weekday"]
+    assert fetched_weekoff_config.is_weekoff == weekoff_config_data["is_weekoff"]
+    
+    # Test relationship to employee
+    assert fetched_weekoff_config.employee.employee_id == create_employee.employee_id

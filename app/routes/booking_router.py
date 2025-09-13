@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from datetime import date
-from database.session import get_db
+from app.database.session import get_db
 from app.models.booking import Booking
 from app.schemas.booking import BookingCreate, BookingUpdate, BookingResponse, BookingPaginationResponse, BookingStatusEnum
 from app.utils.pagination import paginate_query

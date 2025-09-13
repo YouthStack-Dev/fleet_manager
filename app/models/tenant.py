@@ -1,5 +1,5 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Numeric, func
-from database.session import Base
+from app.database.session import Base
 from sqlalchemy.orm import relationship
 
 class Tenant(Base):

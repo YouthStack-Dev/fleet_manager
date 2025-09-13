@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import Optional, List
-from database.session import get_db
+from app.database.session import get_db
 from app.models.route import Route
 from app.schemas.route import RouteCreate, RouteUpdate, RouteResponse, RoutePaginationResponse, RouteStatusEnum
 from app.utils.pagination import paginate_query
