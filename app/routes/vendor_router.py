@@ -10,7 +10,14 @@ router = APIRouter(prefix="/vendors", tags=["vendors"])
 
 @router.post("/", response_model=VendorResponse, status_code=status.HTTP_201_CREATED)
 def create_vendor(vendor: VendorCreate, db: Session = Depends(get_db)):
-    db_vendor = Vendor(**vendor.dict())
+    # Create a mapping dict from the schema to model fields
+    vendor_data = vendor.dict()
+    
+    # Rename 'code' to 'vendor_code' if it exists
+    if 'code' in vendor_data:
+        vendor_data['vendor_code'] = vendor_data.pop('code')
+    
+    db_vendor = Vendor(**vendor_data)
     db.add(db_vendor)
     db.commit()
     db.refresh(db_vendor)
@@ -31,7 +38,7 @@ def read_vendors(
     if name:
         query = query.filter(Vendor.name.ilike(f"%{name}%"))
     if code:
-        query = query.filter(Vendor.code.ilike(f"%{code}%"))
+        query = query.filter(Vendor.vendor_code.ilike(f"%{code}%"))  # Updated to vendor_code
     if is_active is not None:
         query = query.filter(Vendor.is_active == is_active)
     
@@ -58,6 +65,10 @@ def update_vendor(vendor_id: int, vendor_update: VendorUpdate, db: Session = Dep
         )
     
     update_data = vendor_update.dict(exclude_unset=True)
+    # Handle the code to vendor_code mapping for updates as well
+    if 'code' in update_data:
+        update_data['vendor_code'] = update_data.pop('code')
+    
     for key, value in update_data.items():
         setattr(db_vendor, key, value)
     

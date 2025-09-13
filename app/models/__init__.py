@@ -1,5 +1,4 @@
 # Import all models here for easier access
-from app.models.admin import Admin
 from app.models.vendor import Vendor, TenantVendor
 from app.models.driver import Driver, GenderEnum, VerificationStatusEnum
 from app.models.vehicle import Vehicle

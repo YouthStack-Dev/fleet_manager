@@ -2,43 +2,68 @@
 
 -- DROP SCHEMA public;
 
-CREATE SCHEMA public AUTHORIZATION servicemgr_user;
+-- Create schema without specifying an owner
+CREATE SCHEMA IF NOT EXISTS public;
 
 -- Create ENUM types
-CREATE TYPE public."booking_status_enum" AS ENUM (
-	'Pending',
-	'Confirmed',
-	'Ongoing',
-	'Completed',
-	'Canceled');
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'booking_status_enum') THEN
+        CREATE TYPE public."booking_status_enum" AS ENUM (
+            'Pending',
+            'Confirmed',
+            'Ongoing',
+            'Completed',
+            'Canceled');
+    END IF;
+END $$;
 
-CREATE TYPE public."gender_enum" AS ENUM (
-	'Male',
-	'Female',
-	'Other');
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'gender_enum') THEN
+        CREATE TYPE public."gender_enum" AS ENUM (
+            'Male',
+            'Female',
+            'Other');
+    END IF;
+END $$;
 
-CREATE TYPE public."pickup_type_enum" AS ENUM (
-	'Pickup',
-	'Nodal');
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'pickup_type_enum') THEN
+        CREATE TYPE public."pickup_type_enum" AS ENUM (
+            'Pickup',
+            'Nodal');
+    END IF;
+END $$;
 
-CREATE TYPE public."shift_log_type_enum" AS ENUM (
-	'IN',
-	'OUT');
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'shift_log_type_enum') THEN
+        CREATE TYPE public."shift_log_type_enum" AS ENUM (
+            'IN',
+            'OUT');
+    END IF;
+END $$;
 
-CREATE TYPE public."verification_status_enum" AS ENUM (
-	'Pending',
-	'Approved',
-	'Rejected');
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'verification_status_enum') THEN
+        CREATE TYPE public."verification_status_enum" AS ENUM (
+            'Pending',
+            'Approved',
+            'Rejected');
+    END IF;
+END $$;
 
-CREATE TYPE public."route_status_enum" AS ENUM (
-	'Planned',
-	'Assigned',
-	'InProgress',
-	'Completed',
-	'Cancelled');
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'route_status_enum') THEN
+        CREATE TYPE public."route_status_enum" AS ENUM (
+            'Planned',
+            'Assigned',
+            'InProgress',
+            'Completed',
+            'Cancelled');
+    END IF;
+END $$;
 
 -- Create sequences
-CREATE SEQUENCE bookings_booking_id_seq
+CREATE SEQUENCE IF NOT EXISTS bookings_booking_id_seq
 	INCREMENT BY 1
 	MINVALUE 1
 	MAXVALUE 2147483647
@@ -46,7 +71,7 @@ CREATE SEQUENCE bookings_booking_id_seq
 	CACHE 1
 	NO CYCLE;
 
-CREATE SEQUENCE drivers_driver_id_seq
+CREATE SEQUENCE IF NOT EXISTS drivers_driver_id_seq
 	INCREMENT BY 1
 	MINVALUE 1
 	MAXVALUE 2147483647
@@ -54,7 +79,7 @@ CREATE SEQUENCE drivers_driver_id_seq
 	CACHE 1
 	NO CYCLE;
 
-CREATE SEQUENCE employees_employee_id_seq
+CREATE SEQUENCE IF NOT EXISTS employees_employee_id_seq
 	INCREMENT BY 1
 	MINVALUE 1
 	MAXVALUE 2147483647
@@ -62,7 +87,7 @@ CREATE SEQUENCE employees_employee_id_seq
 	CACHE 1
 	NO CYCLE;
 
-CREATE SEQUENCE shifts_shift_id_seq
+CREATE SEQUENCE IF NOT EXISTS shifts_shift_id_seq
 	INCREMENT BY 1
 	MINVALUE 1
 	MAXVALUE 2147483647
@@ -70,7 +95,7 @@ CREATE SEQUENCE shifts_shift_id_seq
 	CACHE 1
 	NO CYCLE;
 
-CREATE SEQUENCE teams_team_id_seq
+CREATE SEQUENCE IF NOT EXISTS teams_team_id_seq
 	INCREMENT BY 1
 	MINVALUE 1
 	MAXVALUE 2147483647
@@ -78,7 +103,7 @@ CREATE SEQUENCE teams_team_id_seq
 	CACHE 1
 	NO CYCLE;
 
-CREATE SEQUENCE tenants_tenant_id_seq
+CREATE SEQUENCE IF NOT EXISTS tenants_tenant_id_seq
 	INCREMENT BY 1
 	MINVALUE 1
 	MAXVALUE 2147483647
@@ -86,7 +111,7 @@ CREATE SEQUENCE tenants_tenant_id_seq
 	CACHE 1
 	NO CYCLE;
 
-CREATE SEQUENCE vehicle_types_vehicle_type_id_seq
+CREATE SEQUENCE IF NOT EXISTS vehicle_types_vehicle_type_id_seq
 	INCREMENT BY 1
 	MINVALUE 1
 	MAXVALUE 2147483647
@@ -94,7 +119,7 @@ CREATE SEQUENCE vehicle_types_vehicle_type_id_seq
 	CACHE 1
 	NO CYCLE;
 
-CREATE SEQUENCE vehicles_vehicle_id_seq
+CREATE SEQUENCE IF NOT EXISTS vehicles_vehicle_id_seq
 	INCREMENT BY 1
 	MINVALUE 1
 	MAXVALUE 2147483647
@@ -102,7 +127,7 @@ CREATE SEQUENCE vehicles_vehicle_id_seq
 	CACHE 1
 	NO CYCLE;
 
-CREATE SEQUENCE vendor_users_vendor_user_id_seq
+CREATE SEQUENCE IF NOT EXISTS vendor_users_vendor_user_id_seq
 	INCREMENT BY 1
 	MINVALUE 1
 	MAXVALUE 2147483647
@@ -110,7 +135,7 @@ CREATE SEQUENCE vendor_users_vendor_user_id_seq
 	CACHE 1
 	NO CYCLE;
 
-CREATE SEQUENCE vendors_vendor_id_seq
+CREATE SEQUENCE IF NOT EXISTS vendors_vendor_id_seq
 	INCREMENT BY 1
 	MINVALUE 1
 	MAXVALUE 2147483647
@@ -118,7 +143,7 @@ CREATE SEQUENCE vendors_vendor_id_seq
 	CACHE 1
 	NO CYCLE;
 
-CREATE SEQUENCE weekoff_configs_weekoff_id_seq
+CREATE SEQUENCE IF NOT EXISTS weekoff_configs_weekoff_id_seq
 	INCREMENT BY 1
 	MINVALUE 1
 	MAXVALUE 2147483647
@@ -126,7 +151,7 @@ CREATE SEQUENCE weekoff_configs_weekoff_id_seq
 	CACHE 1
 	NO CYCLE;
 
-CREATE SEQUENCE routes_route_id_seq
+CREATE SEQUENCE IF NOT EXISTS routes_route_id_seq
 	INCREMENT BY 1
 	MINVALUE 1
 	MAXVALUE 2147483647
@@ -134,7 +159,7 @@ CREATE SEQUENCE routes_route_id_seq
 	CACHE 1
 	NO CYCLE;
 
-CREATE SEQUENCE route_bookings_route_booking_id_seq
+CREATE SEQUENCE IF NOT EXISTS route_bookings_route_booking_id_seq
 	INCREMENT BY 1
 	MINVALUE 1
 	MAXVALUE 2147483647
@@ -143,7 +168,7 @@ CREATE SEQUENCE route_bookings_route_booking_id_seq
 	NO CYCLE;
 
 -- Create tables
-CREATE TABLE admins ( 
+CREATE TABLE IF NOT EXISTS admins ( 
     admin_id SERIAL PRIMARY KEY, 
     name VARCHAR(150) NOT NULL,
     email VARCHAR(150) UNIQUE NOT NULL,
@@ -154,7 +179,7 @@ CREATE TABLE admins (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
-CREATE TABLE teams (
+CREATE TABLE IF NOT EXISTS teams (
 	team_id serial4 NOT NULL,
 	name varchar(150) NOT NULL,
 	description text NULL,
@@ -164,7 +189,7 @@ CREATE TABLE teams (
 	CONSTRAINT teams_pkey PRIMARY KEY (team_id)
 );
 
-CREATE TABLE tenants (
+CREATE TABLE IF NOT EXISTS tenants (
 	tenant_id serial4 NOT NULL,
 	name varchar(150) NOT NULL,
 	address varchar(255) NULL,
@@ -177,7 +202,7 @@ CREATE TABLE tenants (
 	CONSTRAINT tenants_pkey PRIMARY KEY (tenant_id)
 );
 
-CREATE TABLE vendors (
+CREATE TABLE IF NOT EXISTS vendors (
 	vendor_id serial4 NOT NULL,
 	name varchar(150) NOT NULL,
 	code varchar(50) NULL,
@@ -192,7 +217,7 @@ CREATE TABLE vendors (
 	CONSTRAINT vendors_pkey PRIMARY KEY (vendor_id)
 );
 
-CREATE TABLE shifts (
+CREATE TABLE IF NOT EXISTS shifts (
 	shift_id serial4 NOT NULL,
 	shift_code varchar(50) NOT NULL,
 	log_type public."shift_log_type_enum" NOT NULL,
@@ -207,7 +232,7 @@ CREATE TABLE shifts (
 	CONSTRAINT shifts_shift_code_key UNIQUE (shift_code)
 );
 
-CREATE TABLE drivers (
+CREATE TABLE IF NOT EXISTS drivers (
 	driver_id serial4 NOT NULL,
 	vendor_id int4 NOT NULL,
 	name varchar(150) NOT NULL,
@@ -257,7 +282,7 @@ CREATE TABLE drivers (
 	CONSTRAINT drivers_vendor_id_fkey FOREIGN KEY (vendor_id) REFERENCES vendors(vendor_id) ON DELETE CASCADE
 );
 
-CREATE TABLE employees (
+CREATE TABLE IF NOT EXISTS employees (
 	employee_id serial4 NOT NULL,
 	name varchar(150) NOT NULL,
 	employee_code varchar(50) NULL,
@@ -283,7 +308,7 @@ CREATE TABLE employees (
 	CONSTRAINT employees_team_id_fkey FOREIGN KEY (team_id) REFERENCES teams(team_id) ON DELETE SET NULL
 );
 
-CREATE TABLE vehicle_types (
+CREATE TABLE IF NOT EXISTS vehicle_types (
 	vehicle_type_id serial4 NOT NULL,
 	vendor_id int4 NOT NULL,
 	name varchar(150) NOT NULL,
@@ -296,7 +321,7 @@ CREATE TABLE vehicle_types (
 	CONSTRAINT vehicle_types_vendor_id_fkey FOREIGN KEY (vendor_id) REFERENCES vendors(vendor_id) ON DELETE CASCADE
 );
 
-CREATE TABLE vehicles (
+CREATE TABLE IF NOT EXISTS vehicles (
 	vehicle_id serial4 NOT NULL,
 	vehicle_type_id int4 NOT NULL,
 	vendor_id int4 NOT NULL,
@@ -324,7 +349,7 @@ CREATE TABLE vehicles (
 	CONSTRAINT vehicles_vendor_id_fkey FOREIGN KEY (vendor_id) REFERENCES vendors(vendor_id) ON DELETE CASCADE
 );
 
-CREATE TABLE vendor_users (
+CREATE TABLE IF NOT EXISTS vendor_users (
 	vendor_user_id serial4 NOT NULL,
 	vendor_id int4 NOT NULL,
 	name varchar(150) NOT NULL,
@@ -340,7 +365,7 @@ CREATE TABLE vendor_users (
 	CONSTRAINT vendor_users_vendor_id_fkey FOREIGN KEY (vendor_id) REFERENCES vendors(vendor_id) ON DELETE CASCADE
 );
 
-CREATE TABLE weekoff_configs (
+CREATE TABLE IF NOT EXISTS weekoff_configs (
 	weekoff_id serial4 NOT NULL,
 	employee_id int4 NOT NULL,
 	monday bool DEFAULT false NOT NULL,
@@ -357,7 +382,7 @@ CREATE TABLE weekoff_configs (
 	CONSTRAINT weekoff_configs_employee_id_fkey FOREIGN KEY (employee_id) REFERENCES employees(employee_id) ON DELETE CASCADE
 );
 
-CREATE TABLE bookings (
+CREATE TABLE IF NOT EXISTS bookings (
 	booking_id serial4 NOT NULL,
 	employee_id int4 NOT NULL,
 	shift_id int4 NULL,
@@ -378,7 +403,7 @@ CREATE TABLE bookings (
 	CONSTRAINT bookings_team_id_fkey FOREIGN KEY (team_id) REFERENCES teams(team_id) ON DELETE SET NULL
 );
 
-CREATE TABLE routes (
+CREATE TABLE IF NOT EXISTS routes (
 	route_id serial4 NOT NULL,
 	shift_id int4 NULL,
 	route_code varchar(100) NOT NULL,
@@ -405,9 +430,9 @@ CREATE TABLE routes (
 	CONSTRAINT routes_assigned_driver_id_fkey FOREIGN KEY (assigned_driver_id) REFERENCES drivers(driver_id) ON DELETE SET NULL
 );
 
-CREATE INDEX ix_routes_shift_status ON routes (shift_id, status);
+CREATE INDEX IF NOT EXISTS ix_routes_shift_status ON routes (shift_id, status);
 
-CREATE TABLE route_bookings (
+CREATE TABLE IF NOT EXISTS route_bookings (
 	route_booking_id serial4 NOT NULL,
 	route_id int4 NOT NULL,
 	booking_id int4 NOT NULL,
@@ -421,4 +446,4 @@ CREATE TABLE route_bookings (
 	CONSTRAINT route_bookings_booking_id_fkey FOREIGN KEY (booking_id) REFERENCES bookings(booking_id) ON DELETE CASCADE
 );
 
-CREATE INDEX ix_route_bookings_route ON route_bookings (route_id);
+CREATE INDEX IF NOT EXISTS ix_route_bookings_route ON route_bookings (route_id);

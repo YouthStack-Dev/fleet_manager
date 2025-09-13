@@ -5,22 +5,23 @@ import shutil  # Add this import to check for executable availability
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Now continue with the rest of your imports
-from fastapi import FastAPI, Depends, HTTPException, status, Query
+from fastapi import FastAPI, Depends, HTTPException, status, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Dict, Any
 import uvicorn
 import subprocess
 import psycopg2
+import importlib
+import traceback  # For detailed error info
+from sqlalchemy.sql import text
 
-from database.session import get_db
+from database.session import get_db, Base, engine
 from sqlalchemy.orm import Session
 from routes import (
-    admin_router, 
     employee_router, 
     driver_router, 
     booking_router, 
     tenant_router,
-    auth_router,
     vendor_router,
     vehicle_type_router,
     vehicle_router,
@@ -48,12 +49,10 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(admin_router.router, prefix="/api/v1")
 app.include_router(employee_router.router, prefix="/api/v1")
 app.include_router(driver_router.router, prefix="/api/v1")
 app.include_router(booking_router.router, prefix="/api/v1")
 app.include_router(tenant_router.router, prefix="/api/v1")
-app.include_router(auth_router.router, prefix="/api/v1")
 app.include_router(vendor_router.router, prefix="/api/v1")
 app.include_router(vehicle_type_router.router, prefix="/api/v1")
 app.include_router(vehicle_router.router, prefix="/api/v1")
@@ -95,7 +94,7 @@ async def root():
 async def health_check(db: Session = Depends(get_db)):
     try:
         # Try to execute a simple query to check DB connection
-        db.execute("SELECT 1")
+        db.execute(text("SELECT 1"))
         return {"status": "healthy", "database": "connected"}
     except Exception as e:
         raise HTTPException(
@@ -104,8 +103,80 @@ async def health_check(db: Session = Depends(get_db)):
         )
 
 
+@app.get("/db-tables")
+async def get_db_tables(db: Session = Depends(get_db)):
+    """Get information about tables in the database"""
+    try:
+        # Query table information
+        result = db.execute(text("""
+            SELECT 
+                table_name,
+                (SELECT COUNT(*) FROM information_schema.columns WHERE table_name=t.table_name) AS column_count
+            FROM 
+                information_schema.tables t
+            WHERE 
+                table_schema='public'
+            ORDER BY 
+                table_name
+        """))
+        
+        tables = [{"name": row[0], "column_count": row[1]} for row in result]
+        
+        # Get row counts for each table
+        for table in tables:
+            try:
+                count_result = db.execute(text(f"SELECT COUNT(*) FROM {table['name']}"))
+                table['row_count'] = count_result.scalar()
+            except Exception:
+                table['row_count'] = "Error counting rows"
+        
+        return {
+            "total_tables": len(tables),
+            "tables": tables
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve table information: {str(e)}"
+        )
+
+
+def import_all_models():
+    """Import all model files to ensure they're registered with SQLAlchemy"""
+    model_modules = [
+        "app.models.admin",
+        "app.models.booking", 
+        "app.models.driver",
+        "app.models.employee", 
+        "app.models.route",
+        "app.models.team",
+        "app.models.tenant",
+        "app.models.vehicle",
+        "app.models.vehicle_type",
+        "app.models.vendor",
+        "app.models.vendor_user",
+        "app.models.weekoff_config"
+    ]
+    
+    loaded_models = []
+    for module in model_modules:
+        try:
+            mod = importlib.import_module(module)
+            print(f"Successfully imported {module}")
+            loaded_models.append(mod)
+        except ImportError as e:
+            print(f"Failed to import {module}: {str(e)}")
+    
+    # Return loaded modules so we can inspect them if needed
+    return loaded_models
+
+
 @app.post("/seed")
-async def seed_database(force: bool = Query(False, description="Force reinitialization of database")) -> Dict[str, Any]:
+async def seed_database(
+    force: bool = Query(False, description="Force reinitialization of database"),
+    use_models: bool = Query(False, description="Use SQLAlchemy models instead of SQL files"),
+    background_tasks: BackgroundTasks = None
+) -> Dict[str, Any]:
     try:
         # Get connection parameters for logging
         host = os.environ.get("POSTGRES_HOST", "localhost")
@@ -132,6 +203,16 @@ async def seed_database(force: bool = Query(False, description="Force reinitiali
             table_count = cursor.fetchone()[0]
             
             if table_count == 0 or force:
+                if use_models:
+                    cursor.close()
+                    conn.close()
+                    print("Creating tables from SQLAlchemy models...")
+                    create_tables_from_models()
+                    
+                    return {
+                        "message": "Database initialized successfully using SQLAlchemy models",
+                    }
+                
                 # Check if psql is available
                 psql_available = shutil.which('psql') is not None
                 
@@ -179,81 +260,44 @@ async def seed_database(force: bool = Query(False, description="Force reinitiali
                     print("psql command not found. Falling back to direct SQL execution.")
                     # Fallback to direct SQL file execution via psycopg2
                     
-                    # Function to execute SQL from file
-                    def execute_sql_file(file_path, conn):
-                        try:
-                            print(f"Reading SQL file: {file_path}")
-                            with open(file_path, 'r') as f:
-                                sql_content = f.read()
-                            
-                            # Split SQL by semicolons to execute statements individually
-                            # But be careful with PL/pgSQL blocks that contain semicolons
-                            sql_statements = []
-                            in_plpgsql_block = False
-                            current_statement = ""
-                            
-                            for line in sql_content.split('\n'):
-                                # Skip comments
-                                if line.strip().startswith('--'):
-                                    continue
-                                
-                                # Check for PL/pgSQL block start
-                                if "DO $$" in line or "do $$" in line:
-                                    in_plpgsql_block = True
-                                
-                                current_statement += line + "\n"
-                                
-                                # Check for PL/pgSQL block end
-                                if "END $$" in line or "end $$" in line:
-                                    in_plpgsql_block = False
-                                
-                                # Check if this line contains a statement end
-                                if ";" in line and not in_plpgsql_block:
-                                    idx = line.rindex(";") + 1
-                                    current_statement = current_statement[:-len(line) + idx]
-                                    sql_statements.append(current_statement.strip())
-                                    current_statement = line[idx:] + "\n" if idx < len(line) else ""
-                            
-                            # Create a new cursor for execution
-                            cur = conn.cursor()
-                            
-                            # Execute statements one by one
-                            for i, statement in enumerate(sql_statements):
-                                if statement.strip():
-                                    try:
-                                        print(f"Executing statement {i+1}/{len(sql_statements)}")
-                                        cur.execute(statement)
-                                        conn.commit()
-                                    except Exception as e:
-                                        conn.rollback()
-                                        print(f"Error executing statement: {statement[:100]}...")
-                                        print(f"Error: {str(e)}")
-                                        # Continue with next statement instead of failing
-                                        continue
-                            
-                            cur.close()
-                            return True
-                        except Exception as e:
-                            conn.rollback()
-                            print(f"Error executing SQL file {file_path}: {str(e)}")
-                            raise e
-                    
                     # Use the combined initialization file that doesn't rely on servicemgr_user
                     combined_script_path = os.path.join(sql_dir, "init-db.sql")
+                    execution_results = {}
+                    
                     if os.path.exists(combined_script_path):
                         print(f"Using combined initialization script: {combined_script_path}")
-                        execute_sql_file(combined_script_path, conn)
+                        execution_results["combined"] = execute_sql_file_improved(combined_script_path, conn)
                     else:
                         # Execute the initialization scripts using local file paths
                         print("Using separate initialization scripts")
-                        execute_sql_file(init_script_path, conn)
-                        execute_sql_file(sample_script_path, conn)
+                        execution_results["init"] = execute_sql_file_improved(init_script_path, conn)
+                        execution_results["sample"] = execute_sql_file_improved(sample_script_path, conn)
                     
                     cursor.close()
                     conn.close()
                     
+                    # Check if any tables were created
+                    verification_conn = get_psql_connection()
+                    verification_cursor = verification_conn.cursor()
+                    verification_cursor.execute("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'")
+                    new_table_count = verification_cursor.fetchone()[0]
+                    verification_cursor.close()
+                    verification_conn.close()
+                    
+                    # If no tables were created using SQL files, try using models
+                    if new_table_count == 0 and not force:
+                        print("No tables were created using SQL files. Trying with SQLAlchemy models...")
+                        create_tables_from_models()
+                        return {
+                            "message": "Database initialized successfully using SQLAlchemy models after SQL execution failed",
+                            "sql_execution": execution_results,
+                            "fallback": "Used SQLAlchemy models"
+                        }
+                    
                     return {
                         "message": "Database initialized successfully using direct SQL execution",
+                        "execution_results": execution_results,
+                        "tables_created": new_table_count
                     }
             else:
                 cursor.close()
@@ -266,8 +310,29 @@ async def seed_database(force: bool = Query(False, description="Force reinitiali
                 detail=f"Database connection failed: {str(e)}"
             )
     except Exception as e:
+        traceback.print_exc()  # Print full traceback for debugging
         raise HTTPException(status_code=500, detail=f"Failed to seed database: {str(e)}")
 
+
+@app.post("/create-tables")
+async def create_tables_endpoint():
+    """Create tables using SQLAlchemy models"""
+    try:
+        
+        from scripts.validate_db import create_tables
+
+        create_tables()
+
+
+        return {
+            "message": "Table creation process completed",
+        }
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create tables: {str(e)}"
+        )
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

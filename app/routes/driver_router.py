@@ -4,7 +4,6 @@ from typing import Optional, List
 from database.session import get_db
 from app.models.driver import Driver
 from app.schemas.driver import DriverCreate, DriverUpdate, DriverResponse, DriverPaginationResponse
-from app.utils.auth import get_password_hash
 from app.utils.pagination import paginate_query
 
 router = APIRouter(prefix="/drivers", tags=["drivers"])
@@ -13,7 +12,7 @@ router = APIRouter(prefix="/drivers", tags=["drivers"])
 def create_driver(driver: DriverCreate, db: Session = Depends(get_db)):
     db_driver = Driver(
         **driver.dict(exclude={"password"}),
-        password=get_password_hash(driver.password)
+        password=driver.password
     )
     db.add(db_driver)
     db.commit()

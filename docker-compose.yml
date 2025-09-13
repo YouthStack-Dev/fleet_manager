@@ -12,25 +12,33 @@ services:
       POSTGRES_DB: fleet_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./sql/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
     restart: unless-stopped
     networks:
       - fleet-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fleetadmin -d fleet_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  api:
+  fleet_api:
     container_name: fleet_api
     build:
       context: .
-      dockerfile: app/Dockerfile
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://fleetadmin:fleetpass@postgres:5432/fleet_db
-      - ENV=development
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=fleetadmin
+      - POSTGRES_PASSWORD=fleetpass
+      - POSTGRES_DB=fleet_db
     volumes:
-      - ./app:/app
+      - ./app:/app/app
+      - ./sql:/app/sql
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - fleet-network

@@ -4,7 +4,6 @@ from typing import Optional
 from database.session import get_db
 from app.models.employee import Employee
 from app.schemas.employee import EmployeeCreate, EmployeeUpdate, EmployeeResponse, EmployeePaginationResponse
-from app.utils.auth import get_password_hash
 from app.utils.pagination import paginate_query
 
 router = APIRouter(prefix="/employees", tags=["employees"])
@@ -13,7 +12,7 @@ router = APIRouter(prefix="/employees", tags=["employees"])
 def create_employee(employee: EmployeeCreate, db: Session = Depends(get_db)):
     db_employee = Employee(
         **employee.dict(exclude={"password"}),
-        password=get_password_hash(employee.password)
+        password=employee.password
     )
     db.add(db_employee)
     db.commit()
