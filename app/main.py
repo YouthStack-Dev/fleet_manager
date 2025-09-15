@@ -15,21 +15,21 @@ from sqlalchemy.sql import text
 from app.database.session import get_db
 
 from sqlalchemy.orm import Session
-from app.routes import (
-    employee_router, 
-    driver_router, 
-    booking_router, 
-    tenant_router,
-    vendor_router,
-    vehicle_type_router,
-    vehicle_router,
-    vendor_user_router,
-    team_router,
-    shift_router,
-    route_router,
-    route_booking_router,
-    weekoff_config_router
-)
+# from app.routes import (
+#     employee_router, 
+#     driver_router, 
+#     booking_router, 
+#     tenant_router,
+#     vendor_router,
+#     vehicle_type_router,
+#     vehicle_router,
+#     vendor_user_router,
+#     team_router,
+#     shift_router,
+#     route_router,
+#     route_booking_router,
+#     weekoff_config_router
+# )
 
 app = FastAPI(
     title="Fleet Manager API",
@@ -47,19 +47,19 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(employee_router.router, prefix="/api/v1")
-app.include_router(driver_router.router, prefix="/api/v1")
-app.include_router(booking_router.router, prefix="/api/v1")
-app.include_router(tenant_router.router, prefix="/api/v1")
-app.include_router(vendor_router.router, prefix="/api/v1")
-app.include_router(vehicle_type_router.router, prefix="/api/v1")
-app.include_router(vehicle_router.router, prefix="/api/v1")
-app.include_router(vendor_user_router.router, prefix="/api/v1")
-app.include_router(team_router.router, prefix="/api/v1")
-app.include_router(shift_router.router, prefix="/api/v1")
-app.include_router(route_router.router, prefix="/api/v1")
-app.include_router(route_booking_router.router, prefix="/api/v1")
-app.include_router(weekoff_config_router.router, prefix="/api/v1")
+# app.include_router(employee_router.router, prefix="/api/v1")
+# app.include_router(driver_router.router, prefix="/api/v1")
+# app.include_router(booking_router.router, prefix="/api/v1")
+# app.include_router(tenant_router.router, prefix="/api/v1")
+# app.include_router(vendor_router.router, prefix="/api/v1")
+# app.include_router(vehicle_type_router.router, prefix="/api/v1")
+# app.include_router(vehicle_router.router, prefix="/api/v1")
+# app.include_router(vendor_user_router.router, prefix="/api/v1")
+# app.include_router(team_router.router, prefix="/api/v1")
+# app.include_router(shift_router.router, prefix="/api/v1")
+# app.include_router(route_router.router, prefix="/api/v1")
+# app.include_router(route_booking_router.router, prefix="/api/v1")
+# app.include_router(weekoff_config_router.router, prefix="/api/v1")
 
 # Direct PostgreSQL connection for seeding database
 def get_psql_connection():

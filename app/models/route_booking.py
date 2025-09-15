@@ -32,7 +32,7 @@ class RouteBooking(Base):
     planned_eta_minutes = Column(Integer, nullable=True)  # ETA from route start
     actual_arrival_time = Column(DateTime, nullable=True)
     actual_departure_time = Column(DateTime, nullable=True)
-    status = Column(enum.Enum(RouteStopStatusEnum, native_enum=False), default=RouteStopStatusEnum.PLANNED, nullable=False)
+    status = Column(Enum(RouteStopStatusEnum, native_enum=False), default=RouteStopStatusEnum.PLANNED, nullable=False)
 
     # Audit
     reason = Column(Text, nullable=True)  # why skipped/delayed/etc.
