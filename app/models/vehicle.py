@@ -3,9 +3,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 from app.database.session import Base
-from app.models.vendor import Vendor
-from app.models.driver import Driver
-from app.models.vehicle_type import VehicleType
 
 
 class Vehicle(Base):
@@ -17,8 +14,8 @@ class Vehicle(Base):
         UniqueConstraint("vendor_id", "tax_receipt_number", name="uq_vendor_tax_receipt_number"),
         UniqueConstraint("vendor_id", "insurance_number", name="uq_vendor_insurance_number"),
         UniqueConstraint("vendor_id", "permit_number", name="uq_vendor_permit_number"),
+        {"extend_existing": True},
     )
-    __table_args__ = {'extend_existing': True}
 
     vehicle_id = Column(Integer, primary_key=True, index=True)
     vehicle_type_id = Column(Integer, ForeignKey("vehicle_types.vehicle_type_id", ondelete="CASCADE"), nullable=False)

@@ -13,9 +13,10 @@ class Team(Base):
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
-    # Composite unique constraint: ensures name is unique per tenant
-    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_team_name_per_tenant"),)
-    __table_args__ = {'extend_existing': True}
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_team_name_per_tenant"),
+        {'extend_existing': True}  # keep as dict in the same tuple
+    )
 
     # Relationships
     tenant = relationship("Tenant", back_populates="teams")

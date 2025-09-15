@@ -20,17 +20,19 @@ class Route(Base):
     __table_args__ = (
         Index("ix_routes_shift_status", "shift_id", "status"),
         UniqueConstraint("tenant_id", "route_code", name="uq_route_code_per_tenant"),
+        {"extend_existing": True},
     )
-    __table_args__ = {'extend_existing': True}
 
     route_id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
 
     shift_id = Column(Integer, ForeignKey("shifts.shift_id", ondelete="CASCADE"))
     route_code = Column(String(100), nullable=False)
+
     status = Column(Enum(RouteStatusEnum, native_enum=False), default=RouteStatusEnum.PLANNED, nullable=False)
     planned_distance_km = Column(Float)
     planned_duration_minutes = Column(Integer)
+
     actual_distance_km = Column(Float)
     actual_duration_minutes = Column(Integer)
     actual_start_time = Column(DateTime)

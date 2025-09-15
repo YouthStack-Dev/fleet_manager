@@ -40,10 +40,11 @@ class Shift(Base):
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "shift_code", name="uq_shift_code_per_tenant"),
+        {"extend_existing": True}
     )
-    __table_args__ = {'extend_existing': True}
 
     # Relationships
     tenant = relationship("Tenant", back_populates="shifts")
     bookings = relationship("Booking", back_populates="shift")
     routes = relationship("Route", back_populates="shift")
+
