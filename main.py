@@ -31,6 +31,9 @@ from app.routes import (
     weekoff_config_router
 )
 
+# Import the IAM router
+from iam.routes import router as iam_router
+
 app = FastAPI(
     title="Fleet Manager API",
     description="API for Fleet Management System",
@@ -60,6 +63,9 @@ app.include_router(shift_router.router, prefix="/api/v1")
 app.include_router(route_router.router, prefix="/api/v1")
 app.include_router(route_booking_router.router, prefix="/api/v1")
 app.include_router(weekoff_config_router.router, prefix="/api/v1")
+
+# Include the IAM router in the main application
+app.include_router(iam_router)
 
 # Direct PostgreSQL connection for seeding database
 def get_psql_connection():
@@ -209,6 +215,48 @@ async def create_tables_endpoint():
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create tables: {str(e)}"
         )
+
+
+@app.post("/drop-tables")
+async def drop_tables_endpoint():
+    """Drop all tables from the database"""
+    try:
+        conn = get_psql_connection()
+        cursor = conn.cursor()
+        
+        # Set session to terminate other connections that might block table dropping
+        cursor.execute("SET session_replication_role = 'replica';")
+        
+        # Get all tables in public schema
+        cursor.execute("""
+            SELECT tablename FROM pg_tables WHERE schemaname = 'public';
+        """)
+        tables = cursor.fetchall()
+        
+        if not tables:
+            return {"message": "No tables found to drop"}
+        
+        # Drop all tables
+        cursor.execute("DROP TABLE IF EXISTS " + ", ".join(f'"{table[0]}"' for table in tables) + " CASCADE;")
+        
+        # Reset session
+        cursor.execute("SET session_replication_role = 'origin';")
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return {
+            "message": f"Successfully dropped {len(tables)} tables",
+            "tables_dropped": [table[0] for table in tables]
+        }
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to drop tables: {str(e)}"
+        )
+
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
