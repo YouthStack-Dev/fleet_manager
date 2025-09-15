@@ -6,6 +6,7 @@ from .middleware import JWTAuthMiddleware
 from .token_validation import validate_bearer_token
 
 logger = logging.getLogger("uvicorn")
+
 class PermissionChecker:
     def __init__(
         self,
@@ -17,13 +18,14 @@ class PermissionChecker:
     
     async def __call__(self, request: Request, user_data = Depends(validate_bearer_token(use_cache=True))):
         
-        
         logger.info(f"PermissionChecker triggered for required_permissions: {self.required_permissions}")
         
         # Check if user has required permissions
-        user_permissions = [p["module"] + "." + a 
-                          for p in user_data["permissions"]
-                          for a in p["action"]]
+        user_permissions = []
+        for p in user_data.get("permissions", []):
+            module = p.get("module", "")
+            actions = p.get("action", [])
+            user_permissions.extend([f"{module}.{action}" for action in actions])
         
         logger.info(f"User permissions: {user_permissions}")
 

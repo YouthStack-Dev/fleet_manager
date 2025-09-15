@@ -13,15 +13,15 @@ REFRESH_TOKEN_EXPIRE_DAYS = 7
 def create_access_token(
     user_id: str,
     tenant_id: str,
-    roles: List[str],
     permissions: List[Dict],
+    opaque_token: str,
     expires_delta: Optional[timedelta] = None
 ) -> str:
     to_encode = {
         "user_id": user_id,
         "tenant_id": tenant_id,
-        "roles": roles,
         "permissions": permissions,
+        "opaque_token": opaque_token,
         "token_type": "access"
     }
     

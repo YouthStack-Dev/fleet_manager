@@ -25,3 +25,4 @@ class Tenant(Base):
     # TenantVendor relationship
     vendors = relationship("TenantVendor", back_populates="tenant", cascade="all, delete-orphan")
     vendor_users = relationship("TenantVendorUser", back_populates="tenant", cascade="all, delete-orphan")
+    roles = relationship("Role", back_populates="tenant")

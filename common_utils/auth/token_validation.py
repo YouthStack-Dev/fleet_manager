@@ -6,6 +6,26 @@ import httpx
 import json
 from cachetools import TTLCache
 from cachetools.keys import hashkey
+from fastapi import Request, HTTPException, status, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from typing import Dict, Optional, List, Set
+import jwt
+from jwt.exceptions import PyJWTError
+from functools import lru_cache
+
+from app.database.session import SessionLocal
+from app.models.iam import Permission, Policy, Role, UserRole
+from sqlalchemy.orm import Session, joinedload
+
+# Configuration
+SECRET_KEY = "your-secret-key"  # Should be stored in environment variables
+ALGORITHM = "HS256"
+
+logger = logging.getLogger("uvicorn")
+
+# Simple in-memory cache for permissions
+permission_cache = {}
+permission_cache_ttl = 60*60*24  # 5 minutes
 
 # # Environment Variables
 # OAUTH2_ENV = os.getenv("OAUTH2_ENV", "dev").strip()
@@ -16,14 +36,14 @@ from dotenv import load_dotenv
 # load .env file
 load_dotenv()
 
+# Create a security instance
+security = HTTPBearer()
+
 OAUTH2_ENV = os.getenv("OAUTH2_ENV", "dev").strip()
 
-if OAUTH2_ENV == "prod":
-    OAUTH2_URL = os.getenv("PROD_OAUTH2_URL").strip()
-else:
-    OAUTH2_URL = os.getenv("DEV_OAUTH2_URL").strip()
 
 X_INTROSPECT_SECRET = os.getenv("X_INTROSPECT_SECRET", "Testing_").strip()
+OAUTH2_URL = os.getenv("OAUTH2_URL", "http://127.0.0.1:8000/api/v1/auth/introspect").strip()
 
 print(f"Running in {OAUTH2_ENV} mode")
 print(f"OAUTH2_URL = {OAUTH2_URL}")
@@ -326,6 +346,7 @@ class Oauth2AsAccessor:
                 "exp": expiry_time,
                 "user_id": data.get("user_id", ""),
                 "tenant_id": data.get("tenant_id", ""),
+                "opaque_token": data.get("opaque_token", ""),
                 "active": True
             }
         
@@ -537,31 +558,132 @@ def access_token_validator(token, verbosity, use_cache: bool = True):
     accessor = Oauth2AsAccessor()
     return accessor.validate_oauth2_token(token, use_cache=use_cache)
 
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi import Depends, HTTPException
+def get_permission_set(user_id: int, tenant_id: int = None, use_cache: bool = True) -> Set[str]:
+    """Get all permissions for a user, with optional caching"""
+    
+    cache_key = f"{user_id}_{tenant_id}"
+    
+    # Check cache first if enabled
+    if use_cache and cache_key in permission_cache:
+        cache_entry = permission_cache[cache_key]
+        if time.time() < cache_entry["expiry"]:
+            return cache_entry["permissions"]
+    
+    # Cache miss or expired, need to fetch from database
+    db = SessionLocal()
+    try:
+        # Get user roles
+        user_roles_query = db.query(UserRole).filter(
+            UserRole.user_id == user_id,
+            UserRole.is_active == True
+        )
+        
+        if tenant_id:
+            # Get tenant-specific roles and system roles
+            user_roles_query = user_roles_query.filter(
+                (UserRole.tenant_id == tenant_id) | (UserRole.tenant_id == None)
+            )
+            
+        user_roles = user_roles_query.options(
+            joinedload(UserRole.role).joinedload(Role.policies).joinedload(Policy.permissions)
+        ).all()
+        
+        # Collect all permissions
+        permissions = set()
+        for user_role in user_roles:
+            for policy in user_role.role.policies:
+                for permission in policy.permissions:
+                    # Handle wildcard permissions
+                    if permission.action == "*":
+                        # Add all possible actions for this module
+                        permissions.add(f"{permission.module}.create")
+                        permissions.add(f"{permission.module}.read")
+                        permissions.add(f"{permission.module}.update")
+                        permissions.add(f"{permission.module}.delete")
+                    else:
+                        permissions.add(f"{permission.module}.{permission.action}")
+        
+        # Cache the result if caching is enabled
+        if use_cache:
+            permission_cache[cache_key] = {
+                "permissions": permissions,
+                "expiry": time.time() + permission_cache_ttl
+            }
+            
+        return permissions
+            
+    finally:
+        db.close()
 
-security = HTTPBearer()
+def validate_bearer_token(use_cache: bool = True):
+    async def get_token_data(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict:
+        print("done")
 
-def validate_bearer_token(verbosity: int = 40, use_cache: bool = True):
-    def get_bearer_token(
-            credentials: HTTPAuthorizationCredentials = Depends(security),
-        ):
-            token = credentials.credentials
+        token = credentials.credentials
+        
+        try:
+            # Verify token and extract payload
 
-            try:
-                validation_result = access_token_validator(token, verbosity, use_cache)
-                if not validation_result["active"]:
-                    raise HTTPException(
-                        status_code=401,
-                        detail="Invalid or expired token. Please authenticate again.",
-                    )
-                return validation_result
-            except HTTPException as e:
-                raise e
-            except Exception as e:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            
+            print(payload)
+            validation_result = access_token_validator(payload.get("opaque_token"), 40, use_cache)
+
+            print(validation_result)
+
+            # Get user permissions
+            user_id = payload.get("user_id")
+            tenant_id = payload.get("tenant_id")
+            
+            print(user_id,tenant_id)
+            if not user_id:
                 raise HTTPException(
-                    status_code=400,
-                    detail="The token provided is invalid or has expired. Please reauthenticate or request a new token.",
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid authentication token",
                 )
+            
+            print("done")
 
-    return get_bearer_token
+            # Get all effective permissions for this user
+            permissions = get_permission_set(user_id, tenant_id, use_cache)
+            # Add formatted permissions to the token data
+            formatted_permissions = []
+            for perm in permissions:
+                module, action = perm.split(".")
+                # Check if this module already exists in the formatted list
+                module_exists = False
+                for p in formatted_permissions:
+                    if p["module"] == module:
+                        p["action"].append(action)
+                        module_exists = True
+                        break
+                
+                if not module_exists:
+                    formatted_permissions.append({
+                        "module": module,
+                        "action": [action]
+                    })
+            
+            # Return the token data with permissions
+            return {
+                "user_id": user_id,
+                "tenant_id": tenant_id,
+                "roles": payload.get("roles", []),
+                "permissions": formatted_permissions,
+                # Include any other fields needed from the token
+            }
+            
+        except PyJWTError as e:
+            logger.error(f"JWT validation error: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid authentication token",
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error in token validation: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Authentication error",
+            )
+            
+    return get_token_data

@@ -14,6 +14,16 @@ import traceback  # For detailed error info
 from sqlalchemy.sql import text
 from app.database.session import get_db
 
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+
+logger = logging.getLogger(__name__)
+
 from sqlalchemy.orm import Session
 from app.routes import (
     employee_router, 
@@ -28,11 +38,13 @@ from app.routes import (
     shift_router,
     route_router,
     route_booking_router,
-    weekoff_config_router
+    weekoff_config_router,
+    auth_router  # Add the new auth router
 )
 
-# Import the IAM router
-from iam.routes import router as iam_router
+# Import the IAM routers
+from app.routes.iam import permission_router, policy_router, role_router, user_role_router
+
 
 app = FastAPI(
     title="Fleet Manager API",
@@ -50,22 +62,27 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(employee_router.router, prefix="/api/v1")
-app.include_router(driver_router.router, prefix="/api/v1")
-app.include_router(booking_router.router, prefix="/api/v1")
-app.include_router(tenant_router.router, prefix="/api/v1")
-app.include_router(vendor_router.router, prefix="/api/v1")
-app.include_router(vehicle_type_router.router, prefix="/api/v1")
-app.include_router(vehicle_router.router, prefix="/api/v1")
-app.include_router(vendor_user_router.router, prefix="/api/v1")
-app.include_router(team_router.router, prefix="/api/v1")
-app.include_router(shift_router.router, prefix="/api/v1")
-app.include_router(route_router.router, prefix="/api/v1")
-app.include_router(route_booking_router.router, prefix="/api/v1")
-app.include_router(weekoff_config_router.router, prefix="/api/v1")
+app.include_router(employee_router, prefix="/api/v1")
+app.include_router(driver_router, prefix="/api/v1")
+app.include_router(booking_router, prefix="/api/v1")
+app.include_router(tenant_router, prefix="/api/v1")
+app.include_router(vendor_router, prefix="/api/v1")
+app.include_router(vehicle_type_router, prefix="/api/v1")
+app.include_router(vehicle_router, prefix="/api/v1")
+app.include_router(vendor_user_router, prefix="/api/v1")
+app.include_router(team_router, prefix="/api/v1")
+app.include_router(shift_router, prefix="/api/v1")
+app.include_router(route_router, prefix="/api/v1")
+app.include_router(route_booking_router, prefix="/api/v1")
+app.include_router(weekoff_config_router, prefix="/api/v1")
+app.include_router(auth_router, prefix="/api/v1")  # Add the auth router
 
-# Include the IAM router in the main application
-app.include_router(iam_router)
+# Include IAM routers
+app.include_router(permission_router, prefix="/api/v1/iam")
+app.include_router(policy_router, prefix="/api/v1/iam")
+app.include_router(role_router, prefix="/api/v1/iam")
+app.include_router(user_role_router, prefix="/api/v1/iam")
+
 
 # Direct PostgreSQL connection for seeding database
 def get_psql_connection():

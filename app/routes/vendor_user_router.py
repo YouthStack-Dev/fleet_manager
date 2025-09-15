@@ -6,11 +6,16 @@ from app.models.vendor_user import VendorUser
 from app.schemas.vendor_user import VendorUserCreate, VendorUserUpdate, VendorUserResponse, VendorUserPaginationResponse
 from app.utils.pagination import paginate_query
 from app.models.vendor import Vendor
+from common_utils.auth.permission_checker import PermissionChecker
 
 router = APIRouter(prefix="/vendor-users", tags=["vendor users"])
 
 @router.post("/", response_model=VendorUserResponse, status_code=status.HTTP_201_CREATED)
-def create_vendor_user(vendor_user: VendorUserCreate, db: Session = Depends(get_db)):
+def create_vendor_user(
+    vendor_user: VendorUserCreate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["vendor-user.create"], check_tenant=True))
+):
     db_vendor_user = VendorUser(
         **vendor_user.dict(exclude={"password"}),
         password=vendor_user.password
@@ -29,7 +34,8 @@ def read_vendor_users(
     email: Optional[str] = None,
     vendor_id: Optional[int] = None,
     is_active: Optional[bool] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["vendor-user.read"], check_tenant=True))
 ):
     query = db.query(VendorUser)
     
@@ -49,7 +55,11 @@ def read_vendor_users(
     return {"total": total, "items": items}
 
 @router.get("/{vendor_user_id}", response_model=VendorUserResponse)
-def read_vendor_user(vendor_user_id: int, db: Session = Depends(get_db)):
+def read_vendor_user(
+    vendor_user_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["vendor-user.read"], check_tenant=True))
+):
     db_vendor_user = db.query(VendorUser).filter(VendorUser.vendor_user_id == vendor_user_id).first()
     if not db_vendor_user:
         raise HTTPException(
@@ -59,7 +69,12 @@ def read_vendor_user(vendor_user_id: int, db: Session = Depends(get_db)):
     return VendorUserResponse.from_orm(db_vendor_user)
 
 @router.put("/{vendor_user_id}", response_model=VendorUserResponse)
-def update_vendor_user(vendor_user_id: int, vendor_user_update: VendorUserUpdate, db: Session = Depends(get_db)):
+def update_vendor_user(
+    vendor_user_id: int, 
+    vendor_user_update: VendorUserUpdate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["vendor-user.update"], check_tenant=True))
+):
     db_vendor_user = db.query(VendorUser).filter(VendorUser.vendor_user_id == vendor_user_id).first()
     if not db_vendor_user:
         raise HTTPException(
@@ -98,7 +113,11 @@ def update_vendor_user(vendor_user_id: int, vendor_user_update: VendorUserUpdate
         )
 
 @router.delete("/{vendor_user_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_vendor_user(vendor_user_id: int, db: Session = Depends(get_db)):
+def delete_vendor_user(
+    vendor_user_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["vendor-user.delete"], check_tenant=True))
+):
     db_vendor_user = db.query(VendorUser).filter(VendorUser.vendor_user_id == vendor_user_id).first()
     if not db_vendor_user:
         raise HTTPException(

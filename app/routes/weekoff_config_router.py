@@ -5,11 +5,16 @@ from app.database.session import get_db
 from app.models.weekoff_config import WeekoffConfig
 from app.schemas.weekoff_config import WeekoffConfigCreate, WeekoffConfigUpdate, WeekoffConfigResponse, WeekoffConfigPaginationResponse
 from app.utils.pagination import paginate_query
+from common_utils.auth.permission_checker import PermissionChecker
 
 router = APIRouter(prefix="/weekoff-configs", tags=["weekoff configs"])
 
 @router.post("/", response_model=WeekoffConfigResponse, status_code=status.HTTP_201_CREATED)
-def create_weekoff_config(weekoff_config: WeekoffConfigCreate, db: Session = Depends(get_db)):
+def create_weekoff_config(
+    weekoff_config: WeekoffConfigCreate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["weekoff-config.create"], check_tenant=True))
+):
     # Check if config already exists for this employee
     existing_config = db.query(WeekoffConfig).filter(WeekoffConfig.employee_id == weekoff_config.employee_id).first()
     if existing_config:
@@ -29,7 +34,8 @@ def read_weekoff_configs(
     skip: int = 0,
     limit: int = 100,
     employee_id: Optional[int] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["weekoff-config.read"], check_tenant=True))
 ):
     query = db.query(WeekoffConfig)
     
@@ -41,7 +47,11 @@ def read_weekoff_configs(
     return {"total": total, "items": items}
 
 @router.get("/{weekoff_id}", response_model=WeekoffConfigResponse)
-def read_weekoff_config(weekoff_id: int, db: Session = Depends(get_db)):
+def read_weekoff_config(
+    weekoff_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["weekoff-config.read"], check_tenant=True))
+):
     db_weekoff_config = db.query(WeekoffConfig).filter(WeekoffConfig.weekoff_id == weekoff_id).first()
     if not db_weekoff_config:
         raise HTTPException(
@@ -51,7 +61,11 @@ def read_weekoff_config(weekoff_id: int, db: Session = Depends(get_db)):
     return db_weekoff_config
 
 @router.get("/employee/{employee_id}", response_model=WeekoffConfigResponse)
-def read_weekoff_config_by_employee(employee_id: int, db: Session = Depends(get_db)):
+def read_weekoff_config_by_employee(
+    employee_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["weekoff-config.read"], check_tenant=True))
+):
     db_weekoff_config = db.query(WeekoffConfig).filter(WeekoffConfig.employee_id == employee_id).first()
     if not db_weekoff_config:
         raise HTTPException(
@@ -61,7 +75,12 @@ def read_weekoff_config_by_employee(employee_id: int, db: Session = Depends(get_
     return db_weekoff_config
 
 @router.put("/{weekoff_id}", response_model=WeekoffConfigResponse)
-def update_weekoff_config(weekoff_id: int, weekoff_config_update: WeekoffConfigUpdate, db: Session = Depends(get_db)):
+def update_weekoff_config(
+    weekoff_id: int, 
+    weekoff_config_update: WeekoffConfigUpdate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["weekoff-config.update"], check_tenant=True))
+):
     db_weekoff_config = db.query(WeekoffConfig).filter(WeekoffConfig.weekoff_id == weekoff_id).first()
     if not db_weekoff_config:
         raise HTTPException(
@@ -78,7 +97,11 @@ def update_weekoff_config(weekoff_id: int, weekoff_config_update: WeekoffConfigU
     return db_weekoff_config
 
 @router.delete("/{weekoff_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_weekoff_config(weekoff_id: int, db: Session = Depends(get_db)):
+def delete_weekoff_config(
+    weekoff_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["weekoff-config.delete"], check_tenant=True))
+):
     db_weekoff_config = db.query(WeekoffConfig).filter(WeekoffConfig.weekoff_id == weekoff_id).first()
     if not db_weekoff_config:
         raise HTTPException(

@@ -6,11 +6,16 @@ from app.database.session import get_db
 from app.models.booking import Booking
 from app.schemas.booking import BookingCreate, BookingUpdate, BookingResponse, BookingPaginationResponse, BookingStatusEnum
 from app.utils.pagination import paginate_query
+from common_utils.auth.permission_checker import PermissionChecker
 
 router = APIRouter(prefix="/bookings", tags=["bookings"])
 
 @router.post("/", response_model=BookingResponse, status_code=status.HTTP_201_CREATED)
-def create_booking(booking: BookingCreate, db: Session = Depends(get_db)):
+def create_booking(
+    booking: BookingCreate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["booking.create"], check_tenant=True))
+):
     db_booking = Booking(**booking.dict())
     db.add(db_booking)
     db.commit()
@@ -26,7 +31,8 @@ def read_bookings(
     booking_date: Optional[date] = None,
     status: Optional[BookingStatusEnum] = None,
     team_id: Optional[int] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True))
 ):
     query = db.query(Booking)
     
@@ -46,7 +52,11 @@ def read_bookings(
     return {"total": total, "items": items}
 
 @router.get("/{booking_id}", response_model=BookingResponse)
-def read_booking(booking_id: int, db: Session = Depends(get_db)):
+def read_booking(
+    booking_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True))
+):
     db_booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not db_booking:
         raise HTTPException(
@@ -56,7 +66,12 @@ def read_booking(booking_id: int, db: Session = Depends(get_db)):
     return db_booking
 
 @router.put("/{booking_id}", response_model=BookingResponse)
-def update_booking(booking_id: int, booking_update: BookingUpdate, db: Session = Depends(get_db)):
+def update_booking(
+    booking_id: int, 
+    booking_update: BookingUpdate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["booking.update"], check_tenant=True))
+):
     db_booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not db_booking:
         raise HTTPException(
@@ -73,7 +88,11 @@ def update_booking(booking_id: int, booking_update: BookingUpdate, db: Session =
     return db_booking
 
 @router.delete("/{booking_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_booking(booking_id: int, db: Session = Depends(get_db)):
+def delete_booking(
+    booking_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["booking.delete"], check_tenant=True))
+):
     db_booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not db_booking:
         raise HTTPException(
