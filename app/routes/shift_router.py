@@ -5,11 +5,16 @@ from app.database.session import get_db
 from app.models.shift import Shift
 from app.schemas.shift import ShiftCreate, ShiftUpdate, ShiftResponse, ShiftPaginationResponse
 from app.utils.pagination import paginate_query
+from common_utils.auth.permission_checker import PermissionChecker
 
 router = APIRouter(prefix="/shifts", tags=["shifts"])
 
 @router.post("/", response_model=ShiftResponse, status_code=status.HTTP_201_CREATED)
-def create_shift(shift: ShiftCreate, db: Session = Depends(get_db)):
+def create_shift(
+    shift: ShiftCreate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["shift.create"], check_tenant=True))
+):
     db_shift = Shift(**shift.dict())
     db.add(db_shift)
     db.commit()
@@ -25,7 +30,8 @@ def read_shifts(
     pickup_type: Optional[str] = None,
     gender: Optional[str] = None,
     is_active: Optional[bool] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["shift.read"], check_tenant=True))
 ):
     query = db.query(Shift)
     
@@ -45,7 +51,11 @@ def read_shifts(
     return {"total": total, "items": items}
 
 @router.get("/{shift_id}", response_model=ShiftResponse)
-def read_shift(shift_id: int, db: Session = Depends(get_db)):
+def read_shift(
+    shift_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["shift.read"], check_tenant=True))
+):
     db_shift = db.query(Shift).filter(Shift.shift_id == shift_id).first()
     if not db_shift:
         raise HTTPException(
@@ -55,7 +65,12 @@ def read_shift(shift_id: int, db: Session = Depends(get_db)):
     return db_shift
 
 @router.put("/{shift_id}", response_model=ShiftResponse)
-def update_shift(shift_id: int, shift_update: ShiftUpdate, db: Session = Depends(get_db)):
+def update_shift(
+    shift_id: int, 
+    shift_update: ShiftUpdate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["shift.update"], check_tenant=True))
+):
     db_shift = db.query(Shift).filter(Shift.shift_id == shift_id).first()
     if not db_shift:
         raise HTTPException(
@@ -72,7 +87,11 @@ def update_shift(shift_id: int, shift_update: ShiftUpdate, db: Session = Depends
     return db_shift
 
 @router.delete("/{shift_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_shift(shift_id: int, db: Session = Depends(get_db)):
+def delete_shift(
+    shift_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["shift.delete"], check_tenant=True))
+):
     db_shift = db.query(Shift).filter(Shift.shift_id == shift_id).first()
     if not db_shift:
         raise HTTPException(

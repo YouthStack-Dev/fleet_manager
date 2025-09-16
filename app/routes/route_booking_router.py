@@ -5,11 +5,16 @@ from app.database.session import get_db
 from app.models.route_booking import RouteBooking
 from app.schemas.route_booking import RouteBookingCreate, RouteBookingUpdate, RouteBookingResponse, RouteBookingPaginationResponse
 from app.utils.pagination import paginate_query
+from common_utils.auth.permission_checker import PermissionChecker
 
 router = APIRouter(prefix="/route-bookings", tags=["route bookings"])
 
 @router.post("/", response_model=RouteBookingResponse, status_code=status.HTTP_201_CREATED)
-def create_route_booking(route_booking: RouteBookingCreate, db: Session = Depends(get_db)):
+def create_route_booking(
+    route_booking: RouteBookingCreate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route-booking.create"], check_tenant=True))
+):
     db_route_booking = RouteBooking(**route_booking.dict())
     db.add(db_route_booking)
     db.commit()
@@ -22,7 +27,8 @@ def read_route_bookings(
     limit: int = 100,
     route_id: Optional[int] = None,
     booking_id: Optional[int] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route-booking.read"], check_tenant=True))
 ):
     query = db.query(RouteBooking)
     
@@ -36,7 +42,11 @@ def read_route_bookings(
     return {"total": total, "items": items}
 
 @router.get("/{route_booking_id}", response_model=RouteBookingResponse)
-def read_route_booking(route_booking_id: int, db: Session = Depends(get_db)):
+def read_route_booking(
+    route_booking_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route-booking.read"], check_tenant=True))
+):
     db_route_booking = db.query(RouteBooking).filter(RouteBooking.route_booking_id == route_booking_id).first()
     if not db_route_booking:
         raise HTTPException(
@@ -46,7 +56,12 @@ def read_route_booking(route_booking_id: int, db: Session = Depends(get_db)):
     return db_route_booking
 
 @router.put("/{route_booking_id}", response_model=RouteBookingResponse)
-def update_route_booking(route_booking_id: int, route_booking_update: RouteBookingUpdate, db: Session = Depends(get_db)):
+def update_route_booking(
+    route_booking_id: int, 
+    route_booking_update: RouteBookingUpdate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route-booking.update"], check_tenant=True))
+):
     db_route_booking = db.query(RouteBooking).filter(RouteBooking.route_booking_id == route_booking_id).first()
     if not db_route_booking:
         raise HTTPException(
@@ -63,7 +78,11 @@ def update_route_booking(route_booking_id: int, route_booking_update: RouteBooki
     return db_route_booking
 
 @router.delete("/{route_booking_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_route_booking(route_booking_id: int, db: Session = Depends(get_db)):
+def delete_route_booking(
+    route_booking_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route-booking.delete"], check_tenant=True))
+):
     db_route_booking = db.query(RouteBooking).filter(RouteBooking.route_booking_id == route_booking_id).first()
     if not db_route_booking:
         raise HTTPException(

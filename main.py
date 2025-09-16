@@ -14,22 +14,37 @@ import traceback  # For detailed error info
 from sqlalchemy.sql import text
 from app.database.session import get_db
 
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+
+logger = logging.getLogger(__name__)
+
 from sqlalchemy.orm import Session
-# from app.routes import (
-#     employee_router, 
-#     driver_router, 
-#     booking_router, 
-#     tenant_router,
-#     vendor_router,
-#     vehicle_type_router,
-#     vehicle_router,
-#     vendor_user_router,
-#     team_router,
-#     shift_router,
-#     route_router,
-#     route_booking_router,
-#     weekoff_config_router
-# )
+from app.routes import (
+    employee_router, 
+    driver_router, 
+    booking_router, 
+    tenant_router,
+    vendor_router,
+    vehicle_type_router,
+    vehicle_router,
+    vendor_user_router,
+    team_router,
+    shift_router,
+    route_router,
+    route_booking_router,
+    weekoff_config_router,
+    auth_router  # Add the new auth router
+)
+
+# Import the IAM routers
+from app.routes.iam import permission_router, policy_router, role_router, user_role_router
+
 
 app = FastAPI(
     title="Fleet Manager API",
@@ -47,19 +62,27 @@ app.add_middleware(
 )
 
 # Include routers
-# app.include_router(employee_router.router, prefix="/api/v1")
-# app.include_router(driver_router.router, prefix="/api/v1")
-# app.include_router(booking_router.router, prefix="/api/v1")
-# app.include_router(tenant_router.router, prefix="/api/v1")
-# app.include_router(vendor_router.router, prefix="/api/v1")
-# app.include_router(vehicle_type_router.router, prefix="/api/v1")
-# app.include_router(vehicle_router.router, prefix="/api/v1")
-# app.include_router(vendor_user_router.router, prefix="/api/v1")
-# app.include_router(team_router.router, prefix="/api/v1")
-# app.include_router(shift_router.router, prefix="/api/v1")
-# app.include_router(route_router.router, prefix="/api/v1")
-# app.include_router(route_booking_router.router, prefix="/api/v1")
-# app.include_router(weekoff_config_router.router, prefix="/api/v1")
+app.include_router(employee_router, prefix="/api/v1")
+app.include_router(driver_router, prefix="/api/v1")
+app.include_router(booking_router, prefix="/api/v1")
+app.include_router(tenant_router, prefix="/api/v1")
+app.include_router(vendor_router, prefix="/api/v1")
+app.include_router(vehicle_type_router, prefix="/api/v1")
+app.include_router(vehicle_router, prefix="/api/v1")
+app.include_router(vendor_user_router, prefix="/api/v1")
+app.include_router(team_router, prefix="/api/v1")
+app.include_router(shift_router, prefix="/api/v1")
+app.include_router(route_router, prefix="/api/v1")
+app.include_router(route_booking_router, prefix="/api/v1")
+app.include_router(weekoff_config_router, prefix="/api/v1")
+app.include_router(auth_router, prefix="/api/v1")  # Add the auth router
+
+# Include IAM routers
+app.include_router(permission_router, prefix="/api/v1/iam")
+app.include_router(policy_router, prefix="/api/v1/iam")
+app.include_router(role_router, prefix="/api/v1/iam")
+app.include_router(user_role_router, prefix="/api/v1/iam")
+
 
 # Direct PostgreSQL connection for seeding database
 def get_psql_connection():
@@ -209,6 +232,48 @@ async def create_tables_endpoint():
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create tables: {str(e)}"
         )
+
+
+@app.post("/drop-tables")
+async def drop_tables_endpoint():
+    """Drop all tables from the database"""
+    try:
+        conn = get_psql_connection()
+        cursor = conn.cursor()
+        
+        # Set session to terminate other connections that might block table dropping
+        cursor.execute("SET session_replication_role = 'replica';")
+        
+        # Get all tables in public schema
+        cursor.execute("""
+            SELECT tablename FROM pg_tables WHERE schemaname = 'public';
+        """)
+        tables = cursor.fetchall()
+        
+        if not tables:
+            return {"message": "No tables found to drop"}
+        
+        # Drop all tables
+        cursor.execute("DROP TABLE IF EXISTS " + ", ".join(f'"{table[0]}"' for table in tables) + " CASCADE;")
+        
+        # Reset session
+        cursor.execute("SET session_replication_role = 'origin';")
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return {
+            "message": f"Successfully dropped {len(tables)} tables",
+            "tables_dropped": [table[0] for table in tables]
+        }
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to drop tables: {str(e)}"
+        )
+
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
