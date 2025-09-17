@@ -18,7 +18,7 @@ router = APIRouter(
 async def create_permission(
     permission: PermissionCreate,
     db: Session = Depends(get_db),
-    _=Depends(PermissionChecker(["iam.create"], check_tenant=False))
+    _=Depends(PermissionChecker(["permissions.create"], check_tenant=False))
 ):
     """Create a new permission"""
     try:
@@ -33,7 +33,7 @@ async def get_permissions(
     module: str = None,
     action: str = None,
     db: Session = Depends(get_db),
-    _=Depends(PermissionChecker(["iam.read"], check_tenant=False))
+    _=Depends(PermissionChecker(["permissions.read"], check_tenant=False))
 ):
     """Get a list of permissions with optional filters"""
     filters = {}
@@ -51,7 +51,7 @@ async def get_permissions(
 async def get_permission(
     permission_id: int,
     db: Session = Depends(get_db),
-    _=Depends(PermissionChecker(["iam.read"], check_tenant=False))
+    _=Depends(PermissionChecker(["permissions.read"], check_tenant=False))
 ):
     """Get a specific permission by ID"""
     permission = permission_crud.get(db, id=permission_id)
@@ -77,7 +77,7 @@ async def update_permission(
 async def delete_permission(
     permission_id: int,
     db: Session = Depends(get_db),
-    _=Depends(PermissionChecker(["iam.delete"], check_tenant=False))
+    _=Depends(PermissionChecker(["permissions.delete"], check_tenant=False))
 ):
     """Delete a permission"""
     permission = permission_crud.get(db, id=permission_id)

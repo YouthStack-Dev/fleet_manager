@@ -19,7 +19,7 @@ router = APIRouter(
 async def assign_roles_to_user(
     assignment: UserRoleAssignment,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["iam.create"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["role.create"], check_tenant=True))
 ):
     """Assign multiple roles to a user"""
     # Check tenant access
@@ -63,7 +63,7 @@ async def get_user_roles(
     user_id: Optional[int] = None,
     tenant_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["iam.read"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["role.read"], check_tenant=True))
 ):
     """Get a list of user role assignments with optional filters"""
     filters = {}
@@ -92,7 +92,7 @@ async def get_roles_for_user(
     user_id: int,
     tenant_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["iam.read"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["role.read"], check_tenant=True))
 ):
     """Get all roles assigned to a specific user"""
     filters = {"user_id": user_id}
@@ -115,7 +115,7 @@ async def get_roles_for_user(
 async def delete_user_role(
     user_role_id: int,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["iam.delete"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["role.delete"], check_tenant=True))
 ):
     """Delete a user role assignment"""
     user_role = user_role_crud.get(db, id=user_role_id)

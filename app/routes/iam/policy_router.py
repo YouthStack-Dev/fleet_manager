@@ -18,7 +18,7 @@ router = APIRouter(
 async def create_policy(
     policy: PolicyCreate,
     db: Session = Depends(get_db),
-    _=Depends(PermissionChecker(["iam.create"], check_tenant=False))
+    _=Depends(PermissionChecker(["policy.create"], check_tenant=False))
 ):
     """Create a new policy with associated permissions"""
     # Verify all permission IDs exist
@@ -37,7 +37,7 @@ async def get_policies(
     limit: int = Query(100, ge=1, le=100),
     name: str = None,
     db: Session = Depends(get_db),
-    _=Depends(PermissionChecker(["iam.read"], check_tenant=False))
+    _=Depends(PermissionChecker(["policy.read"], check_tenant=False))
 ):
     """Get a list of policies with optional filters"""
     filters = {}
@@ -53,7 +53,7 @@ async def get_policies(
 async def get_policy(
     policy_id: int,
     db: Session = Depends(get_db),
-    _=Depends(PermissionChecker(["iam.read"], check_tenant=False))
+    _=Depends(PermissionChecker(["policy.read"], check_tenant=False))
 ):
     """Get a specific policy by ID"""
     policy = policy_crud.get(db, id=policy_id)
@@ -66,7 +66,7 @@ async def update_policy(
     policy_id: int,
     policy_update: PolicyUpdate,
     db: Session = Depends(get_db),
-    _=Depends(PermissionChecker(["iam.update"], check_tenant=False))
+    _=Depends(PermissionChecker(["policy.update"], check_tenant=False))
 ):
     """Update a policy and its permissions"""
     policy = policy_crud.get(db, id=policy_id)
@@ -88,7 +88,7 @@ async def update_policy(
 async def delete_policy(
     policy_id: int,
     db: Session = Depends(get_db),
-    _=Depends(PermissionChecker(["iam.delete"], check_tenant=False))
+    _=Depends(PermissionChecker(["policy.delete"], check_tenant=False))
 ):
     """Delete a policy"""
     policy = policy_crud.get(db, id=policy_id)
