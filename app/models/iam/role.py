@@ -26,3 +26,5 @@ class Role(Base):
     policies = relationship("Policy", secondary=role_policy, backref="roles")
     # Relationship with tenant
     tenant = relationship("Tenant", back_populates="roles")
+    admins = relationship("Admin", back_populates="roles")
+
