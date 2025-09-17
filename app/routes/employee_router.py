@@ -5,11 +5,16 @@ from app.database.session import get_db
 from app.models.employee import Employee
 from app.schemas.employee import EmployeeCreate, EmployeeUpdate, EmployeeResponse, EmployeePaginationResponse
 from app.utils.pagination import paginate_query
+from common_utils.auth.permission_checker import PermissionChecker
 
 router = APIRouter(prefix="/employees", tags=["employees"])
 
 @router.post("/", response_model=EmployeeResponse, status_code=status.HTTP_201_CREATED)
-def create_employee(employee: EmployeeCreate, db: Session = Depends(get_db)):
+def create_employee(
+    employee: EmployeeCreate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["employee.create"], check_tenant=True))
+):
     db_employee = Employee(
         **employee.dict(exclude={"password"}),
         password=employee.password
@@ -27,7 +32,8 @@ def read_employees(
     email: Optional[str] = None,
     team_id: Optional[int] = None,
     is_active: Optional[bool] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["employee.read"], check_tenant=True))
 ):
     query = db.query(Employee)
     
@@ -45,7 +51,11 @@ def read_employees(
     return {"total": total, "items": items}
 
 @router.get("/{employee_id}", response_model=EmployeeResponse)
-def read_employee(employee_id: int, db: Session = Depends(get_db)):
+def read_employee(
+    employee_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["employee.read"], check_tenant=True))
+):
     db_employee = db.query(Employee).filter(Employee.employee_id == employee_id).first()
     if not db_employee:
         raise HTTPException(
@@ -55,7 +65,12 @@ def read_employee(employee_id: int, db: Session = Depends(get_db)):
     return db_employee
 
 @router.put("/{employee_id}", response_model=EmployeeResponse)
-def update_employee(employee_id: int, employee_update: EmployeeUpdate, db: Session = Depends(get_db)):
+def update_employee(
+    employee_id: int, 
+    employee_update: EmployeeUpdate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["employee.update"], check_tenant=True))
+):
     db_employee = db.query(Employee).filter(Employee.employee_id == employee_id).first()
     if not db_employee:
         raise HTTPException(
@@ -77,7 +92,11 @@ def update_employee(employee_id: int, employee_update: EmployeeUpdate, db: Sessi
     return db_employee
 
 @router.delete("/{employee_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_employee(employee_id: int, db: Session = Depends(get_db)):
+def delete_employee(
+    employee_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["employee.delete"], check_tenant=True))
+):
     db_employee = db.query(Employee).filter(Employee.employee_id == employee_id).first()
     if not db_employee:
         raise HTTPException(

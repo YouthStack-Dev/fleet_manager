@@ -5,11 +5,16 @@ from app.database.session import get_db
 from app.models.driver import Driver
 from app.schemas.driver import DriverCreate, DriverUpdate, DriverResponse, DriverPaginationResponse
 from app.utils.pagination import paginate_query
+from common_utils.auth.permission_checker import PermissionChecker
 
 router = APIRouter(prefix="/drivers", tags=["drivers"])
 
 @router.post("/", response_model=DriverResponse, status_code=status.HTTP_201_CREATED)
-def create_driver(driver: DriverCreate, db: Session = Depends(get_db)):
+def create_driver(
+    driver: DriverCreate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["driver.create"], check_tenant=True))
+):
     db_driver = Driver(
         **driver.dict(exclude={"password"}),
         password=driver.password
@@ -26,7 +31,8 @@ def read_drivers(
     name: Optional[str] = None,
     vendor_id: Optional[int] = None,
     is_active: Optional[bool] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["driver.read"], check_tenant=True))
 ):
     query = db.query(Driver)
     
@@ -42,7 +48,11 @@ def read_drivers(
     return {"total": total, "items": items}
 
 @router.get("/{driver_id}", response_model=DriverResponse)
-def read_driver(driver_id: int, db: Session = Depends(get_db)):
+def read_driver(
+    driver_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["driver.read"], check_tenant=True))
+):
     db_driver = db.query(Driver).filter(Driver.driver_id == driver_id).first()
     if not db_driver:
         raise HTTPException(
@@ -52,7 +62,12 @@ def read_driver(driver_id: int, db: Session = Depends(get_db)):
     return db_driver
 
 @router.put("/{driver_id}", response_model=DriverResponse)
-def update_driver(driver_id: int, driver_update: DriverUpdate, db: Session = Depends(get_db)):
+def update_driver(
+    driver_id: int, 
+    driver_update: DriverUpdate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["driver.update"], check_tenant=True))
+):
     db_driver = db.query(Driver).filter(Driver.driver_id == driver_id).first()
     if not db_driver:
         raise HTTPException(
@@ -75,7 +90,11 @@ def update_driver(driver_id: int, driver_update: DriverUpdate, db: Session = Dep
     return db_driver
 
 @router.delete("/{driver_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_driver(driver_id: int, db: Session = Depends(get_db)):
+def delete_driver(
+    driver_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["driver.delete"], check_tenant=True))
+):
     db_driver = db.query(Driver).filter(Driver.driver_id == driver_id).first()
     if not db_driver:
         raise HTTPException(

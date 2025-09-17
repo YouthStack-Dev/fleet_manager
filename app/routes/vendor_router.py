@@ -5,11 +5,16 @@ from app.database.session import get_db
 from app.models.vendor import Vendor
 from app.schemas.vendor import VendorCreate, VendorUpdate, VendorResponse, VendorPaginationResponse
 from app.utils.pagination import paginate_query
+from common_utils.auth.permission_checker import PermissionChecker
 
 router = APIRouter(prefix="/vendors", tags=["vendors"])
 
 @router.post("/", response_model=VendorResponse, status_code=status.HTTP_201_CREATED)
-def create_vendor(vendor: VendorCreate, db: Session = Depends(get_db)):
+def create_vendor(
+    vendor: VendorCreate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["vendor.create"], check_tenant=True))
+):
     # Create a mapping dict from the schema to model fields
     vendor_data = vendor.dict()
     
@@ -30,7 +35,8 @@ def read_vendors(
     name: Optional[str] = None,
     code: Optional[str] = None,
     is_active: Optional[bool] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["vendor.read"], check_tenant=True))
 ):
     query = db.query(Vendor)
     
@@ -46,7 +52,11 @@ def read_vendors(
     return {"total": total, "items": items}
 
 @router.get("/{vendor_id}", response_model=VendorResponse)
-def read_vendor(vendor_id: int, db: Session = Depends(get_db)):
+def read_vendor(
+    vendor_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["vendor.read"], check_tenant=True))
+):
     db_vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
     if not db_vendor:
         raise HTTPException(
@@ -56,7 +66,12 @@ def read_vendor(vendor_id: int, db: Session = Depends(get_db)):
     return db_vendor
 
 @router.put("/{vendor_id}", response_model=VendorResponse)
-def update_vendor(vendor_id: int, vendor_update: VendorUpdate, db: Session = Depends(get_db)):
+def update_vendor(
+    vendor_id: int, 
+    vendor_update: VendorUpdate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["vendor.update"], check_tenant=True))
+):
     db_vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
     if not db_vendor:
         raise HTTPException(
@@ -77,7 +92,11 @@ def update_vendor(vendor_id: int, vendor_update: VendorUpdate, db: Session = Dep
     return db_vendor
 
 @router.delete("/{vendor_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_vendor(vendor_id: int, db: Session = Depends(get_db)):
+def delete_vendor(
+    vendor_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["vendor.delete"], check_tenant=True))
+):
     db_vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
     if not db_vendor:
         raise HTTPException(

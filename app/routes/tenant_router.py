@@ -5,11 +5,16 @@ from app.database.session import get_db
 from app.models.tenant import Tenant
 from app.schemas.tenant import TenantCreate, TenantUpdate, TenantResponse, TenantPaginationResponse
 from app.utils.pagination import paginate_query
+from common_utils.auth.permission_checker import PermissionChecker
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
 
 @router.post("/", response_model=TenantResponse, status_code=status.HTTP_201_CREATED)
-def create_tenant(tenant: TenantCreate, db: Session = Depends(get_db)):
+def create_tenant(
+    tenant: TenantCreate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["admin.tenant.create"], check_tenant=False))
+):
     db_tenant = Tenant(**tenant.dict())
     db.add(db_tenant)
     db.commit()
@@ -22,7 +27,8 @@ def read_tenants(
     limit: int = 100,
     name: Optional[str] = None,
     is_active: Optional[bool] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["admin.tenant.read"], check_tenant=False))
 ):
     query = db.query(Tenant)
     
@@ -36,7 +42,11 @@ def read_tenants(
     return {"total": total, "items": items}
 
 @router.get("/{tenant_id}", response_model=TenantResponse)
-def read_tenant(tenant_id: int, db: Session = Depends(get_db)):
+def read_tenant(
+    tenant_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["admin.tenant.read"], check_tenant=False))
+):
     db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
     if not db_tenant:
         raise HTTPException(
@@ -46,7 +56,12 @@ def read_tenant(tenant_id: int, db: Session = Depends(get_db)):
     return db_tenant
 
 @router.put("/{tenant_id}", response_model=TenantResponse)
-def update_tenant(tenant_id: int, tenant_update: TenantUpdate, db: Session = Depends(get_db)):
+def update_tenant(
+    tenant_id: int, 
+    tenant_update: TenantUpdate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["admin.tenant.update"], check_tenant=False))
+):
     db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
     if not db_tenant:
         raise HTTPException(
@@ -63,7 +78,11 @@ def update_tenant(tenant_id: int, tenant_update: TenantUpdate, db: Session = Dep
     return db_tenant
 
 @router.delete("/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_tenant(tenant_id: int, db: Session = Depends(get_db)):
+def delete_tenant(
+    tenant_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["admin.tenant.delete"], check_tenant=False))
+):
     db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
     if not db_tenant:
         raise HTTPException(

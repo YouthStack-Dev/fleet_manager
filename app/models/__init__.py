@@ -12,3 +12,9 @@ from app.models.booking import Booking
 from app.models.route import Route
 from app.models.route_booking import RouteBooking
 from app.models.weekoff_config import WeekoffConfig
+
+# IAM models
+from app.models.iam.permission import Permission
+from app.models.iam.policy import Policy, policy_permission
+from app.models.iam.role import Role, role_policy
+from app.models.iam.user_role import UserRole
