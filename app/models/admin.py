@@ -12,7 +12,7 @@ class Admin(Base):
     email = Column(String(150), nullable=False)
     phone = Column(String(20), nullable=False)
     password = Column(String(255), nullable=False)
-    role_id = Column(Integer, ForeignKey("iam_roles.role_id", ondelete="CASCADE"), nullable=False)  # Admin, Dispatcher, etc.
+    role_id = Column(Integer, ForeignKey("iam_roles.role_id", ondelete="CASCADE"), nullable=False) 
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)

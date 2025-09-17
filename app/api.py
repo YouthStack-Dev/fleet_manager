@@ -14,12 +14,14 @@ from app.routes import (
     route_router,
     route_booking_router,
     weekoff_config_router,
+    seed,
     # Include any additional routers here
 )
 
 api_router = APIRouter()
 
 # Include all routers
+api_router.include_router(seed.router, prefix="/api")
 api_router.include_router(auth_router.router, prefix="/api")
 api_router.include_router(driver_router.router, prefix="/api")
 api_router.include_router(vendor_router.router, prefix="/api")

@@ -4,7 +4,9 @@ from sqlalchemy.orm import declarative_base
 
 from app.config import settings
 
-SQLALCHEMY_DATABASE_URL = settings.DATABASE_URL
+SQLALCHEMY_DATABASE_URL = "postgresql://fleetadmin:fleetpass@localhost:5434/fleet_db"
+
+print(SQLALCHEMY_DATABASE_URL)
 
 # SQLAlchemy setup
 engine = create_engine(SQLALCHEMY_DATABASE_URL, echo=False, pool_pre_ping=True)

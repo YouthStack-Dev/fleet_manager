@@ -1,7 +1,10 @@
 # Import the path setup module first to configure Python's path
 import sys
 import os
-import shutil  # Add this import to check for executable availability
+import shutil
+
+from app.models.tenant import Tenant
+from app.seed.seed_data import seed_employees, seed_shifts, seed_teams, seed_tenants, seed_weekoffs  # Add this import to check for executable availability
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Now continue with the rest of your imports
@@ -152,65 +155,94 @@ async def get_db_tables(db: Session = Depends(get_db)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve table information: {str(e)}"
         )
-
-
-@app.post("/seed")
-async def seed_database(
-    force: bool = Query(False, description="Force reinitialization of database"),
-    use_models: bool = Query(False, description="Use SQLAlchemy models instead of SQL files"),
-) -> Dict[str, Any]:
+@app.post("/seed-database")
+def seed_database(
+    force: bool = Query(False, description="Force reseed (delete + insert)"),
+    db: Session = Depends(get_db),
+):
+    logger.info("Starting database seeding...")
     try:
-        # Get connection parameters for logging
-        host = os.environ.get("POSTGRES_HOST", "localhost")
-        port = os.environ.get("POSTGRES_PORT", "5434")
-        database = os.environ.get("POSTGRES_DB", "fleet_db")
-        user = os.environ.get("POSTGRES_USER", "fleetadmin")
-        password = os.environ.get("POSTGRES_PASSWORD", "fleetpass")
-        
-        # Get base directory for SQL files
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        sql_dir = os.path.join(base_dir, "sql")
-        init_script_path = os.path.join(sql_dir, "01_init.sql")
-        sample_script_path = os.path.join(sql_dir, "02_sample_data.sql")
-        
-        print(f"Attempting to connect to database: host={host}, port={port}, db={database}, user={user}")
-        print(f"SQL scripts located at: {sql_dir}")
-        
-        try:
-            conn = get_psql_connection()
-            cursor = conn.cursor()
-            
-            # Check if database already has tables
-            cursor.execute("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'")
-            table_count = cursor.fetchone()[0]
-            
-            if table_count == 0 or force:
-                if use_models:
-                    cursor.close()
-                    conn.close()
-                    print("Creating tables from SQLAlchemy models...")
-                    # create_tables_from_models()
-                    
-                    return {
-                        "message": "Database initialized successfully using SQLAlchemy models",
-                    }
-                
-                # Check if psql is available
-                psql_available = shutil.which('psql') is not None
-                
-            else:
-                cursor.close()
-                conn.close()
-                return {"message": "Database already initialized, use force=true to reinitialize"}
-                
-        except psycopg2.OperationalError as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Database connection failed: {str(e)}"
-            )
+        if force:
+            logger.warning("Force reseed enabled. Deleting all tenants...")
+            deleted = db.query(Tenant).delete()
+            db.commit()
+            logger.info(f"Deleted {deleted} tenants.")
+
+        seed_tenants(db)
+        seed_teams(db)
+        seed_employees(db)
+        seed_shifts(db)
+        seed_weekoffs(db)
+        logger.info("Database seeding completed successfully.")
+        return {"message": "Database seeded successfully."}
+
     except Exception as e:
-        traceback.print_exc()  # Print full traceback for debugging
-        raise HTTPException(status_code=500, detail=f"Failed to seed database: {str(e)}")
+        tb_str = traceback.format_exc()
+        logger.error("Seeding failed: %s\n%s", str(e), tb_str)
+
+        # Raise clean message to API clients
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database seeding failed. Check server logs for details.",
+        ) from e
+
+# @app.post("/seed1")
+# async def seed_database(
+#     force: bool = Query(False, description="Force reinitialization of database"),
+#     use_models: bool = Query(False, description="Use SQLAlchemy models instead of SQL files"),
+# ) -> Dict[str, Any]:
+#     try:
+#         # Get connection parameters for logging
+#         host = os.environ.get("POSTGRES_HOST", "localhost")
+#         port = os.environ.get("POSTGRES_PORT", "5434")
+#         database = os.environ.get("POSTGRES_DB", "fleet_db")
+#         user = os.environ.get("POSTGRES_USER", "fleetadmin")
+#         password = os.environ.get("POSTGRES_PASSWORD", "fleetpass")
+        
+#         # Get base directory for SQL files
+#         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+#         sql_dir = os.path.join(base_dir, "sql")
+#         init_script_path = os.path.join(sql_dir, "01_init.sql")
+#         sample_script_path = os.path.join(sql_dir, "02_sample_data.sql")
+        
+#         print(f"Attempting to connect to database: host={host}, port={port}, db={database}, user={user}")
+#         print(f"SQL scripts located at: {sql_dir}")
+        
+#         try:
+#             conn = get_psql_connection()
+#             cursor = conn.cursor()
+            
+#             # Check if database already has tables
+#             cursor.execute("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'")
+#             table_count = cursor.fetchone()[0]
+            
+#             if table_count == 0 or force:
+#                 if use_models:
+#                     cursor.close()
+#                     conn.close()
+#                     print("Creating tables from SQLAlchemy models...")
+#                     # create_tables_from_models()
+                    
+#                     return {
+#                         "message": "Database initialized successfully using SQLAlchemy models",
+#                     }
+                
+#                 # Check if psql is available
+#                 psql_available = shutil.which('psql') is not None
+                
+#             else:
+#                 cursor.close()
+#                 conn.close()
+#                 return {"message": "Database already initialized, use force=true to reinitialize"}
+                
+#         except psycopg2.OperationalError as e:
+#             raise HTTPException(
+#                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#                 detail=f"Database connection failed: {str(e)}"
+#             )
+#     except Exception as e:
+#         traceback.print_exc()  # Print full traceback for debugging
+#         raise HTTPException(status_code=500, detail=f"Failed to seed database: {str(e)}")
 
 
 @app.post("/create-tables")
