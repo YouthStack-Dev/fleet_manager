@@ -189,7 +189,7 @@ async def seed_database(
                     cursor.close()
                     conn.close()
                     print("Creating tables from SQLAlchemy models...")
-                    create_tables_from_models()
+                    # create_tables_from_models()
                     
                     return {
                         "message": "Database initialized successfully using SQLAlchemy models",
