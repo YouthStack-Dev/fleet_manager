@@ -20,12 +20,22 @@ class RefreshTokenRequest(BaseModel):
 
 class EmployeeLoginRequest(BaseModel):
     """Schema for employee login"""
+    tenant_code: str = Field(..., description="Tenant code")
     username: EmailStr = Field(..., description="Employee email address")
     password: str = Field(..., min_length=8)
+
+class AdminLoginRequest(BaseModel):
+    """Schema for admin login"""
+    username: EmailStr = Field(..., description="Admin email address")
+    password: str = Field(..., min_length=2)
     
+class AdminLoginResponse(TokenResponse):
+    """Schema for login response with user info"""
+    
+    
+    model_config = ConfigDict(from_attributes=True)
 class LoginResponse(TokenResponse):
     """Schema for login response with user info"""
-    user: EmployeeResponse
     
     model_config = ConfigDict(from_attributes=True)
 
