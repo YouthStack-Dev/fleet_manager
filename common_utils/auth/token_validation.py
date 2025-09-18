@@ -629,7 +629,7 @@ def validate_bearer_token(use_cache: bool = True):
             print(payload)
             validation_result = access_token_validator(payload.get("opaque_token"), 40, use_cache)
 
-            print(validation_result)
+            print("actual permissions fetched from cache",validation_result)
 
             # Get user permissions
             user_id = payload.get("user_id")
@@ -669,7 +669,7 @@ def validate_bearer_token(use_cache: bool = True):
                 "user_id": user_id,
                 "tenant_id": tenant_id,
                 "roles": payload.get("roles", []),
-                "permissions": formatted_permissions,
+                "permissions": validation_result.get("permissions", []),
                 # Include any other fields needed from the token
             }
             

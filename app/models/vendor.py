@@ -7,7 +7,7 @@ class Vendor(Base):
     __tablename__ = "vendors"
 
     vendor_id = Column(Integer, primary_key=True, index=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
+    tenant_id = Column(String(50), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
 
     name = Column(String(150), nullable=False)
     vendor_code = Column(String(50), unique=True, nullable=False)  # unique for login

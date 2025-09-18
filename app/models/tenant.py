@@ -6,9 +6,8 @@ class Tenant(Base):
     __tablename__ = "tenants"
     __table_args__ = {'extend_existing': True}
 
-    tenant_id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(String(50), primary_key=True, index=True)
     name = Column(String(150), unique=True, nullable=False)
-    tenant_code = Column(String(50), unique=True, nullable=False)
     address = Column(String(255))
     longitude = Column(Numeric(9, 6))
     latitude = Column(Numeric(9, 6))

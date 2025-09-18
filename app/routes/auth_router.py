@@ -67,18 +67,32 @@ async def login(
     """
     Authenticate employee in a tenant and return access/refresh tokens
     """
-    logger.info(f"Login attempt for user: {form_data.username} in tenant: {form_data.tenant_code}")
+    logger.info(f"Login attempt for user: {form_data.username} in tenant: {form_data.tenant_id}")
     
-    # Step 1: Validate tenant
-    tenant = db.query(Tenant).filter(Tenant.tenant_code == form_data.tenant_code).first()
-    if not tenant:
-        logger.warning(f"Login failed - Invalid tenant code: {form_data.tenant_code} for user: {form_data.username}")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invalid tenant code"
+        # Single query to fetch both tenant + employee
+    employee = (
+        db.query(Employee)
+        .join(Tenant, Tenant.tenant_id == Employee.tenant_id)
+        .filter(
+            Employee.email == form_data.username,
+            Employee.tenant_id == form_data.tenant_id
         )
-    
-    logger.debug(f"Tenant validation successful - ID: {tenant.tenant_id}, Code: {tenant.tenant_code}")
+        .first()
+    )
+
+    if not employee:
+        logger.warning(
+            f"Login failed - Employee not found or invalid tenant: "
+            f"{form_data.username} in tenant_id {form_data.tenant_id}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect tenant, email, or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    tenant = employee.tenant  # since we joined Tenant
+    logger.debug(f"Tenant validation successful - ID: {tenant.tenant_id}")
 
     # Step 2: Find employee in this tenant
     employee = (
@@ -90,7 +104,7 @@ async def login(
         .first()
     )
     if not employee:
-        logger.warning(f"Login failed - Employee not found: {form_data.username} in tenant: {tenant.tenant_code}")
+        logger.warning(f"Login failed - Employee not found: {form_data.username} in tenant: {tenant.tenant_id}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -115,10 +129,9 @@ async def login(
             detail="Account is inactive"
         )
 
-    # Step 4: Collect roles + permissions (scoped to tenant)
+    # Step 4: Collect roles + permissions
     logger.debug(f"Fetching roles and permissions for employee: {employee.employee_id} in tenant: {tenant.tenant_id}")
     
-    # Use employee-specific role fetching instead of user_role_crud
     employee_with_roles, roles, all_permissions = employee_crud.get_employee_roles_and_permissions(
         db, employee_id=employee.employee_id, tenant_id=tenant.tenant_id
     )
@@ -137,8 +150,6 @@ async def login(
     expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
     opaque_token = secrets.token_hex(16)
     
-    logger.debug(f"Generated opaque token for employee: {employee.employee_id}, expires at: {expiry_time}")
-
     token_payload = {
         "user_id": str(employee.employee_id),
         "tenant_id": str(tenant.tenant_id),
@@ -149,8 +160,6 @@ async def login(
         "exp": expiry_time,
     }
 
-    logger.debug(f"Token payload for Cache storage: {token_payload}")
-    # Store opaque token → JWT mapping in Redis
     oauth_accessor = Oauth2AsAccessor()
     ttl = expiry_time - current_time
     if not oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl):
@@ -160,8 +169,6 @@ async def login(
             detail="Failed to store authentication token"
         )
     
-    logger.debug(f"Opaque token stored in Redis with TTL: {ttl} seconds")
-
     access_token = create_access_token(
         user_id=str(employee.employee_id),
         tenant_id=str(tenant.tenant_id),
@@ -171,7 +178,7 @@ async def login(
         user_id=str(employee.employee_id)
     )
     
-    logger.info(f"Login successful for employee: {employee.employee_id} ({employee.email}) in tenant: {tenant.tenant_code}")
+    logger.info(f"Login successful for employee: {employee.employee_id} ({employee.email}) in tenant: {tenant.tenant_id}")
 
     return LoginResponse(
         access_token=access_token,

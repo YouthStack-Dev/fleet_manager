@@ -51,14 +51,14 @@ def seed_tenants(db: Session):
     tenants_data = [
         {
             "name": "Sample Tenant",
-            "tenant_code": "SAM001",
+            "tenant_id": "SAM001",
             "address": "123 MG Road, Bangalore",
             "longitude": 77.5946,
             "latitude": 12.9716,
         },
         {
             "name": "Test Tenant",
-            "tenant_code": "TST001",
+            "tenant_id": "TST001",
             "address": "456 Residency Road, Bangalore",
             "longitude": 77.6200,
             "latitude": 12.9500,
@@ -66,14 +66,14 @@ def seed_tenants(db: Session):
     ]
 
     for data in tenants_data:
-        existing = db.query(Tenant).filter(Tenant.tenant_code == data["tenant_code"]).first()
+        existing = db.query(Tenant).filter(Tenant.tenant_id == data["tenant_id"]).first()
         if existing:
-            logger.info(f"Tenant {data['tenant_code']} already exists, skipping.")
+            logger.info(f"Tenant {data['tenant_id']} already exists, skipping.")
             continue
 
         tenant = Tenant(**data)
         db.add(tenant)
-        logger.info(f"Tenant {data['tenant_code']} created.")
+        logger.info(f"Tenant {data['tenant_id']} created.")
 
     db.commit()
     logger.info("Tenant seeding completed.")
@@ -186,7 +186,7 @@ def seed_teams(db: Session):
         return
 
     for tenant in tenants:
-        logger.info(f"Seeding teams for tenant {tenant.tenant_code} ({tenant.name})...")
+        logger.info(f"Seeding teams for tenant {tenant.tenant_id} ({tenant.name})...")
 
         teams_data = [
             {
@@ -208,12 +208,12 @@ def seed_teams(db: Session):
                 .first()
             )
             if existing:
-                logger.info(f"Team '{data['name']}' already exists for tenant {tenant.tenant_code}, skipping.")
+                logger.info(f"Team '{data['name']}' already exists for tenant {tenant.tenant_id}, skipping.")
                 continue
 
             team = Team(**data)
             db.add(team)
-            logger.info(f"Team '{data['name']}' created for tenant {tenant.tenant_code}.")
+            logger.info(f"Team '{data['name']}' created for tenant {tenant.tenant_id}.")
 
     db.commit()
     logger.info("Team seeding completed.")
@@ -242,17 +242,17 @@ def seed_employees(db: Session):
     for tenant in tenants:
         teams = db.query(Team).filter(Team.tenant_id == tenant.tenant_id).all()
         if not teams:
-            logger.warning(f"No teams found for tenant {tenant.tenant_code}, skipping employees.")
+            logger.warning(f"No teams found for tenant {tenant.tenant_id}, skipping employees.")
             continue
 
-        logger.info(f"Seeding employees for tenant {tenant.tenant_code} ({tenant.name})...")
+        logger.info(f"Seeding employees for tenant {tenant.tenant_id} ({tenant.name})...")
 
         employees_data = [
             {
                 "tenant_id": tenant.tenant_id,
-                "employee_code": f"{tenant.tenant_code}-EMP1",
+                "employee_code": f"{tenant.tenant_id}-EMP1",
                 "name": f"{tenant.name} Employee One",
-                "email": f"{tenant.tenant_code.lower()}_emp1@example.com",
+                "email": f"{tenant.tenant_id.lower()}_emp1@example.com",
                 "password": "hashed_password_123",
                 "team_id": teams[0].team_id,
                 "role_id": superadmin_role_id,  # guaranteed to exist
@@ -262,9 +262,9 @@ def seed_employees(db: Session):
             },
             {
                 "tenant_id": tenant.tenant_id,
-                "employee_code": f"{tenant.tenant_code}-EMP2",
+                "employee_code": f"{tenant.tenant_id}-EMP2",
                 "name": f"{tenant.name} Employee Two",
-                "email": f"{tenant.tenant_code.lower()}_emp2@example.com",
+                "email": f"{tenant.tenant_id.lower()}_emp2@example.com",
                 "password": "hashed_password_123",
                 "team_id": teams[-1].team_id,
                 "role_id": admin_role_id,  # guaranteed to exist
@@ -281,12 +281,12 @@ def seed_employees(db: Session):
                 .first()
             )
             if existing:
-                logger.info(f"Employee {data['employee_code']} already exists for tenant {tenant.tenant_code}, skipping.")
+                logger.info(f"Employee {data['employee_code']} already exists for tenant {tenant.tenant_id}, skipping.")
                 continue
 
             emp = Employee(**data)
             db.add(emp)
-            logger.info(f"Employee {data['employee_code']} created for tenant {tenant.tenant_code}.")
+            logger.info(f"Employee {data['employee_code']} created for tenant {tenant.tenant_id}.")
 
     db.commit()
     logger.info("Employee seeding completed.")
@@ -305,12 +305,12 @@ def seed_shifts(db: Session):
         return
 
     for tenant in tenants:
-        logger.info(f"Seeding shifts for tenant {tenant.tenant_code} ({tenant.name})...")
+        logger.info(f"Seeding shifts for tenant {tenant.tenant_id} ({tenant.name})...")
 
         shifts_data = [
             {
                 "tenant_id": tenant.tenant_id,
-                "shift_code": f"{tenant.tenant_code}-SHIFT1",
+                "shift_code": f"{tenant.tenant_id}-SHIFT1",
                 "log_type": ShiftLogTypeEnum.IN,
                 "shift_time": time(9, 0),  # 9:00 AM
                 "pickup_type": PickupTypeEnum.PICKUP,
@@ -319,7 +319,7 @@ def seed_shifts(db: Session):
             },
             {
                 "tenant_id": tenant.tenant_id,
-                "shift_code": f"{tenant.tenant_code}-SHIFT2",
+                "shift_code": f"{tenant.tenant_id}-SHIFT2",
                 "log_type": ShiftLogTypeEnum.OUT,
                 "shift_time": time(18, 0),  # 6:00 PM
                 "pickup_type": PickupTypeEnum.NODAL,
@@ -328,7 +328,7 @@ def seed_shifts(db: Session):
             },
             {
                 "tenant_id": tenant.tenant_id,
-                "shift_code": f"{tenant.tenant_code}-SHIFT3",
+                "shift_code": f"{tenant.tenant_id}-SHIFT3",
                 "log_type": ShiftLogTypeEnum.IN,
                 "shift_time": time(22, 0),  # 10:00 PM
                 "pickup_type": PickupTypeEnum.PICKUP,
@@ -344,12 +344,12 @@ def seed_shifts(db: Session):
                 .first()
             )
             if existing:
-                logger.info(f"Shift '{data['shift_code']}' already exists for tenant {tenant.tenant_code}, skipping.")
+                logger.info(f"Shift '{data['shift_code']}' already exists for tenant {tenant.tenant_id}, skipping.")
                 continue
 
             shift = Shift(**data)
             db.add(shift)
-            logger.info(f"Shift '{data['shift_code']}' created for tenant {tenant.tenant_code}.")
+            logger.info(f"Shift '{data['shift_code']}' created for tenant {tenant.tenant_id}.")
 
     db.commit()
     logger.info("Shift seeding completed.")
@@ -404,7 +404,7 @@ logger = logging.getLogger(__name__)
 def seed_vendors(db: Session):
     """
     Seed one default vendor (MLT) per tenant (idempotent).
-    Vendor code stored as {tenant_code}-MLT.
+    Vendor code stored as {tenant_id}-MLT.
     """
     tenants = db.query(Tenant).all()
     if not tenants:
@@ -412,14 +412,14 @@ def seed_vendors(db: Session):
         return
 
     for tenant in tenants:
-        vendor_code = f"{tenant.tenant_code}-MLT"
+        vendor_code = f"{tenant.tenant_id}-MLT"
         existing = (
             db.query(Vendor)
             .filter(Vendor.tenant_id == tenant.tenant_id, Vendor.vendor_code == vendor_code)
             .first()
         )
         if existing:
-            logger.info(f"Vendor '{vendor_code}' already exists for tenant {tenant.tenant_code}, skipping.")
+            logger.info(f"Vendor '{vendor_code}' already exists for tenant {tenant.tenant_id}, skipping.")
             continue
 
         vendor = Vendor(
@@ -427,11 +427,11 @@ def seed_vendors(db: Session):
             vendor_code=vendor_code,
             name="MLT Logistics",
             email="mlt@vendor.com",
-            phone=f"99999{tenant.tenant_id:05d}",
+            phone=f"9999999999",
             is_active=True,
         )
         db.add(vendor)
-        logger.info(f"Vendor '{vendor_code}' created for tenant {tenant.tenant_code}.")
+        logger.info(f"Vendor '{vendor_code}' created for tenant {tenant.tenant_id}.")
 
     db.commit()
     logger.info("Vendor seeding completed.")
@@ -466,7 +466,7 @@ def seed_vendor_users(db: Session):
     for tenant in tenants:
         vendors = db.query(Vendor).filter(Vendor.tenant_id == tenant.tenant_id).all()
         if not vendors:
-            logger.warning(f"No vendors found for tenant {tenant.tenant_code}, skipping vendor user seeding.")
+            logger.warning(f"No vendors found for tenant {tenant.tenant_id}, skipping vendor user seeding.")
             continue
 
         for vendor in vendors:

@@ -17,7 +17,7 @@ class Role(Base):
     name = Column(String(100), unique=True, nullable=False)
     description = Column(String(255))
     is_active = Column(Boolean, default=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=True)
+    tenant_id = Column(String(50), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=True)
     is_system_role = Column(Boolean, default=False)  # Indicates if this is a system-defined role
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)

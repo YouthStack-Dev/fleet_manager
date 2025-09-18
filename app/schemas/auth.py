@@ -20,7 +20,7 @@ class RefreshTokenRequest(BaseModel):
 
 class EmployeeLoginRequest(BaseModel):
     """Schema for employee login"""
-    tenant_code: str = Field(..., description="Tenant code")
+    tenant_id: str = Field(..., description="Tenant code")
     username: EmailStr = Field(..., description="Employee email address")
     password: str = Field(..., min_length=8)
 
