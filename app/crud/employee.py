@@ -79,5 +79,60 @@ class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
                 Employee.employee_code.ilike(search_pattern)
             )
         ).offset(skip).limit(limit).all()
+    
+    def get_employee_roles_and_permissions(self, db: Session, *, employee_id: int, tenant_id: int):
+        """Get employee with their roles and permissions for a specific tenant"""
+        from app.models.iam import Role, Policy  # Import here to avoid circular imports
+        
+        employee = db.query(Employee).filter(
+            Employee.employee_id == employee_id,
+            Employee.tenant_id == tenant_id,
+            Employee.is_active == True
+        ).first()
+        
+        if not employee:
+            return None, [], []
+        
+        # Get roles - handle both single role and multiple roles cases
+        roles = []
+        all_permissions = []
+        
+        # Check if employee has a single role or multiple roles
+        if hasattr(employee, 'roles') and employee.roles:
+            # Multiple roles case - if roles is a collection
+            try:
+                role_list = list(employee.roles) if employee.roles else []
+            except TypeError:
+                # Single role case - if roles is a single Role object
+                role_list = [employee.roles] if employee.roles else []
+        elif hasattr(employee, 'role') and employee.role:
+            # Single role relationship
+            role_list = [employee.role]
+        else:
+            role_list = []
+        
+        for role in role_list:
+            if role and role.is_active and (role.tenant_id == tenant_id or role.is_system_role):
+                roles.append(role.name)
+                
+                # Get permissions from role policies
+                for policy in role.policies:
+                    for permission in policy.permissions:
+                        module, action = permission.module, permission.action
+                        existing = next((p for p in all_permissions if p["module"] == module), None)
+                        if existing:
+                            if action == "*":
+                                existing["action"] = ["create", "read", "update", "delete", "*"]
+                            elif action not in existing["action"]:
+                                existing["action"].append(action)
+                        else:
+                            actions = (
+                                ["create", "read", "update", "delete", "*"]
+                                if action == "*"
+                                else [action]
+                            )
+                            all_permissions.append({"module": module, "action": actions})
+        
+        return employee, roles, all_permissions
 
 employee_crud = CRUDEmployee(Employee)

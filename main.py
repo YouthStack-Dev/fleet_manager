@@ -17,16 +17,6 @@ import traceback  # For detailed error info
 from sqlalchemy.sql import text
 from app.database.session import get_db
 
-import logging
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
-    handlers=[logging.StreamHandler()]
-)
-
-logger = logging.getLogger(__name__)
-
 from sqlalchemy.orm import Session
 from app.routes import (
     employee_router, 
@@ -48,6 +38,17 @@ from app.routes import (
 # Import the IAM routers
 from app.routes.iam import permission_router, policy_router, role_router, user_role_router
 
+from app.core.logging_config import setup_logging, get_logger
+
+# Setup logging as early as possible
+print("MAIN: Setting up logging...", file=sys.stdout, flush=True)
+setup_logging(force_configure=True)
+
+# Get logger for this module
+logger = get_logger(__name__)
+
+print("MAIN: Logger configured", file=sys.stdout, flush=True)
+logger.info("Main module starting...")
 
 app = FastAPI(
     title="Fleet Manager API",
@@ -312,6 +313,19 @@ async def drop_tables_endpoint():
             detail=f"Failed to drop tables: {str(e)}"
         )
 
+
+@app.on_event("startup")
+async def startup_event():
+    """Application startup event"""
+    print("STARTUP EVENT: Called", file=sys.stdout, flush=True)
+    logger.info("Fleet Manager application starting up...")
+    # ...existing startup code...
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Application shutdown event"""
+    logger.info("Fleet Manager application shutting down...")
+    # ...existing shutdown code...
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

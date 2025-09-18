@@ -6,6 +6,8 @@ from app.schemas.iam import RoleCreate, RoleUpdate
 from app.crud.base import CRUDBase
 
 class CRUDRole(CRUDBase[Role, RoleCreate, RoleUpdate]):
+
+    
     def create_with_policies(self, db: Session, *, obj_in: RoleCreate) -> Role:
         # Create role
         db_obj = Role(
