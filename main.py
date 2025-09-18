@@ -48,7 +48,13 @@ setup_logging(force_configure=True)
 logger = get_logger(__name__)
 
 print("MAIN: Logger configured", file=sys.stdout, flush=True)
-logger.info("Main module starting...")
+logger.info("🚀 Main module starting...")
+
+# Test all log levels to verify colors
+logger.debug("🔧 This is a DEBUG message")
+logger.info("ℹ️ This is an INFO message") 
+logger.warning("⚠️ This is a WARNING message")
+logger.error("❌ This is an ERROR message (test only)")
 
 app = FastAPI(
     title="Fleet Manager API",
@@ -318,13 +324,13 @@ async def drop_tables_endpoint():
 async def startup_event():
     """Application startup event"""
     print("STARTUP EVENT: Called", file=sys.stdout, flush=True)
-    logger.info("Fleet Manager application starting up...")
+    logger.info("🌟 Fleet Manager application starting up...")
     # ...existing startup code...
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Application shutdown event"""
-    logger.info("Fleet Manager application shutting down...")
+    logger.info("🛑 Fleet Manager application shutting down...")
     # ...existing shutdown code...
 
 if __name__ == "__main__":

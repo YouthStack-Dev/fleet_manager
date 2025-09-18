@@ -33,6 +33,7 @@ services:
       - POSTGRES_USER=fleetadmin
       - POSTGRES_PASSWORD=fleetpass
       - POSTGRES_DB=fleet_db
+      - PORT=532
       - DATABASE_URL=postgresql://fleetadmin:fleetpass@fleet_postgres:5432/fleet_db
     volumes:
       - ./app:/app/app
