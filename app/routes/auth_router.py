@@ -43,7 +43,7 @@ logger = get_logger(__name__)
 
 # Test log to verify logging is working
 print(f"AUTH ROUTER: Logger configured - {__name__}", flush=True)
-logger.info("Auth router module loaded successfully")
+logger.info("🔐 Auth router module loaded successfully")
 
 router = APIRouter(
     prefix="/auth",
@@ -67,18 +67,18 @@ async def login(
     """
     Authenticate employee in a tenant and return access/refresh tokens
     """
-    logger.info(f"Login attempt for user: {form_data.username} in tenant: {form_data.tenant_code}")
+    logger.info(f"🔑 Login attempt for user: {form_data.username} in tenant: {form_data.tenant_code}")
     
     # Step 1: Validate tenant
     tenant = db.query(Tenant).filter(Tenant.tenant_code == form_data.tenant_code).first()
     if not tenant:
-        logger.warning(f"Login failed - Invalid tenant code: {form_data.tenant_code} for user: {form_data.username}")
+        logger.warning(f"❌ Login failed - Invalid tenant code: {form_data.tenant_code} for user: {form_data.username}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Invalid tenant code"
         )
     
-    logger.debug(f"Tenant validation successful - ID: {tenant.tenant_id}, Code: {tenant.tenant_code}")
+    logger.debug(f"✅ Tenant validation successful - ID: {tenant.tenant_id}, Code: {tenant.tenant_code}")
 
     # Step 2: Find employee in this tenant
     employee = (
@@ -90,7 +90,7 @@ async def login(
         .first()
     )
     if not employee:
-        logger.warning(f"Login failed - Employee not found: {form_data.username} in tenant: {tenant.tenant_code}")
+        logger.warning(f"❌ Login failed - Employee not found: {form_data.username} in tenant: {tenant.tenant_code}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -98,18 +98,18 @@ async def login(
         )
     
     if not verify_password(form_data.password, employee.password):
-        logger.warning(f"Login failed - Invalid password for employee: {employee.employee_id} ({form_data.username})")
+        logger.warning(f"🔒 Login failed - Invalid password for employee: {employee.employee_id} ({form_data.username})")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    logger.debug(f"Employee authentication successful - ID: {employee.employee_id}, Email: {employee.email}")
+    logger.debug(f"🔓 Employee authentication successful - ID: {employee.employee_id}, Email: {employee.email}")
 
     # Step 3: Check active flag
     if not employee.is_active:
-        logger.warning(f"Login failed - Inactive account for employee: {employee.employee_id} ({form_data.username})")
+        logger.warning(f"🚫 Login failed - Inactive account for employee: {employee.employee_id} ({form_data.username})")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is inactive"
@@ -130,7 +130,7 @@ async def login(
             detail="Failed to fetch user roles"
         )
 
-    logger.info(f"Permissions collected for employee {employee.employee_id}: {len(all_permissions)} modules, roles: {roles}")
+    logger.info(f"🎯 Permissions collected for employee {employee.employee_id}: {len(all_permissions)} modules, roles: {roles}")
 
     # Step 5: Generate tokens
     current_time = int(time.time())
@@ -154,13 +154,13 @@ async def login(
     oauth_accessor = Oauth2AsAccessor()
     ttl = expiry_time - current_time
     if not oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl):
-        logger.error(f"Failed to store opaque token in Redis for employee: {employee.employee_id}")
+        logger.error(f"💥 Failed to store opaque token in Redis for employee: {employee.employee_id}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to store authentication token"
         )
     
-    logger.debug(f"Opaque token stored in Redis with TTL: {ttl} seconds")
+    logger.debug(f"💾 Opaque token stored in Redis with TTL: {ttl} seconds")
 
     access_token = create_access_token(
         user_id=str(employee.employee_id),
@@ -171,7 +171,7 @@ async def login(
         user_id=str(employee.employee_id)
     )
     
-    logger.info(f"Login successful for employee: {employee.employee_id} ({employee.email}) in tenant: {tenant.tenant_code}")
+    logger.info(f"🚀 Login successful for employee: {employee.employee_id} ({employee.email}) in tenant: {tenant.tenant_code}")
 
     return LoginResponse(
         access_token=access_token,
