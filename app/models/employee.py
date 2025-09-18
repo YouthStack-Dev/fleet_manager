@@ -18,7 +18,7 @@ class Employee(Base):
 
     employee_id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
-
+    role_id = Column(Integer, ForeignKey("iam_roles.role_id", ondelete="CASCADE"), nullable=False)
     name = Column(String(150), nullable=False)
     employee_code = Column(String(50), nullable=False)  # unique per tenant
     email = Column(String(150), nullable=False)
@@ -49,3 +49,7 @@ class Employee(Base):
     team = relationship("Team", back_populates="employees")
     bookings = relationship("Booking", back_populates="employee")
     weekoff_config = relationship("WeekoffConfig", back_populates="employee", uselist=False)
+    roles = relationship(
+        "Role",
+        back_populates="employees",
+    )

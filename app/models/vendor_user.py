@@ -18,10 +18,15 @@ class VendorUser(Base):
     phone = Column(String(20), nullable=False)
     password = Column(String(255), nullable=False)
 
-    role = Column(String(50), default="VendorAdmin")  # VendorAdmin, Dispatcher, etc.
+    role_id = Column(Integer, ForeignKey("iam_roles.role_id", ondelete="CASCADE"), nullable=False)  # VendorAdmin, Dispatcher, etc.
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
     # Relationships
     vendor = relationship("app.models.vendor.Vendor", back_populates="vendor_users")
+    roles = relationship(
+        "Role",
+        back_populates="vendor_users"
+    )
+    

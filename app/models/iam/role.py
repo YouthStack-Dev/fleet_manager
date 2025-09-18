@@ -27,4 +27,6 @@ class Role(Base):
     # Relationship with tenant
     tenant = relationship("Tenant", back_populates="roles")
     admins = relationship("Admin", back_populates="roles")
+    vendor_users = relationship("VendorUser", back_populates="roles")
+    employees = relationship("Employee", back_populates="roles")
 

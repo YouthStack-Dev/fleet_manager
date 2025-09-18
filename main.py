@@ -4,7 +4,7 @@ import os
 import shutil
 
 from app.models.tenant import Tenant
-from app.seed.seed_data import seed_employees, seed_shifts, seed_teams, seed_tenants, seed_weekoffs  # Add this import to check for executable availability
+from app.seed.seed_data import seed_admins, seed_drivers, seed_employees, seed_iam, seed_shifts, seed_teams, seed_tenants, seed_vehicle_types, seed_vehicles, seed_vendor_users, seed_weekoffs , seed_vendors # Add this import to check for executable availability
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Now continue with the rest of your imports
@@ -167,12 +167,18 @@ def seed_database(
             deleted = db.query(Tenant).delete()
             db.commit()
             logger.info(f"Deleted {deleted} tenants.")
-
         seed_tenants(db)
+        seed_iam(db)
+        seed_admins(db)
         seed_teams(db)
         seed_employees(db)
         seed_shifts(db)
         seed_weekoffs(db)
+        seed_vendors(db)
+        seed_vendor_users(db)
+        seed_drivers(db)
+        seed_vehicle_types(db)
+        seed_vehicles(db)
         logger.info("Database seeding completed successfully.")
         return {"message": "Database seeded successfully."}
 
