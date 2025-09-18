@@ -85,21 +85,34 @@ from app.models import Permission, Policy, Role
 import logging
 
 logger = logging.getLogger(__name__)
-
 def seed_iam(db: Session):
     """
     Seed IAM: Permissions, Policies, and Roles (idempotent).
     """
     # --- Step 1: Permissions ---
-    permission_matrix = {
-        "users": ["create", "read", "update", "delete"],
-        "employees": ["create", "read", "update", "delete"],
-        "shifts": ["create", "read", "update", "delete"],
-        "vendors": ["create", "read", "update", "delete"],
-    }
+    modules = [
+        "booking",
+        "driver",
+        "employee",
+        "route-booking",
+        "route",
+        "shift",
+        "team",
+        "admin.tenant",
+        "vehicle",
+        "vehicle-type",
+        "vendor",
+        "vendor-user",
+        "weekoff-config",
+        "permissions",
+        "policy",
+        "role",
+    ]
+
+    actions = ["create", "read", "update", "delete"]
 
     permissions_map = {}
-    for module, actions in permission_matrix.items():
+    for module in modules:
         for action in actions:
             existing = (
                 db.query(Permission)
@@ -117,36 +130,31 @@ def seed_iam(db: Session):
                 description=f"{action.capitalize()} {module}",
             )
             db.add(perm)
-            db.flush()  # assign ID
+            db.flush()
             permissions_map[f"{module}:{action}"] = perm
             logger.info(f"Permission {module}:{action} created.")
 
-    # --- Step 2: Policies ---
-    policies_def = {
-        "UserManagementPolicy": ["users:create", "users:read", "users:update", "users:delete"],
-        "EmployeeManagementPolicy": ["employees:create", "employees:read", "employees:update"],
-        "ShiftManagementPolicy": ["shifts:create", "shifts:read", "shifts:update"],
-        "VendorManagementPolicy": ["vendors:create", "vendors:read", "vendors:update"],
-    }
-
+    # --- Step 2: Policies (group by module) ---
     policies_map = {}
-    for name, perms in policies_def.items():
-        policy = db.query(Policy).filter(Policy.name == name).first()
+    for module in modules:
+        policy_name = f"{module.capitalize()}Policy".replace("-", "").replace(".", "")
+        perms = [f"{module}:{a}" for a in actions]
+        policy = db.query(Policy).filter(Policy.name == policy_name).first()
         if not policy:
-            policy = Policy(name=name, description=f"Policy for {name}")
+            policy = Policy(name=policy_name, description=f"Policy for {module}")
             db.add(policy)
-            logger.info(f"Policy {name} created.")
+            logger.info(f"Policy {policy_name} created.")
         else:
-            logger.debug(f"Policy {name} already exists.")
+            logger.debug(f"Policy {policy_name} already exists.")
         # attach permissions
         policy.permissions = [permissions_map[p] for p in perms if p in permissions_map]
-        policies_map[name] = policy
+        policies_map[policy_name] = policy
 
     # --- Step 3: Roles ---
     roles_def = {
         "SuperAdmin": list(policies_map.keys()),  # all policies
-        "Admin": ["UserManagementPolicy", "EmployeeManagementPolicy", "ShiftManagementPolicy"],
-        "employee": ["EmployeeManagementPolicy", "ShiftManagementPolicy"],
+        "Admin": [p for p in policies_map.keys() if p not in ["PermissionsPolicy", "PolicyPolicy", "RolePolicy"]],
+        "Employee": ["EmployeePolicy", "ShiftPolicy", "BookingPolicy"],
     }
 
     for role_name, assigned_policies in roles_def.items():
@@ -154,7 +162,7 @@ def seed_iam(db: Session):
         if not role:
             role = Role(
                 name=role_name,
-                description=f"Role with {', '.join(assigned_policies)}",
+                description=f"{role_name} system role",
                 is_system_role=True,
             )
             db.add(role)
@@ -167,7 +175,6 @@ def seed_iam(db: Session):
     # Commit all
     db.commit()
     logger.info("✅ IAM seeding completed successfully.")
-
 
 def seed_teams(db: Session):
     """
