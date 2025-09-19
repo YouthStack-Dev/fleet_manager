@@ -1,4 +1,5 @@
 from typing import Any, Dict, Generic, List, Optional, TypeVar
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 
@@ -84,7 +85,7 @@ def create_success_response(data: Any = None, message: str = "Success") -> Dict[
         "success": True,
         "message": message,
         "data": data,
-        "timestamp": datetime.utcnow()
+        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
 
 def create_error_response(message: str, error_code: Optional[str] = None, details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -94,7 +95,7 @@ def create_error_response(message: str, error_code: Optional[str] = None, detail
         "message": message,
         "error_code": error_code,
         "details": details,
-        "timestamp": datetime.utcnow()
+        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
 
 def create_paginated_response(
@@ -119,5 +120,5 @@ def create_paginated_response(
             "has_next": page < total_pages,
             "has_prev": page > 1
         },
-        "timestamp": datetime.utcnow()
+        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }

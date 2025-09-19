@@ -207,7 +207,7 @@ async def admin_login(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=ResponseWrapper.error(
                     message="Incorrect email or password",
-                    error_code="INVALID_CREDENTIALS"
+                    error_code=status.HTTP_401_UNAUTHORIZED
                 )
             )
         
@@ -217,7 +217,7 @@ async def admin_login(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=ResponseWrapper.error(
                     message="Incorrect email or password", 
-                    error_code="INVALID_CREDENTIALS"
+                    error_code=status.HTTP_401_UNAUTHORIZED
                 )
             )
 
@@ -227,7 +227,7 @@ async def admin_login(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
                     message="Account is inactive",
-                    error_code="ACCOUNT_INACTIVE"
+                    error_code=status.HTTP_403_FORBIDDEN
                 )
             )
 
