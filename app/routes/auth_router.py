@@ -26,6 +26,7 @@ from app.crud.iam import user_role_crud
 from app.schemas.employee import EmployeeResponse
 from app.crud.employee import employee_crud
 from app.core.logging_config import get_logger
+from app.utils.response_utils import ResponseWrapper
 
 TOKEN_EXPIRY_HOURS = int(os.getenv("TOKEN_EXPIRY_HOURS", "1"))
 X_INTROSPECT_SECRET = os.getenv("X_Introspect_Secret","Testing_").strip()
@@ -129,9 +130,10 @@ async def login(
             detail="Account is inactive"
         )
 
-    # Step 4: Collect roles + permissions
+    # Step 4: Collect roles + permissions (scoped to tenant)
     logger.debug(f"Fetching roles and permissions for employee: {employee.employee_id} in tenant: {tenant.tenant_id}")
     
+    # Use employee-specific role fetching instead of user_role_crud
     employee_with_roles, roles, all_permissions = employee_crud.get_employee_roles_and_permissions(
         db, employee_id=employee.employee_id, tenant_id=tenant.tenant_id
     )
@@ -169,6 +171,8 @@ async def login(
             detail="Failed to store authentication token"
         )
     
+    logger.debug(f"💾 Opaque token stored in Redis with TTL: {ttl} seconds")
+
     access_token = create_access_token(
         user_id=str(employee.employee_id),
         tenant_id=str(tenant.tenant_id),
@@ -178,7 +182,7 @@ async def login(
         user_id=str(employee.employee_id)
     )
     
-    logger.info(f"Login successful for employee: {employee.employee_id} ({employee.email}) in tenant: {tenant.tenant_id}")
+    logger.info(f"🚀 Login successful for employee: {employee.employee_id} ({employee.email}) in tenant: {tenant.tenant_code}")
 
     return LoginResponse(
         access_token=access_token,
@@ -187,43 +191,81 @@ async def login(
         user=employee_to_schema(employee)
     )
 
-@router.post("/admin/login", response_model=AdminLoginResponse)
-async def login(
+@router.post("/admin/login")
+async def admin_login(
     form_data: AdminLoginRequest = Body(...),
     db: Session = Depends(get_db)
 ):
+    """Admin login endpoint with standardized response format"""
     logger.info(f"Admin login attempt for user: {form_data.username}")
     
-    admin = db.query(Admin).filter(Admin.email == form_data.username).first()
-    if not admin:
-        logger.warning(f"Admin login failed - Admin not found: {form_data.username}")
-        raise HTTPException(status_code=401, detail="Incorrect email or password")
-    
-    if not verify_password(form_data.password, admin.password):
-        logger.warning(f"Admin login failed - Invalid password for admin: {admin.admin_id} ({form_data.username})")
-        raise HTTPException(status_code=401, detail="Incorrect email or password")
+    try:
+        admin = db.query(Admin).filter(Admin.email == form_data.username).first()
+        if not admin:
+            logger.warning(f"Admin login failed - Admin not found: {form_data.username}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error(
+                    message="Incorrect email or password",
+                    error_code="INVALID_CREDENTIALS"
+                )
+            )
+        
+        if not verify_password(form_data.password, admin.password):
+            logger.warning(f"Admin login failed - Invalid password for admin: {admin.admin_id} ({form_data.username})")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error(
+                    message="Incorrect email or password", 
+                    error_code="INVALID_CREDENTIALS"
+                )
+            )
 
-    if not admin.is_active:
-        logger.warning(f"Admin login failed - Inactive account for admin: {admin.admin_id} ({form_data.username})")
-        raise HTTPException(status_code=403, detail="Account is inactive")
+        if not admin.is_active:
+            logger.warning(f"Admin login failed - Inactive account for admin: {admin.admin_id} ({form_data.username})")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Account is inactive",
+                    error_code="ACCOUNT_INACTIVE"
+                )
+            )
 
-    opaque_token = secrets.token_hex(16)
-    logger.debug(f"Generated opaque token for admin: {admin.admin_id}")
+        opaque_token = secrets.token_hex(16)
+        logger.debug(f"Generated opaque token for admin: {admin.admin_id}")
 
-    access_token = create_access_token(
-        user_id=str(admin.admin_id),
-        opaque_token=opaque_token,
-        token_context="admin"
-    )
-    refresh_token = create_refresh_token(user_id=str(admin.admin_id), token_context="admin")
-    
-    logger.info(f"Admin login successful for admin: {admin.admin_id} ({admin.email})")
+        access_token = create_access_token(
+            user_id=str(admin.admin_id),
+            opaque_token=opaque_token,
+            token_context="admin"
+        )
+        refresh_token = create_refresh_token(user_id=str(admin.admin_id), token_context="admin")
+        
+        logger.info(f"Admin login successful for admin: {admin.admin_id} ({admin.email})")
 
-    return AdminLoginResponse(
-        access_token=access_token,
-        refresh_token=refresh_token,
-        token_type="bearer"
-    )
+        response_data = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer"
+        }
+
+        return ResponseWrapper.success(
+            data=response_data,
+            message="Admin login successful"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Admin login failed with unexpected error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message="Login failed due to server error",
+                error_code="SERVER_ERROR",
+                details={"error": str(e)}
+            )
+        )
 
 @router.post("/introspect")
 async def introspect(x_introspect_secret: str = Header(...,alias="X_Introspect_Secret"), authorization: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)):
