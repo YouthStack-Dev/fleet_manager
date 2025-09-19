@@ -30,9 +30,43 @@ def create_tenant(
     tenant: TenantCreate,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["admin.tenant.create"], check_tenant=False)),
-    default_team_name: str = "Default Team",
-    default_team_desc: str = "Auto-created team for this tenant"
+    
 ):
+    """
+    Create a new tenant with associated default team, admin role, policy, and employee.
+
+    **Required permissions:** `admin.tenant.create`
+
+    **Request body:**
+
+    * `tenant_id`: Unique identifier for the tenant.
+    * `name`: Name of the tenant.
+    * `employee_name`: Name of the employee (tenant admin user).
+    * `employee_email`: Email of the employee (tenant admin user).
+    * `employee_phone`: Phone number of the employee (tenant admin user).
+    * `employee_password`: Password of the employee (tenant admin user) (optional).
+    * `employee_address`: Address of the employee (tenant admin user) (optional).
+    * `employee_longitude`: Longitude of the employee (tenant admin user) (optional).
+    * `employee_latitude`: Latitude of the employee (tenant admin user) (optional).
+    * `employee_gender`: Gender of the employee (tenant admin user) (optional).
+    * `employee_code`: Code of the employee (tenant admin user) (optional).
+    * `permission_ids`: List of permission IDs to attach to the admin role (optional).
+
+    **Response:**
+
+    * `tenant`: Newly created tenant object.
+    * `team`: Newly created default team object.
+    * `admin_role`: Newly created admin role object.
+    * `admin_policy`: Newly created admin policy object.
+    * `employee`: Newly created employee object.
+
+    **Status codes:**
+
+    * `201 Created`: Tenant created successfully.
+    * `400 Bad Request`: Invalid request body or permission IDs.
+    * `409 Conflict`: Tenant with the same ID or name already exists.
+    * `500 Internal Server Error`: Unexpected server error while creating tenant.
+    """
     logger.info(f"Create tenant request received: {tenant.dict()}")
 
     try:
@@ -57,7 +91,8 @@ def create_tenant(
                         error_code=status.HTTP_409_CONFLICT
                     )
                 )
-
+            default_team_name: str = "Default Team"
+            default_team_desc: str = "Auto-created team for this tenant"
             # --- Create tenant ---
             new_tenant = tenant_crud.create(db, obj_in=tenant)
             logger.info(f"Tenant created successfully: {new_tenant.tenant_id}")
@@ -111,10 +146,10 @@ def create_tenant(
                         f"Invalid permission IDs {list(missing_ids)} for tenant {new_tenant.tenant_id}"
                     )
                     raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
+                        status_code=status.HTTP_404_NOT_FOUND,
                         detail=ResponseWrapper.error(
-                            message="Some permission IDs are invalid",
-                            error_code=status.HTTP_400_BAD_REQUEST,
+                            message="Some permission IDs are not found or invalid",
+                            error_code=status.HTTP_404_NOT_FOUND,
                             details={"invalid_permission_ids": list(missing_ids)},
                         ),
                     )
