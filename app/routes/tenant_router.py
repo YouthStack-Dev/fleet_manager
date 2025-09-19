@@ -9,6 +9,8 @@ from app.models.iam.role import Role
 from app.models.tenant import Tenant
 from app.crud.tenant import tenant_crud
 from app.crud.team import team_crud
+from app.crud.employee import employee_crud
+from app.schemas.employee import EmployeeCreate, EmployeeResponse
 from app.schemas.iam.policy import PolicyResponse
 from app.schemas.iam.role import RoleResponse
 from app.schemas.team import TeamCreate, TeamResponse
@@ -19,7 +21,6 @@ from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
 logger = get_logger(__name__)
 router = APIRouter(prefix="/tenants", tags=["tenants"])
-
 
 
 
@@ -72,7 +73,7 @@ def create_tenant(
             )
             logger.info(f"Default team created: {default_team.name}")
 
-            # --- Create Admin Role for tenant ---
+            # --- Create Admin Role ---
             admin_role_name = f"{new_tenant.tenant_id}_Admin"
             admin_role = Role(
                 tenant_id=new_tenant.tenant_id,
@@ -84,7 +85,7 @@ def create_tenant(
             db.flush()
             logger.info(f"Admin role created: {admin_role_name}")
 
-            # --- Create tenant-specific Admin Policy ---
+            # --- Create Admin Policy ---
             admin_policy_name = f"{new_tenant.tenant_id}_AdminPolicy"
             admin_policy = Policy(
                 name=admin_policy_name,
@@ -129,15 +130,54 @@ def create_tenant(
             admin_role.policies.append(admin_policy)
             logger.info(f"Linked role {admin_role_name} to policy {admin_policy_name}")
 
+            # --- Create Employee (Tenant Admin User) ---
+            employee_name = tenant.employee_name or f"Admin_{new_tenant.tenant_id}"
+            employee_email = tenant.employee_email
+            employee_phone = tenant.employee_phone
+
+            if not employee_email or not employee_phone:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Employee email and phone are mandatory",
+                        error_code=status.HTTP_400_BAD_REQUEST,
+                    ),
+                )
+
+            employee_in = EmployeeCreate(
+                tenant_id=new_tenant.tenant_id,
+                role_id=admin_role.role_id,
+                team_id=default_team.team_id,
+                name=employee_name,
+                employee_code=tenant.employee_code or f"EMP_{new_tenant.tenant_id}_001",
+                email=employee_email,
+                password=tenant.employee_password or "default@123",
+                phone=employee_phone,
+                address=tenant.employee_address,
+                longitude=tenant.employee_longitude,
+                latitude=tenant.employee_latitude,
+                gender=tenant.employee_gender,
+                is_active=True,
+            )
+
+            new_employee = employee_crud.create_with_tenant(
+                db, obj_in=employee_in, tenant_id=new_tenant.tenant_id
+            )
+            logger.info(
+                f"Employee created for tenant {new_tenant.tenant_id}: "
+                f"{new_employee.name} ({new_employee.email})"
+            )
+
         # --- Response ---
         return ResponseWrapper.success(
             data={
                 "tenant": TenantResponse.model_validate(new_tenant),
                 "team": TeamResponse.model_validate(default_team),
                 "admin_role": RoleResponse.model_validate(admin_role),
-                "admin_policy": PolicyResponse.model_validate(admin_policy)
+                "admin_policy": PolicyResponse.model_validate(admin_policy),
+                "employee": EmployeeResponse.model_validate(new_employee),
             },
-            message="Tenant, default team, admin role, and policy created successfully"
+            message="Tenant, default team, admin role, policy, and employee created successfully"
         )
 
     except HTTPException:

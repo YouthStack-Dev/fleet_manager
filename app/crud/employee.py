@@ -23,6 +23,7 @@ class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
         db_obj = Employee(
             tenant_id=tenant_id,
             name=obj_in.name,
+            role_id=obj_in.role_id,
             employee_code=obj_in.employee_code,
             email=obj_in.email,
             password=hash_password(obj_in.password),
@@ -39,8 +40,7 @@ class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
             is_active=obj_in.is_active
         )
         db.add(db_obj)
-        db.commit()
-        db.refresh(db_obj)
+        db.flush()
         return db_obj
     
     def update_with_password(
