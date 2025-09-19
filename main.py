@@ -73,25 +73,25 @@ app.add_middleware(
 
 # Include routers
 app.include_router(employee_router, prefix="/api/v1")
-app.include_router(driver_router, prefix="/api/v1")
-app.include_router(booking_router, prefix="/api/v1")
+# app.include_router(driver_router, prefix="/api/v1")
+# app.include_router(booking_router, prefix="/api/v1")
 app.include_router(tenant_router, prefix="/api/v1")
 app.include_router(vendor_router, prefix="/api/v1")
-app.include_router(vehicle_type_router, prefix="/api/v1")
-app.include_router(vehicle_router, prefix="/api/v1")
-app.include_router(vendor_user_router, prefix="/api/v1")
+# app.include_router(vehicle_type_router, prefix="/api/v1")
+# app.include_router(vehicle_router, prefix="/api/v1")
+# app.include_router(vendor_user_router, prefix="/api/v1")
 app.include_router(team_router, prefix="/api/v1")
-app.include_router(shift_router, prefix="/api/v1")
-app.include_router(route_router, prefix="/api/v1")
-app.include_router(route_booking_router, prefix="/api/v1")
-app.include_router(weekoff_config_router, prefix="/api/v1")
+# app.include_router(shift_router, prefix="/api/v1")
+# app.include_router(route_router, prefix="/api/v1")
+# app.include_router(route_booking_router, prefix="/api/v1")
+# app.include_router(weekoff_config_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")  # Add the auth router
 
 # Include IAM routers
 app.include_router(permission_router, prefix="/api/v1/iam")
 app.include_router(policy_router, prefix="/api/v1/iam")
 app.include_router(role_router, prefix="/api/v1/iam")
-app.include_router(user_role_router, prefix="/api/v1/iam")
+# app.include_router(user_role_router, prefix="/api/v1/iam")
 
 
 # Direct PostgreSQL connection for seeding database

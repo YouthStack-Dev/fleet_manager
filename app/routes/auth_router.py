@@ -25,6 +25,7 @@ from common_utils.auth.token_validation import Oauth2AsAccessor, validate_bearer
 from app.crud.iam import user_role_crud
 from app.schemas.employee import EmployeeResponse
 from app.crud.employee import employee_crud
+from app.crud.admin import admin_crud
 from app.core.logging_config import get_logger
 from app.utils.response_utils import ResponseWrapper
 
@@ -59,8 +60,7 @@ def employee_to_schema(employee: Employee) -> EmployeeResponse:
         for column in employee.__table__.columns
     }
     return EmployeeResponse(**employee_dict)
-
-@router.post("/login", response_model=LoginResponse)
+@router.post("/employee/login")
 async def login(
     form_data: EmployeeLoginRequest = Body(...),
     db: Session = Depends(get_db)
@@ -70,136 +70,149 @@ async def login(
     """
     logger.info(f"Login attempt for user: {form_data.username} in tenant: {form_data.tenant_id}")
     
-        # Single query to fetch both tenant + employee
-    employee = (
-        db.query(Employee)
-        .join(Tenant, Tenant.tenant_id == Employee.tenant_id)
-        .filter(
-            Employee.email == form_data.username,
-            Employee.tenant_id == form_data.tenant_id
-        )
-        .first()
-    )
-
-    if not employee:
-        logger.warning(
-            f"Login failed - Employee not found or invalid tenant: "
-            f"{form_data.username} in tenant_id {form_data.tenant_id}"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect tenant, email, or password",
-            headers={"WWW-Authenticate": "Bearer"},
+    try:
+        # Step 1: Fetch employee with tenant validation
+        employee = (
+            db.query(Employee)
+            .join(Tenant, Tenant.tenant_id == Employee.tenant_id)
+            .filter(
+                Employee.email == form_data.username,
+                Employee.tenant_id == form_data.tenant_id
+            )
+            .first()
         )
 
-    tenant = employee.tenant  # since we joined Tenant
-    logger.debug(f"Tenant validation successful - ID: {tenant.tenant_id}")
+        if not employee:
+            logger.warning(
+                f"Login failed - Employee not found or invalid tenant: "
+                f"{form_data.username} in tenant_id {form_data.tenant_id}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error(
+                    message="Incorrect tenant, email, or password",
+                    error_code=status.HTTP_401_UNAUTHORIZED
+                )
+            )
 
-    # Step 2: Find employee in this tenant
-    employee = (
-        db.query(Employee)
-        .filter(
-            Employee.email == form_data.username,
-            Employee.tenant_id == tenant.tenant_id
-        )
-        .first()
-    )
-    if not employee:
-        logger.warning(f"Login failed - Employee not found: {form_data.username} in tenant: {tenant.tenant_id}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    if not verify_password(form_data.password, employee.password):
-        logger.warning(f"🔒 Login failed - Invalid password for employee: {employee.employee_id} ({form_data.username})")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    logger.debug(f"🔓 Employee authentication successful - ID: {employee.employee_id}, Email: {employee.email}")
+        tenant = employee.tenant
+        logger.debug(f"Tenant validation successful - ID: {tenant.tenant_id}")
 
-    # Step 3: Check active flag
-    if not employee.is_active:
-        logger.warning(f"🚫 Login failed - Inactive account for employee: {employee.employee_id} ({form_data.username})")
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account is inactive"
+        # Step 2: Verify password
+        if not verify_password(form_data.password, employee.password):
+            logger.warning(f"🔒 Login failed - Invalid password for employee: {employee.employee_id} ({form_data.username})")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error(
+                    message="Incorrect email or password",
+                    error_code=status.HTTP_401_UNAUTHORIZED
+                )
+            )
+
+        # Step 3: Check active flag
+        if not employee.is_active:
+            logger.warning(f"🚫 Login failed - Inactive account for employee: {employee.employee_id} ({form_data.username})")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Account is inactive",
+                    error_code=status.HTTP_403_FORBIDDEN
+                )
+            )
+
+        # Step 4: Collect roles + permissions (scoped to tenant)
+        logger.debug(f"Fetching roles and permissions for employee: {employee.employee_id} in tenant: {tenant.tenant_id}")
+        employee_with_roles, roles, all_permissions = employee_crud.get_employee_roles_and_permissions(
+            db, employee_id=employee.employee_id, tenant_id=tenant.tenant_id
+        )
+        
+        if not employee_with_roles:
+            logger.error(f"Failed to fetch employee roles for employee: {employee.employee_id}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error(
+                    message="Failed to fetch user roles",
+                    error_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            )
+
+        logger.info(f"🎯 Permissions collected for employee {employee.employee_id}: {len(all_permissions)} modules, roles: {roles}")
+
+        # Step 5: Generate tokens
+        current_time = int(time.time())
+        expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
+        opaque_token = secrets.token_hex(16)
+
+        token_payload = {
+            "user_id": str(employee.employee_id),
+            "tenant_id": str(tenant.tenant_id),
+            "opaque_token": opaque_token,
+            "roles": roles,
+            "permissions": all_permissions,
+            "iat": current_time,
+            "exp": expiry_time,
+        }
+
+        oauth_accessor = Oauth2AsAccessor()
+        ttl = expiry_time - current_time
+        if not oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl):
+            logger.error(f"💥 Failed to store opaque token in Redis for employee: {employee.employee_id}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error(
+                    message="Failed to store authentication token",
+                    error_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            )
+        
+        logger.debug(f"💾 Opaque token stored in Redis with TTL: {ttl} seconds")
+
+        access_token = create_access_token(
+            user_id=str(employee.employee_id),
+            tenant_id=str(tenant.tenant_id),
+            opaque_token=opaque_token,
+        )
+        refresh_token = create_refresh_token(
+            user_id=str(employee.employee_id)
         )
 
-    # Step 4: Collect roles + permissions (scoped to tenant)
-    logger.debug(f"Fetching roles and permissions for employee: {employee.employee_id} in tenant: {tenant.tenant_id}")
-    
-    # Use employee-specific role fetching instead of user_role_crud
-    employee_with_roles, roles, all_permissions = employee_crud.get_employee_roles_and_permissions(
-        db, employee_id=employee.employee_id, tenant_id=tenant.tenant_id
-    )
-    
-    if not employee_with_roles:
-        logger.error(f"Failed to fetch employee roles for employee: {employee.employee_id}")
+        logger.info(f"🚀 Login successful for employee: {employee.employee_id} ({employee.email}) in tenant: {tenant.tenant_id}")
+
+        response_data = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "user": employee_to_schema(employee)
+        }
+
+        return ResponseWrapper.success(
+            data=response_data,
+            message="Employee login successful"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Employee login failed with unexpected error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch user roles"
+            detail=ResponseWrapper.error(
+                message="Login failed due to server error",
+                error_code="SERVER_ERROR",
+                details={"error": str(e)}
+            )
         )
-
-    logger.info(f"🎯 Permissions collected for employee {employee.employee_id}: {len(all_permissions)} modules, roles: {roles}")
-
-    # Step 5: Generate tokens
-    current_time = int(time.time())
-    expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
-    opaque_token = secrets.token_hex(16)
-    
-    token_payload = {
-        "user_id": str(employee.employee_id),
-        "tenant_id": str(tenant.tenant_id),
-        "opaque_token": opaque_token,
-        "roles": roles,
-        "permissions": all_permissions,
-        "iat": current_time,
-        "exp": expiry_time,
-    }
-
-    oauth_accessor = Oauth2AsAccessor()
-    ttl = expiry_time - current_time
-    if not oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl):
-        logger.error(f"💥 Failed to store opaque token in Redis for employee: {employee.employee_id}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to store authentication token"
-        )
-    
-    logger.debug(f"💾 Opaque token stored in Redis with TTL: {ttl} seconds")
-
-    access_token = create_access_token(
-        user_id=str(employee.employee_id),
-        tenant_id=str(tenant.tenant_id),
-        opaque_token=opaque_token,
-    )
-    refresh_token = create_refresh_token(
-        user_id=str(employee.employee_id)
-    )
-    
-    logger.info(f"🚀 Login successful for employee: {employee.employee_id} ({employee.email}) in tenant: {tenant.tenant_code}")
-
-    return LoginResponse(
-        access_token=access_token,
-        refresh_token=refresh_token,
-        token_type="bearer",
-        user=employee_to_schema(employee)
-    )
 
 @router.post("/admin/login")
 async def admin_login(
     form_data: AdminLoginRequest = Body(...),
     db: Session = Depends(get_db)
 ):
-    """Admin login endpoint with standardized response format"""
+    """Admin login endpoint with roles + permissions included"""
     logger.info(f"Admin login attempt for user: {form_data.username}")
     
     try:
+        # Step 1: Validate admin existence
         admin = db.query(Admin).filter(Admin.email == form_data.username).first()
         if not admin:
             logger.warning(f"Admin login failed - Admin not found: {form_data.username}")
@@ -211,6 +224,7 @@ async def admin_login(
                 )
             )
         
+        # Step 2: Validate password
         if not verify_password(form_data.password, admin.password):
             logger.warning(f"Admin login failed - Invalid password for admin: {admin.admin_id} ({form_data.username})")
             raise HTTPException(
@@ -221,6 +235,7 @@ async def admin_login(
                 )
             )
 
+        # Step 3: Check active flag
         if not admin.is_active:
             logger.warning(f"Admin login failed - Inactive account for admin: {admin.admin_id} ({form_data.username})")
             raise HTTPException(
@@ -231,22 +246,83 @@ async def admin_login(
                 )
             )
 
+        # Step 4: Fetch roles + permissions for admin
+        logger.debug(f"Fetching roles and permissions for admin: {admin.admin_id}")
+        admin_with_roles, roles, all_permissions = admin_crud.get_admin_roles_and_permissions(
+            db, admin_id=admin.admin_id
+        )
+
+        if not admin_with_roles:
+            logger.error(f"Failed to fetch admin roles for admin: {admin.admin_id}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error(
+                    message="Failed to fetch admin roles",
+                    error_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            )
+
+        logger.info(
+            f"🎯 Permissions collected for admin {admin.admin_id}: "
+            f"{len(all_permissions)} permissions, roles: {roles}"
+        )
+
+        # Step 5: Generate opaque token
         opaque_token = secrets.token_hex(16)
         logger.debug(f"Generated opaque token for admin: {admin.admin_id}")
 
+        # Step 6: Prepare token payload + expiry
+        current_time = int(time.time())
+        expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
+        token_payload = {
+            "user_id": str(admin.admin_id),
+            "user_type": "admin",
+            "roles": roles,
+            "permissions": all_permissions,
+            "opaque_token": opaque_token,
+            "iat": current_time,
+            "exp": expiry_time,
+        }
+
+        # Step 7: Store opaque token in Redis
+        oauth_accessor = Oauth2AsAccessor()
+        ttl = expiry_time - current_time
+        if not oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl):
+            logger.error(f"💥 Failed to store opaque token in Redis for admin: {admin.admin_id}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error(
+                    message="Failed to store authentication token",
+                    error_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            )
+
+        logger.debug(f"💾 Opaque token stored in Redis with TTL: {ttl} seconds")
+
+        # Step 8: Generate JWT tokens
         access_token = create_access_token(
             user_id=str(admin.admin_id),
             opaque_token=opaque_token,
             token_context="admin"
         )
-        refresh_token = create_refresh_token(user_id=str(admin.admin_id), token_context="admin")
+        refresh_token = create_refresh_token(
+            user_id=str(admin.admin_id),
+            token_context="admin"
+        )
         
-        logger.info(f"Admin login successful for admin: {admin.admin_id} ({admin.email})")
+        logger.info(f"🚀 Admin login successful for admin: {admin.admin_id} ({admin.email})")
 
+        # Step 9: Response wrapper
         response_data = {
             "access_token": access_token,
             "refresh_token": refresh_token,
-            "token_type": "bearer"
+            "token_type": "bearer",
+            "user": {
+                "admin_id": admin.admin_id,
+                "email": admin.email,
+                "roles": roles,
+                "permissions": all_permissions
+            }
         }
 
         return ResponseWrapper.success(

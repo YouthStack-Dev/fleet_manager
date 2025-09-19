@@ -3,6 +3,7 @@ from typing import Optional, List
 from datetime import datetime
 
 class TenantBase(BaseModel):
+    tenant_id: str
     name: str
     address: Optional[str] = None
     longitude: Optional[float] = Field(None, ge=-180, le=180)
@@ -20,12 +21,11 @@ class TenantUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 class TenantResponse(TenantBase):
-    tenant_id: int
     created_at: datetime
     updated_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class TenantPaginationResponse(BaseModel):
     total: int
