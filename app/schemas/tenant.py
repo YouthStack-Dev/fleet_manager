@@ -70,6 +70,18 @@ class TenantUpdate(BaseModel):
     latitude: Optional[float] = Field(None, ge=-90, le=90)
     is_active: Optional[bool] = None
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "Acme Corp",
+                "address": "123 Main St, Anytown, USA",
+                "longitude": -75.1652,
+                "latitude": 39.9526,
+                "is_active": True,
+            }
+        }
+    )
+
 
 # ------------------------------
 # Tenant Response Schema
