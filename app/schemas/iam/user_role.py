@@ -6,7 +6,7 @@ from app.schemas.iam.role import RoleResponse
 class UserRoleBase(BaseModel):
     user_id: int
     role_id: int
-    tenant_id: Optional[int] = None
+    tenant_id: Optional[str] = None
     is_active: bool = True
 
 class UserRoleCreate(UserRoleBase):
@@ -32,4 +32,4 @@ class UserRolePaginationResponse(BaseModel):
 class UserRoleAssignment(BaseModel):
     user_id: int
     role_ids: List[int]
-    tenant_id: Optional[int] = None
+    tenant_id: Optional[str] = None
