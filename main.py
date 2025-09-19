@@ -40,6 +40,7 @@ from app.routes.iam import permission_router, policy_router, role_router, user_r
 
 from app.core.logging_config import setup_logging, get_logger
 
+
 # Setup logging as early as possible
 print("MAIN: Setting up logging...", file=sys.stdout, flush=True)
 setup_logging(force_configure=True)
@@ -96,11 +97,11 @@ app.include_router(role_router, prefix="/api/v1/iam")
 
 # Direct PostgreSQL connection for seeding database
 def get_psql_connection():
-    host = os.environ.get("POSTGRES_HOST", "localhost")
-    port = os.environ.get("POSTGRES_PORT", "5434")  # Use the correct port 5434 instead of default 5432
-    database = os.environ.get("POSTGRES_DB", "fleet_db")
-    user = os.environ.get("POSTGRES_USER", "fleetadmin")
-    password = os.environ.get("POSTGRES_PASSWORD", "fleetpass")
+    host = os.getenv("POSTGRES_HOST", "localhost")
+    port = os.getenv("POSTGRES_PORT", "5434")  # Use the correct port 5434 instead of default 5432
+    database = os.getenv("POSTGRES_DB", "fleet_db")
+    user = os.getenv("POSTGRES_USER", "fleetadmin")
+    password = os.getenv("POSTGRES_PASSWORD", "fleetpass")
     
     try:
         return psycopg2.connect(
@@ -114,6 +115,10 @@ def get_psql_connection():
         print(f"Connection parameters: host={host}, port={port}, database={database}, user={user}")
         print(f"Connection error: {str(e)}")
         raise e
+
+
+from app.config import settings
+logger.info("Environment:", settings)
 
 
 @app.get("/")
@@ -280,33 +285,31 @@ async def create_tables_endpoint():
 
 
 @app.post("/drop-tables")
-async def drop_tables_endpoint():
+async def drop_tables_endpoint(
+    db: Session = Depends(get_db)
+):
     """Drop all tables from the database"""
     try:
-        conn = get_psql_connection()
-        cursor = conn.cursor()
-        
+        logger.info("Dropping all tables from the database...")
         # Set session to terminate other connections that might block table dropping
-        cursor.execute("SET session_replication_role = 'replica';")
+        db.execute(text("SET session_replication_role = 'replica';"))
         
         # Get all tables in public schema
-        cursor.execute("""
+        result = db.execute(text("""
             SELECT tablename FROM pg_tables WHERE schemaname = 'public';
-        """)
-        tables = cursor.fetchall()
+        """))
+        tables = result.fetchall()
         
         if not tables:
             return {"message": "No tables found to drop"}
         
         # Drop all tables
-        cursor.execute("DROP TABLE IF EXISTS " + ", ".join(f'"{table[0]}"' for table in tables) + " CASCADE;")
+        db.execute(text("DROP TABLE IF EXISTS " + ", ".join(f'"{table[0]}"' for table in tables) + " CASCADE;"))
         
         # Reset session
-        cursor.execute("SET session_replication_role = 'origin';")
+        db.execute(text("SET session_replication_role = 'origin';"))
         
-        conn.commit()
-        cursor.close()
-        conn.close()
+        db.commit()
         
         return {
             "message": f"Successfully dropped {len(tables)} tables",

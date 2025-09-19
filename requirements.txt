@@ -17,3 +17,4 @@ PyJWT
 httpx
 cachetools
 redis
+requests

@@ -16,10 +16,11 @@ from functools import lru_cache
 from app.database.session import SessionLocal
 from app.models.iam import Permission, Policy, Role, UserRole
 from sqlalchemy.orm import Session, joinedload
+from app.config import settings
 
-# Configuration
-SECRET_KEY = "your-secret-key"  # Should be stored in environment variables
-ALGORITHM = "HS256"
+# Configuration - use centralized settings
+SECRET_KEY = settings.SECRET_KEY
+ALGORITHM = settings.ALGORITHM
 
 logger = logging.getLogger("uvicorn")
 
@@ -27,33 +28,23 @@ logger = logging.getLogger("uvicorn")
 permission_cache = {}
 permission_cache_ttl = 60*60*24  # 5 minutes
 
-# # Environment Variables
-# OAUTH2_ENV = os.getenv("OAUTH2_ENV", "dev").strip()
-# OAUTH2_URL = os.getenv("OAUTH2_URL", "http://127.0.0.1:8000/api/auth/introspect").strip()
-# X_INTROSPECT_SECRET = os.getenv("X_Introspect_Secret","Testing_").strip()
-from dotenv import load_dotenv
-
-# load .env file
-load_dotenv()
-
 # Create a security instance
 security = HTTPBearer()
 
-OAUTH2_ENV = os.getenv("OAUTH2_ENV", "dev").strip()
-
-
-X_INTROSPECT_SECRET = os.getenv("X_INTROSPECT_SECRET", "Testing_").strip()
-OAUTH2_URL = os.getenv("OAUTH2_URL", "http://127.0.0.1:8000/api/v1/auth/introspect").strip()
+# Environment Variables - use centralized settings
+OAUTH2_ENV = settings.ENV
+X_INTROSPECT_SECRET = settings.X_INTROSPECT_SECRET
+OAUTH2_URL = settings.OAUTH2_URL
 
 print(f"Running in {OAUTH2_ENV} mode")
 print(f"OAUTH2_URL = {OAUTH2_URL}")
 
-# Redis connection settings
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-REDIS_DB = int(os.getenv("REDIS_DB", "0"))
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
-USE_REDIS = os.getenv("USE_REDIS", "0").strip() == "1"
+# Redis connection settings - use centralized settings
+REDIS_HOST = settings.REDIS_HOST
+REDIS_PORT = settings.REDIS_PORT
+REDIS_DB = settings.REDIS_DB
+REDIS_PASSWORD = settings.REDIS_PASSWORD or "redispassword"
+USE_REDIS = settings.USE_REDIS
 
 
 class OAuthApiAccessorError(Exception):
@@ -317,22 +308,11 @@ class Oauth2AsAccessor:
 
         if response.status_code == 200:
             return response.json()
-        # elif response.status_code == 400:
-        #     return response.json()
-        # elif response.status_code == 401:
-        #     raise HTTPException(
-        #         status_code=response,
-        #         detail="UnAuthorized"
-        #     )
         else:
             raise HTTPException(
                 status_code=response.status_code,
                 detail=response.json()['detail']
             )
-            # raise OAuthApiAccessorError(
-            #     f"Validation API call failed with HTTP status code {response.status_code}",
-            #     5001,
-            # )
 
     def store_token_inmem_cache(self, opaque_token,data,ttl=None):
         # Fallback to in-memory cache or if Redis failed
@@ -430,16 +410,69 @@ class Oauth2AsAccessor:
                 del self.cache[cache_key]
         return None
 
-    def validate_oauth2_token(self, oauth_token, use_cache=True):
+    def validate_oauth2_token(self, oauth_token, opaque_token=None, use_cache=True):
         # Check if token is in the cache
         if use_cache:
-            cached_response = self.get_cached_oauth2_token(oauth_token)
+            cached_response = self.get_cached_oauth2_token(opaque_token)
             if cached_response:
                 logging.info("Cache hit")
                 return cached_response
 
-        logging.info("Cache miss")
-        # Otherwise, perform a network call
+        logging.info("Cache miss - calling introspection directly")
+        
+        try:
+            # Instead of making HTTP request to ourselves, call introspection logic directly
+            from app.routes.auth_router import introspect_token_direct
+            
+            # Call the introspection function directly
+            response_data = introspect_token_direct(oauth_token)
+            
+            # Only cache if response is successful and contains 'exp'
+            if response_data:
+                # Calculate the expiry time based on the 'exp' field
+                expiry_time = response_data.get("exp", int(time.time()) + 3600)
+                current_time = int(time.time())
+
+                if expiry_time > current_time:
+                    ttl = expiry_time - current_time
+                    if use_cache:
+                        # Store in Redis if available
+                        if self.use_redis:
+                            self.redis_manager.store_token(opaque_token, response_data, ttl)
+                        else:
+                            self.store_token_inmem_cache(opaque_token, response_data, ttl)
+                        
+                        logging.info(
+                            "Response cached for token: %s, TTL: %s seconds",
+                            opaque_token,
+                            ttl,
+                        )
+
+            # Indicate the source is a direct call
+            response_data["source"] = "introspect-direct"
+            
+            return response_data
+        
+        except HTTPException as e:
+            raise e
+        
+        except ImportError:
+            logging.error("Could not import introspect_token_direct function. Falling back to external validation.")
+            # Fallback to external HTTP call if direct function is not available
+            return self._validate_oauth2_token_http(oauth_token, opaque_token, use_cache)
+            
+        except Exception as ex:
+            logging.error(
+                "Error occurred in validate_oauth2_token direct call: %s", str(ex),
+                exc_info=True
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Authentication process failed. Please try again or contact support."
+            )
+
+    def _validate_oauth2_token_http(self, oauth_token, opaque_token=None, use_cache=True):
+        """Fallback method for external HTTP validation when direct call is not available"""
         try:
             logging.debug("OAUTH2_ENV: %s", OAUTH2_ENV)
             self.validate_env_variables()
@@ -447,16 +480,18 @@ class Oauth2AsAccessor:
             headers = self.get_headers(oauth_token)
             
             # Add debug logging for the request
-            logging.info(f"Making request to: {url}")
+            logging.info(f"Making HTTP request to: {url}")
             logging.debug(f"Request headers: {headers}")
             
+            import requests
             # Set timeout to avoid hanging requests
-            response = httpx.post(url, headers=headers, timeout=30.0)
+            response = requests.post(url, headers=headers, timeout=30.0)
             
             logging.debug(f"Response status: {response.status_code}")
             logging.debug(f"Response headers: {response.headers}")
             
             response_data = self.handle_response(response)
+            
             # Only cache if response is 200 and if it contains 'exp'
             if response.status_code == 200:
                 # Calculate the expiry time based on the 'exp' field
@@ -469,7 +504,6 @@ class Oauth2AsAccessor:
                         # Store in Redis if available
                         if self.use_redis:
                             self.redis_manager.store_token(oauth_token, response_data, ttl)
-                        
                         else:
                             self.store_token_inmem_cache(oauth_token, response_data, ttl)
                         
@@ -480,35 +514,32 @@ class Oauth2AsAccessor:
                         )
 
             # Indicate the source is a network call
-            response_data["source"] = "introspect-call"
+            response_data["source"] = "introspect-http"
             
             return response_data
         
-        except HTTPException as e:
-            raise e
-        
-        except httpx.TimeoutException:
+        except requests.exceptions.ReadTimeout:
             logging.error("Request to OAuth2 server timed out. Server might be down or unreachable.")
             raise HTTPException(
                 status_code=503,
-                detail="Try logging in again! Authentication server is not responding. Please try again later."
+                detail="Authentication server is not responding. Please try again later."
             )
             
-        except httpx.ConnectError as ex:
+        except requests.exceptions.ConnectionError as ex:
             logging.error(f"Connection error to OAuth2 server: {str(ex)}")
             raise HTTPException(
                 status_code=503,
-                detail="Try logging in again! Could not connect to authentication server. Please check your network."
+                detail="Could not connect to authentication server. Please check your network."
             )
             
         except Exception as ex:
             logging.error(
-                "Error occurred in validate_oauth2_token API call: %s", str(ex),
-                exc_info=True  # Include full traceback for better debugging
+                "Error occurred in HTTP validation: %s", str(ex),
+                exc_info=True
             )
             raise HTTPException(
                 status_code=500,
-                detail="Try logging in again! Authentication process failed. Please try again or contact support."
+                detail="Authentication process failed. Please try again or contact support."
             )
 
     def revoke_token(self, token):
@@ -553,10 +584,10 @@ class Oauth2AsAccessor:
         return results
 
 
-def access_token_validator(token, verbosity, use_cache: bool = True):
+def access_token_validator(token, opaque_token, verbosity, use_cache: bool = True):
     Oauth2AsAccessor.set_verbosity(verbosity)
     accessor = Oauth2AsAccessor()
-    return accessor.validate_oauth2_token(token, use_cache=use_cache)
+    return accessor.validate_oauth2_token(token, opaque_token, use_cache=use_cache)
 
 def get_permission_set(user_id: int, tenant_id: int = None, use_cache: bool = True) -> Set[str]:
     """Get all permissions for a user, with optional caching"""
@@ -617,60 +648,36 @@ def get_permission_set(user_id: int, tenant_id: int = None, use_cache: bool = Tr
 
 def validate_bearer_token(use_cache: bool = True):
     async def get_token_data(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict:
-        print("done")
-
         token = credentials.credentials
         
         try:
             # Verify token and extract payload
-
             payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
             
-            print(payload)
-            validation_result = access_token_validator(payload.get("opaque_token"), 40, use_cache)
+            logger.debug(f"Token payload: {payload}")
+            validation_result = access_token_validator(token, payload.get("opaque_token"), 40, use_cache)
 
-            print("actual permissions fetched from cache",validation_result)
+            logger.debug(f"Validation result from cache: {validation_result}")
 
-            # Get user permissions
-            user_id = payload.get("user_id")
-            tenant_id = payload.get("tenant_id")
+            # Get user permissions from validation result
+            user_id = validation_result.get("user_id") or payload.get("user_id")
+            tenant_id = validation_result.get("tenant_id") or payload.get("tenant_id")
             
-            print(user_id,tenant_id)
+            logger.debug(f"User ID: {user_id}, Tenant ID: {tenant_id}")
+            
             if not user_id:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid authentication token",
                 )
-            
-            print("done")
 
-            # Get all effective permissions for this user
-            permissions = get_permission_set(user_id, tenant_id, use_cache)
-            # Add formatted permissions to the token data
-            formatted_permissions = []
-            for perm in permissions:
-                module, action = perm.split(".")
-                # Check if this module already exists in the formatted list
-                module_exists = False
-                for p in formatted_permissions:
-                    if p["module"] == module:
-                        p["action"].append(action)
-                        module_exists = True
-                        break
-                
-                if not module_exists:
-                    formatted_permissions.append({
-                        "module": module,
-                        "action": [action]
-                    })
-            
-            # Return the token data with permissions
+            # Return the token data with permissions from validation result
             return {
                 "user_id": user_id,
                 "tenant_id": tenant_id,
-                "roles": payload.get("roles", []),
+                "roles": validation_result.get("roles", []),
                 "permissions": validation_result.get("permissions", []),
-                # Include any other fields needed from the token
+                "token_context": validation_result.get("token_context"),
             }
             
         except PyJWTError as e:
