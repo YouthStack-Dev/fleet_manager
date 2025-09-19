@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List
 from datetime import datetime
 
@@ -11,7 +11,7 @@ class TenantBase(BaseModel):
     is_active: bool = True
 
 class TenantCreate(TenantBase):
-    pass
+    permission_ids: List[int] = Field(..., description="List of permission IDs to assign to tenant admin policy")
 
 class TenantUpdate(BaseModel):
     name: Optional[str] = None

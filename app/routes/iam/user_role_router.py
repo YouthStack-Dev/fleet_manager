@@ -61,7 +61,7 @@ async def get_user_roles(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=100),
     user_id: Optional[int] = None,
-    tenant_id: Optional[int] = None,
+    tenant_id: Optional[str] = None,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["role.read"], check_tenant=True))
 ):
@@ -90,7 +90,7 @@ async def get_user_roles(
 @router.get("/user/{user_id}", response_model=List[UserRoleResponse])
 async def get_roles_for_user(
     user_id: int,
-    tenant_id: Optional[int] = None,
+    tenant_id: Optional[str] = None,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["role.read"], check_tenant=True))
 ):

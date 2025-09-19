@@ -11,7 +11,7 @@ class CRUDTeam(CRUDBase[Team, TeamCreate, TeamUpdate]):
         """Get team by primary key"""
         return db.query(Team).filter(Team.team_id == team_id).first()
 
-    def get_by_name(self, db: Session, *, tenant_id: int, name: str) -> Optional[Team]:
+    def get_by_name(self, db: Session, *, tenant_id: str, name: str) -> Optional[Team]:
         """Get team by name scoped to tenant"""
         return (
             db.query(Team)
@@ -27,8 +27,7 @@ class CRUDTeam(CRUDBase[Team, TeamCreate, TeamUpdate]):
             description=obj_in.description
         )
         db.add(db_obj)
-        db.commit()
-        db.refresh(db_obj)
+        db.flush()
         return db_obj
 
     def update(
@@ -39,7 +38,7 @@ class CRUDTeam(CRUDBase[Team, TeamCreate, TeamUpdate]):
         return super().update(db, db_obj=db_obj, obj_in=update_data)
 
     def get_all(
-        self, db: Session, *, tenant_id: int, skip: int = 0, limit: int = 100
+        self, db: Session, *, tenant_id: str, skip: int = 0, limit: int = 100
     ) -> List[Team]:
         """Get all teams for a tenant"""
         return (
@@ -50,7 +49,7 @@ class CRUDTeam(CRUDBase[Team, TeamCreate, TeamUpdate]):
             .all()
         )
 
-    def count(self, db: Session, *, tenant_id: int) -> int:
+    def count(self, db: Session, *, tenant_id: str) -> int:
         """Count teams per tenant"""
         return db.query(Team).filter(Team.tenant_id == tenant_id).count()
 

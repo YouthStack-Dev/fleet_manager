@@ -23,8 +23,7 @@ class CRUDTenant(CRUDBase[Tenant, TenantCreate, TenantUpdate]):
             is_active=obj_in.is_active,
         )
         db.add(db_obj)
-        db.commit()
-        db.refresh(db_obj)
+        db.flush()
         return db_obj
 
     def update(
@@ -54,7 +53,7 @@ class CRUDTenant(CRUDBase[Tenant, TenantCreate, TenantUpdate]):
             )
         ).offset(skip).limit(limit).all()
 
-    def get_tenant_roles_and_permissions(self, db: Session, *, tenant_id: int):
+    def get_tenant_roles_and_permissions(self, db: Session, *, tenant_id: str):
         """Get tenant with their roles and permissions"""
         from app.models.iam import Role, Policy  # avoid circular imports
 

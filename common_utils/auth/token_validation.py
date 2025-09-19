@@ -558,7 +558,7 @@ def access_token_validator(token, verbosity, use_cache: bool = True):
     accessor = Oauth2AsAccessor()
     return accessor.validate_oauth2_token(token, use_cache=use_cache)
 
-def get_permission_set(user_id: int, tenant_id: int = None, use_cache: bool = True) -> Set[str]:
+def get_permission_set(user_id: int, tenant_id: str = None, use_cache: bool = True) -> Set[str]:
     """Get all permissions for a user, with optional caching"""
     
     cache_key = f"{user_id}_{tenant_id}"

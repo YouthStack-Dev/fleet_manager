@@ -150,6 +150,29 @@ def seed_iam(db: Session):
         policy.permissions = [permissions_map[p] for p in perms if p in permissions_map]
         policies_map[policy_name] = policy
 
+    # --- Step 2.1: Extra TenantPolicies (all-in-one) ---
+    tenant_policy_name = "TenantPolicies"
+    tenant_policy = db.query(Policy).filter(Policy.name == tenant_policy_name).first()
+    if not tenant_policy:
+        tenant_policy = Policy(
+            name=tenant_policy_name,
+            description="Aggregated policy with all tenant-related permissions",
+        )
+        db.add(tenant_policy)
+        logger.info(f"Policy {tenant_policy_name} created.")
+    else:
+        logger.debug(f"Policy {tenant_policy_name} already exists.")
+
+    # attach ALL listed module permissions into this one policy
+    tenant_perms = []
+    for module in modules:
+        for action in actions:
+            key = f"{module}:{action}"
+            if key in permissions_map:
+                tenant_perms.append(permissions_map[key])
+    tenant_policy.permissions = tenant_perms
+    policies_map[tenant_policy_name] = tenant_policy
+
     # --- Step 3: Roles ---
     roles_def = {
         "SuperAdmin": list(policies_map.keys()),  # all policies
@@ -175,6 +198,7 @@ def seed_iam(db: Session):
     # Commit all
     db.commit()
     logger.info("✅ IAM seeding completed successfully.")
+
 
 def seed_teams(db: Session):
     """

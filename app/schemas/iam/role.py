@@ -6,7 +6,7 @@ from app.schemas.iam.policy import PolicyResponse
 class RoleBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = Field(None, max_length=255)
-    tenant_id: Optional[int] = None
+    tenant_id: Optional[str] = None
     is_system_role: bool = False
     is_active: bool = True
 

@@ -11,14 +11,14 @@ class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
         """Get employee by email"""
         return db.query(Employee).filter(Employee.email == email).first()
     
-    def get_by_employee_code(self, db: Session, *, employee_code: str, tenant_id: int) -> Optional[Employee]:
+    def get_by_employee_code(self, db: Session, *, employee_code: str, tenant_id: str) -> Optional[Employee]:
         """Get employee by employee code within a specific tenant"""
         return db.query(Employee).filter(
             Employee.employee_code == employee_code,
             Employee.tenant_id == tenant_id
         ).first()
     
-    def create_with_tenant(self, db: Session, *, obj_in: EmployeeCreate, tenant_id: int) -> Employee:
+    def create_with_tenant(self, db: Session, *, obj_in: EmployeeCreate, tenant_id: str) -> Employee:
         """Create employee for a specific tenant"""
         db_obj = Employee(
             tenant_id=tenant_id,
@@ -55,19 +55,19 @@ class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
         return super().update(db, db_obj=db_obj, obj_in=update_data)
     
     def get_employees_by_tenant(
-        self, db: Session, *, tenant_id: int, skip: int = 0, limit: int = 100
+        self, db: Session, *, tenant_id: str, skip: int = 0, limit: int = 100
     ) -> List[Employee]:
         """Get all employees for a specific tenant"""
         return db.query(Employee).filter(
             Employee.tenant_id == tenant_id
         ).offset(skip).limit(limit).all()
     
-    def count_by_tenant(self, db: Session, *, tenant_id: int) -> int:
+    def count_by_tenant(self, db: Session, *, tenant_id: str) -> int:
         """Count employees in a specific tenant"""
         return db.query(Employee).filter(Employee.tenant_id == tenant_id).count()
     
     def search_employees(
-        self, db: Session, *, tenant_id: int, search_term: str, skip: int = 0, limit: int = 100
+        self, db: Session, *, tenant_id: str, search_term: str, skip: int = 0, limit: int = 100
     ) -> List[Employee]:
         """Search employees by name, email or employee code"""
         search_pattern = f"%{search_term}%"
@@ -80,7 +80,7 @@ class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
             )
         ).offset(skip).limit(limit).all()
     
-    def get_employee_roles_and_permissions(self, db: Session, *, employee_id: int, tenant_id: int):
+    def get_employee_roles_and_permissions(self, db: Session, *, employee_id: int, tenant_id: str):
         """Get employee with their roles and permissions for a specific tenant"""
         from app.models.iam import Role, Policy  # Import here to avoid circular imports
         

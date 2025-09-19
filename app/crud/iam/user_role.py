@@ -6,7 +6,7 @@ from app.schemas.iam import UserRoleCreate, UserRoleUpdate
 from app.crud.base import CRUDBase
 
 class CRUDUserRole(CRUDBase[UserRole, UserRoleCreate, UserRoleUpdate]):
-    def get_by_user_and_tenant(self, db: Session, *, user_id: int, tenant_id: int) -> List[UserRole]:
+    def get_by_user_and_tenant(self, db: Session, *, user_id: int, tenant_id: str) -> List[UserRole]:
         return db.query(UserRole).filter(
             UserRole.user_id == user_id,
             UserRole.tenant_id == tenant_id,

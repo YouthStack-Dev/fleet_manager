@@ -3,9 +3,14 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import Optional
 from app.database.session import get_db
+from app.models.iam.permission import Permission
+from app.models.iam.policy import Policy
+from app.models.iam.role import Role
 from app.models.tenant import Tenant
 from app.crud.tenant import tenant_crud
 from app.crud.team import team_crud
+from app.schemas.iam.policy import PolicyResponse
+from app.schemas.iam.role import RoleResponse
 from app.schemas.team import TeamCreate, TeamResponse
 from app.schemas.tenant import TenantCreate, TenantUpdate, TenantResponse, TenantPaginationResponse
 from app.utils.pagination import paginate_query
@@ -14,6 +19,9 @@ from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
 logger = get_logger(__name__)
 router = APIRouter(prefix="/tenants", tags=["tenants"])
+
+
+
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
@@ -27,49 +35,109 @@ def create_tenant(
     logger.info(f"Create tenant request received: {tenant.dict()}")
 
     try:
-        # --- Check duplicates ---
-        if tenant_crud.get_by_id(db, tenant_id=tenant.tenant_id):
-            logger.warning(f"Tenant creation failed - duplicate id: {tenant.tenant_id}")
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=ResponseWrapper.error(
-                    message=f"Tenant with id '{tenant.tenant_id}' already exists",
-                    error_code=status.HTTP_409_CONFLICT
+        with db.begin():  # Ensures atomic commit/rollback
+            # --- Check duplicates ---
+            if tenant_crud.get_by_id(db, tenant_id=tenant.tenant_id):
+                logger.warning(f"Tenant creation failed - duplicate id: {tenant.tenant_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=ResponseWrapper.error(
+                        message=f"Tenant with id '{tenant.tenant_id}' already exists",
+                        error_code=status.HTTP_409_CONFLICT
+                    )
+                )
+
+            if tenant_crud.get_by_name(db, name=tenant.name):
+                logger.warning(f"Tenant creation failed - duplicate name: {tenant.name}")
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=ResponseWrapper.error(
+                        message=f"Tenant with name '{tenant.name}' already exists",
+                        error_code=status.HTTP_409_CONFLICT
+                    )
+                )
+
+            # --- Create tenant ---
+            new_tenant = tenant_crud.create(db, obj_in=tenant)
+            logger.info(f"Tenant created successfully: {new_tenant.tenant_id}")
+
+            # --- Create default team ---
+            default_team = team_crud.create(
+                db,
+                obj_in=TeamCreate(
+                    tenant_id=new_tenant.tenant_id,
+                    name=f"{default_team_name}_{new_tenant.tenant_id}",
+                    description=default_team_desc
                 )
             )
+            logger.info(f"Default team created: {default_team.name}")
 
-        if tenant_crud.get_by_name(db, name=tenant.name):
-            logger.warning(f"Tenant creation failed - duplicate name: {tenant.name}")
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=ResponseWrapper.error(
-                    message=f"Tenant with name '{tenant.name}' already exists",
-                    error_code=status.HTTP_409_CONFLICT
-                )
-            )
-
-        # --- Create tenant ---
-        new_tenant = tenant_crud.create(db, obj_in=tenant)
-        logger.info(f"Tenant created successfully: {new_tenant.tenant_id}")
-
-        # --- Create default team for this tenant ---
-        default_team = team_crud.create(
-            db,
-            obj_in=TeamCreate(
+            # --- Create Admin Role for tenant ---
+            admin_role_name = f"{new_tenant.tenant_id}_Admin"
+            admin_role = Role(
                 tenant_id=new_tenant.tenant_id,
-                name=default_team_name,
-                description=default_team_desc
+                name=admin_role_name,
+                description=f"Admin role for tenant {new_tenant.name}",
+                is_active=True,
             )
-        )
-        logger.info(f"Default team created for tenant {new_tenant.tenant_id}: {default_team.name}")
+            db.add(admin_role)
+            db.flush()
+            logger.info(f"Admin role created: {admin_role_name}")
+
+            # --- Create tenant-specific Admin Policy ---
+            admin_policy_name = f"{new_tenant.tenant_id}_AdminPolicy"
+            admin_policy = Policy(
+                name=admin_policy_name,
+                description=f"Admin policy for tenant {new_tenant.name}",
+                is_active=True
+            )
+            db.add(admin_policy)
+            db.flush()
+            logger.info(f"Tenant policy created: {admin_policy_name}")
+
+            # --- Attach permissions ---
+            if tenant.permission_ids:
+                permissions = (
+                    db.query(Permission)
+                    .filter(Permission.permission_id.in_(tenant.permission_ids))
+                    .all()
+                )
+
+                found_ids = {p.permission_id for p in permissions}
+                missing_ids = set(tenant.permission_ids) - found_ids
+                if missing_ids:
+                    logger.warning(
+                        f"Invalid permission IDs {list(missing_ids)} for tenant {new_tenant.tenant_id}"
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=ResponseWrapper.error(
+                            message="Some permission IDs are invalid",
+                            error_code=status.HTTP_400_BAD_REQUEST,
+                            details={"invalid_permission_ids": list(missing_ids)},
+                        ),
+                    )
+
+                admin_policy.permissions = permissions
+                logger.info(
+                    f"Attached permissions {[p.permission_id for p in permissions]} "
+                    f"({[p.module + ':' + p.action for p in permissions]}) "
+                    f"to policy {admin_policy_name}"
+                )
+
+            # --- Link Role to Policy ---
+            admin_role.policies.append(admin_policy)
+            logger.info(f"Linked role {admin_role_name} to policy {admin_policy_name}")
 
         # --- Response ---
         return ResponseWrapper.success(
             data={
                 "tenant": TenantResponse.model_validate(new_tenant),
                 "team": TeamResponse.model_validate(default_team),
+                "admin_role": RoleResponse.model_validate(admin_role),
+                "admin_policy": PolicyResponse.model_validate(admin_policy)
             },
-            message="Tenant and default team created successfully"
+            message="Tenant, default team, admin role, and policy created successfully"
         )
 
     except HTTPException:
@@ -108,7 +176,7 @@ def read_tenants(
 
 @router.get("/{tenant_id}", response_model=TenantResponse)
 def read_tenant(
-    tenant_id: int, 
+    tenant_id: str, 
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["admin.tenant.read"], check_tenant=False))
 ):
@@ -122,7 +190,7 @@ def read_tenant(
 
 @router.put("/{tenant_id}", response_model=TenantResponse)
 def update_tenant(
-    tenant_id: int, 
+    tenant_id: str, 
     tenant_update: TenantUpdate, 
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["admin.tenant.update"], check_tenant=False))
@@ -144,7 +212,7 @@ def update_tenant(
 
 @router.delete("/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_tenant(
-    tenant_id: int, 
+    tenant_id: str, 
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["admin.tenant.delete"], check_tenant=False))
 ):
