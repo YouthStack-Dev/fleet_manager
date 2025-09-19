@@ -5,6 +5,8 @@ from typing import Optional
 from app.database.session import get_db
 from app.models.tenant import Tenant
 from app.crud.tenant import tenant_crud
+from app.crud.team import team_crud
+from app.schemas.team import TeamCreate, TeamResponse
 from app.schemas.tenant import TenantCreate, TenantUpdate, TenantResponse, TenantPaginationResponse
 from app.utils.pagination import paginate_query
 from app.utils.response_utils import ResponseWrapper
@@ -18,12 +20,14 @@ router = APIRouter(prefix="/tenants", tags=["tenants"])
 def create_tenant(
     tenant: TenantCreate,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["admin.tenant.create"], check_tenant=False))
+    user_data=Depends(PermissionChecker(["admin.tenant.create"], check_tenant=False)),
+    default_team_name: str = "Default Team",
+    default_team_desc: str = "Auto-created team for this tenant"
 ):
     logger.info(f"Create tenant request received: {tenant.dict()}")
 
     try:
-        # Check if tenant already exists (by ID or name)
+        # --- Check duplicates ---
         if tenant_crud.get_by_id(db, tenant_id=tenant.tenant_id):
             logger.warning(f"Tenant creation failed - duplicate id: {tenant.tenant_id}")
             raise HTTPException(
@@ -44,14 +48,28 @@ def create_tenant(
                 )
             )
 
-        # Create tenant
+        # --- Create tenant ---
         new_tenant = tenant_crud.create(db, obj_in=tenant)
         logger.info(f"Tenant created successfully: {new_tenant.tenant_id}")
 
-        # Wrap into response format
+        # --- Create default team for this tenant ---
+        default_team = team_crud.create(
+            db,
+            obj_in=TeamCreate(
+                tenant_id=new_tenant.tenant_id,
+                name=default_team_name,
+                description=default_team_desc
+            )
+        )
+        logger.info(f"Default team created for tenant {new_tenant.tenant_id}: {default_team.name}")
+
+        # --- Response ---
         return ResponseWrapper.success(
-            data=TenantResponse.model_validate(new_tenant),
-            message="Tenant created successfully"
+            data={
+                "tenant": TenantResponse.model_validate(new_tenant),
+                "team": TeamResponse.model_validate(default_team),
+            },
+            message="Tenant and default team created successfully"
         )
 
     except HTTPException:
@@ -67,42 +85,6 @@ def create_tenant(
                 details={"error": str(e)}
             )
         )
-
-
-# def create_tenant(db: Session, tenant: TenantCreate):
-#     try:
-#         logger.info(f"Create tenant request received: {tenant.dict()}")
-
-#         db_tenant = Tenant(
-#             tenant_name=tenant.tenant_name.strip(),
-#             tenant_metadata=tenant.tenant_metadata,
-#             is_active=tenant.is_active
-#         )
-
-#         db.add(db_tenant)
-#         db.commit()
-#         db.refresh(db_tenant)
-
-#         logger.info(f"Tenant created successfully with tenant_id: {db_tenant.tenant_id}")
-#         return db_tenant
-#     except IntegrityError as e:
-#         db.rollback()
-#         logger.error(f"IntegrityError while creating tenant: {str(e)}")
-#         raise HTTPException(status_code=409, detail="Tenant already exists or unique constraint violated.")
-#     except HTTPException as e:
-#     # Allow FastAPI to handle HTTP errors directly
-#         raise e
-    
-#     except SQLAlchemyError as e:
-#         db.rollback()
-#         logger.error(f"Database error while creating tenant: {str(e)}")
-#         raise HTTPException(status_code=500, detail="A database error occurred while creating the tenant.")
-
-#     except Exception as e:
-#         db.rollback()
-#         logger.exception(f"Unexpected error while creating tenant: {str(e)}")
-#         raise HTTPException(status_code=500, detail="An unexpected error occurred while creating the tenant.")
-
 
 @router.get("/", response_model=TenantPaginationResponse)
 def read_tenants(
