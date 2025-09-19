@@ -189,7 +189,7 @@ def introspect_token_direct(token: str) -> dict:
         db.close()  # Ensure session is closed
 
 @router.post("/employee/login")
-async def login(
+async def employee_login(
     form_data: EmployeeLoginRequest = Body(...),
     db: Session = Depends(get_db)
 ):
@@ -292,15 +292,14 @@ async def login(
         logger.debug(f"💾 Opaque token stored in Redis with TTL: {ttl} seconds")
 
         access_token = create_access_token(
-            token_context="tenant",
             user_id=str(employee.employee_id),
             tenant_id=str(tenant.tenant_id),
             opaque_token=opaque_token,
-            token_context="employee"  # Add token context
+            token_context="employee" 
         )
         refresh_token = create_refresh_token(
             user_id=str(employee.employee_id),
-            token_context="tenant"
+            token_context="employee"
         )
 
         logger.info(f"🚀 Login successful for employee: {employee.employee_id} ({employee.email}) in tenant: {tenant.tenant_id}")
