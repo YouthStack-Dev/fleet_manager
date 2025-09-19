@@ -1,22 +1,28 @@
-from pydantic import BaseModel, EmailStr
-from typing import Optional
+from pydantic import BaseModel, EmailStr, Field
+from typing import Optional, List
 from datetime import datetime
+
 
 class AdminBase(BaseModel):
     name: str
     email: EmailStr
-    phone: Optional[str] = None
+    phone: str
+    role_id: int
     is_active: bool = True
 
+
 class AdminCreate(AdminBase):
-    password: str
+    password: str = Field(..., min_length=8, description="Hashed password will be stored")
+
 
 class AdminUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[EmailStr] = None
     phone: Optional[str] = None
+    role_id: Optional[int] = None
+    password: Optional[str] = Field(None, min_length=8)
     is_active: Optional[bool] = None
-    password: Optional[str] = None
+
 
 class AdminResponse(AdminBase):
     admin_id: int
@@ -24,4 +30,9 @@ class AdminResponse(AdminBase):
     updated_at: datetime
 
     class Config:
-        from_attributes = True
+        orm_mode = True
+
+
+class AdminPaginationResponse(BaseModel):
+    total: int
+    items: List[AdminResponse]

@@ -7,7 +7,7 @@ class Team(Base):
     __tablename__ = "teams"
 
     team_id = Column(Integer, primary_key=True, index=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
+    tenant_id = Column(String(50), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
     name = Column(String(150), nullable=False)
     description = Column(Text)
     created_at = Column(DateTime, default=func.now(), nullable=False)

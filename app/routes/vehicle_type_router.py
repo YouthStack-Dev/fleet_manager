@@ -5,11 +5,16 @@ from app.database.session import get_db
 from app.models.vehicle_type import VehicleType
 from app.schemas.vehicle_type import VehicleTypeCreate, VehicleTypeUpdate, VehicleTypeResponse, VehicleTypePaginationResponse
 from app.utils.pagination import paginate_query
+from common_utils.auth.permission_checker import PermissionChecker
 
 router = APIRouter(prefix="/vehicle-types", tags=["vehicle types"])
 
 @router.post("/", response_model=VehicleTypeResponse, status_code=status.HTTP_201_CREATED)
-def create_vehicle_type(vehicle_type: VehicleTypeCreate, db: Session = Depends(get_db)):
+def create_vehicle_type(
+    vehicle_type: VehicleTypeCreate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["vehicle-type.create"], check_tenant=True))
+):
     db_vehicle_type = VehicleType(**vehicle_type.dict())
     db.add(db_vehicle_type)
     db.commit()
@@ -23,7 +28,8 @@ def read_vehicle_types(
     name: Optional[str] = None,
     vendor_id: Optional[int] = None,
     is_active: Optional[bool] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["vehicle-type.read"], check_tenant=True))
 ):
     query = db.query(VehicleType)
     
@@ -39,7 +45,11 @@ def read_vehicle_types(
     return {"total": total, "items": items}
 
 @router.get("/{vehicle_type_id}", response_model=VehicleTypeResponse)
-def read_vehicle_type(vehicle_type_id: int, db: Session = Depends(get_db)):
+def read_vehicle_type(
+    vehicle_type_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["vehicle-type.read"], check_tenant=True))
+):
     db_vehicle_type = db.query(VehicleType).filter(VehicleType.vehicle_type_id == vehicle_type_id).first()
     if not db_vehicle_type:
         raise HTTPException(
@@ -49,7 +59,12 @@ def read_vehicle_type(vehicle_type_id: int, db: Session = Depends(get_db)):
     return db_vehicle_type
 
 @router.put("/{vehicle_type_id}", response_model=VehicleTypeResponse)
-def update_vehicle_type(vehicle_type_id: int, vehicle_type_update: VehicleTypeUpdate, db: Session = Depends(get_db)):
+def update_vehicle_type(
+    vehicle_type_id: int, 
+    vehicle_type_update: VehicleTypeUpdate, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["vehicle-type.update"], check_tenant=True))
+):
     db_vehicle_type = db.query(VehicleType).filter(VehicleType.vehicle_type_id == vehicle_type_id).first()
     if not db_vehicle_type:
         raise HTTPException(
@@ -66,7 +81,11 @@ def update_vehicle_type(vehicle_type_id: int, vehicle_type_update: VehicleTypeUp
     return db_vehicle_type
 
 @router.delete("/{vehicle_type_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_vehicle_type(vehicle_type_id: int, db: Session = Depends(get_db)):
+def delete_vehicle_type(
+    vehicle_type_id: int, 
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["vehicle-type.delete"], check_tenant=True))
+):
     db_vehicle_type = db.query(VehicleType).filter(VehicleType.vehicle_type_id == vehicle_type_id).first()
     if not db_vehicle_type:
         raise HTTPException(

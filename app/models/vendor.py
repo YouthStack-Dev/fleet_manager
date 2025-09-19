@@ -7,7 +7,7 @@ class Vendor(Base):
     __tablename__ = "vendors"
 
     vendor_id = Column(Integer, primary_key=True, index=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
+    tenant_id = Column(String(50), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
 
     name = Column(String(150), nullable=False)
     vendor_code = Column(String(50), unique=True, nullable=False)  # unique for login
@@ -26,9 +26,11 @@ class Vendor(Base):
         {"extend_existing": True},
     )
 
-    # Relationships
+    # ✅ Backref to Tenant
     tenant = relationship("Tenant", back_populates="vendors")
-    drivers = relationship("app.models.driver.Driver", back_populates="vendor", cascade="all, delete-orphan")
-    vehicle_types = relationship("app.models.vehicle_type.VehicleType", back_populates="vendor", cascade="all, delete-orphan")
-    vehicles = relationship("app.models.vehicle.Vehicle", back_populates="vendor", cascade="all, delete-orphan")
-    vendor_users = relationship("app.models.vendor_user.VendorUser", back_populates="vendor", cascade="all, delete-orphan")
+
+    # Future relationships
+    drivers = relationship("Driver", back_populates="vendor", cascade="all, delete-orphan")
+    vehicle_types = relationship("VehicleType", back_populates="vendor", cascade="all, delete-orphan")
+    vehicles = relationship("Vehicle", back_populates="vendor", cascade="all, delete-orphan")
+    vendor_users = relationship("VendorUser", back_populates="vendor", cascade="all, delete-orphan")

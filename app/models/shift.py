@@ -26,7 +26,7 @@ class Shift(Base):
     __tablename__ = "shifts"
 
     shift_id = Column(Integer, primary_key=True, index=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
+    tenant_id = Column(String(50), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
 
     shift_code = Column(String(50), nullable=False)  # unique per tenant
     log_type = Column(Enum(ShiftLogTypeEnum, native_enum=False), nullable=False)

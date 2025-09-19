@@ -25,6 +25,7 @@ class EmployeeBase(BaseModel):
     is_active: bool = True
 
 class EmployeeCreate(EmployeeBase):
+    role_id: Optional[int] = None
     password: str
 
 class EmployeeUpdate(BaseModel):
@@ -50,7 +51,7 @@ class EmployeeResponse(EmployeeBase):
     updated_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class EmployeePaginationResponse(BaseModel):
     total: int
