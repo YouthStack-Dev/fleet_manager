@@ -316,27 +316,70 @@ def read_tenant(
             ),
         )
 
-@router.put("/{tenant_id}", response_model=TenantResponse)
+@router.put("/{tenant_id}", response_model=dict, status_code=status.HTTP_200_OK)
 def update_tenant(
-    tenant_id: str, 
-    tenant_update: TenantUpdate, 
+    tenant_id: str,
+    tenant_update: TenantUpdate,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["admin.tenant.update"], check_tenant=False))
+    user_data=Depends(PermissionChecker(["admin.tenant.update"], check_tenant=False)),
 ):
-    db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
-    if not db_tenant:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tenant with ID {tenant_id} not found"
+    """
+    Update a tenant by ID.
+    """
+    try:
+        db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+
+        if not db_tenant:
+            logger.warning(f"Tenant update failed - not found: {tenant_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Tenant with ID '{tenant_id}' not found",
+                    error_code=status.HTTP_404_NOT_FOUND,
+                ),
+            )
+
+        update_data = tenant_update.dict(exclude_unset=True)
+
+        if not update_data:
+            logger.warning(f"No update fields provided for tenant: {tenant_id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="No valid fields provided for update",
+                    error_code=status.HTTP_400_BAD_REQUEST,
+                ),
+            )
+
+        for key, value in update_data.items():
+            setattr(db_tenant, key, value)
+
+        db.commit()
+        db.refresh(db_tenant)
+
+        updated_tenant = TenantResponse.model_validate(db_tenant, from_attributes=True)
+
+        logger.info(f"Tenant updated successfully: {tenant_id}")
+
+        return ResponseWrapper.success(
+            data=updated_tenant,
+            message=f"Tenant '{tenant_id}' updated successfully"
         )
-    
-    update_data = tenant_update.dict(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(db_tenant, key, value)
-    
-    db.commit()
-    db.refresh(db_tenant)
-    return db_tenant
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.exception(f"Unexpected error while updating tenant {tenant_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message=f"Unexpected error while updating tenant '{tenant_id}'",
+                error_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                details={"error": str(e)},
+            ),
+        )
+
 
 @router.delete("/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_tenant(
