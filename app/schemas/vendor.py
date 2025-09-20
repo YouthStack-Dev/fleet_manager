@@ -4,17 +4,17 @@ from datetime import datetime
 
 class VendorBase(BaseModel):
     name: str
-    code: Optional[str] = None
-    email: Optional[EmailStr] = None
-    phone: Optional[str] = None
+    vendor_code: str
+    email: EmailStr
+    phone: str
     is_active: bool = True
 
 class VendorCreate(VendorBase):
-    pass
+    tenant_id: Optional[str] = Field(..., description="ID of the tenant this vendor belongs to")
 
 class VendorUpdate(BaseModel):
     name: Optional[str] = None
-    code: Optional[str] = None
+    vendor_code: Optional[str] = None
     email: Optional[EmailStr] = None
     phone: Optional[str] = None
     is_active: Optional[bool] = None
