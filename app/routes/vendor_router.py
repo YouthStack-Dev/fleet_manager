@@ -222,19 +222,31 @@ def update_vendor(
     Update a vendor by ID.
     """
     try:
-        db_vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
+        tenant_id = user_data.get("tenant_id")
+
+        # Apply tenant scoping if present
+        query = db.query(Vendor).filter(Vendor.vendor_id == vendor_id)
+        if tenant_id:
+            query = query.filter(Vendor.tenant_id == tenant_id)
+
+        db_vendor = query.first()
+
         if not db_vendor:
-            logger.warning(f"Vendor update failed - not found: {vendor_id}")
+            logger.warning(
+                f"Vendor update failed - not found or not in tenant scope: "
+                f"vendor_id={vendor_id}, tenant={tenant_id or 'ALL'}"
+            )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error(
-                    message=f"Vendor with ID '{vendor_id}' not found",
-                    error_code=status.HTTP_404_NOT_FOUND,
+                    message=f"Vendor with ID '{vendor_id}' not found"
+                            f"{' in tenant ' + tenant_id if tenant_id else ''}",
+                    error_code="VENDOR_NOT_FOUND",
                 ),
             )
 
         update_data = vendor_update.dict(exclude_unset=True)
-        if "code" in update_data:
+        if "code" in update_data:  # normalize field name
             update_data["vendor_code"] = update_data.pop("code")
 
         if not update_data:
@@ -243,7 +255,7 @@ def update_vendor(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ResponseWrapper.error(
                     message="No valid fields provided for update",
-                    error_code=status.HTTP_400_BAD_REQUEST,
+                    error_code="NO_UPDATE_FIELDS",
                 ),
             )
 
@@ -253,7 +265,9 @@ def update_vendor(
         db.commit()
         db.refresh(db_vendor)
 
-        logger.info(f"Vendor updated successfully: {vendor_id}")
+        logger.info(
+            f"Vendor updated successfully: vendor_id={vendor_id}, tenant={tenant_id or 'ALL'}"
+        )
 
         return ResponseWrapper.success(
             data=VendorResponse.model_validate(db_vendor, from_attributes=True),
@@ -263,13 +277,15 @@ def update_vendor(
     except HTTPException:
         raise
     except Exception as e:
+        raise handle_db_error(e)
+    except Exception as e:
         db.rollback()
         logger.exception(f"Unexpected error while updating vendor {vendor_id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=ResponseWrapper.error(
                 message=f"Unexpected error while updating vendor '{vendor_id}'",
-                error_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                error_code="DATABASE_ERROR",
                 details={"error": str(e)},
             ),
         )
