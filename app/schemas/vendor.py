@@ -8,9 +8,10 @@ class VendorBase(BaseModel):
     email: EmailStr
     phone: str
     is_active: bool = True
+    tenant_id: Optional[str] = None  
 
 class VendorCreate(VendorBase):
-    tenant_id: Optional[str] = None
+    pass
 
 class VendorUpdate(BaseModel):
     tenant_id: Optional[str] = None
@@ -21,6 +22,7 @@ class VendorUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 class VendorResponse(VendorBase):
+    
     vendor_id: int
     created_at: datetime
     updated_at: datetime

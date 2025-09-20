@@ -221,15 +221,21 @@ def update_vendor(
     """
     Update a vendor by ID.
 
-    - SuperAdmin: must send tenant_id in payload/query (used as scope).
-    - Tenant admin: tenant_id from JWT overrides anything sent in payload.
+    - SuperAdmin: must send tenant_id in payload/query (used as scope & can be updated).
+    - Tenant admin: tenant_id from JWT overrides anything sent in payload (cannot change tenant).
     """
     try:
-        # Determine tenant scope
-        token_tenant_id = user_data.get("tenant_id")  # tenant_id from JWT
-        payload_tenant_id = getattr(vendor_update, "tenant_id", None)  # if included in payload
-        # Tenant ID must be present either in token or payload
-        if not token_tenant_id and not payload_tenant_id:
+        # First take from payload
+        tenant_id = getattr(vendor_update, "tenant_id", None)
+        logger.debug(f"Initial tenant_id from payload: {tenant_id}")
+
+        # If tenant_id exists in token, overwrite payload
+        token_tenant_id = user_data.get("tenant_id")
+        logger.debug(f"Tenant ID from JWT: {token_tenant_id}")
+        if token_tenant_id:
+            tenant_id = token_tenant_id
+        
+        if not tenant_id:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error(
@@ -237,10 +243,11 @@ def update_vendor(
                     error_code="TENANT_NOT_FOUND",
                 ),
             )
-        # If tenant_id exists in token, override any payload tenant_id
-        tenant_id = token_tenant_id or payload_tenant_id
 
-        # Fetch the vendor with tenant scoping
+        # Final tenant_id to use for query and/or update
+        logger.debug(f"Final tenant_id to use: {tenant_id}")
+
+        # Fetch vendor with tenant scoping
         query = db.query(Vendor).filter(Vendor.vendor_id == vendor_id)
         if tenant_id:
             query = query.filter(Vendor.tenant_id == tenant_id)
@@ -259,9 +266,13 @@ def update_vendor(
 
         # Prepare update data
         update_data = vendor_update.dict(exclude_unset=True)
+
+        # Normalize vendor_code
         if "code" in update_data:
             update_data["vendor_code"] = update_data.pop("code")
 
+
+        update_data.pop("tenant_id")  # Prevent changing tenant_id via update
         if not update_data:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -288,7 +299,6 @@ def update_vendor(
     except Exception as e:
         db.rollback()
         raise handle_db_error(e)
-
 
 @router.patch("/{vendor_id}/toggle-status", status_code=status.HTTP_200_OK)
 def toggle_vendor_status(
