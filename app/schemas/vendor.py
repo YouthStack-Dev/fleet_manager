@@ -70,6 +70,7 @@ class VendorResponse(VendorBase):
     deleted_at: Optional[datetime] = None
 
     model_config = ConfigDict(
+        from_attributes=True,  # replaces orm_mode=True
         json_schema_extra={
             "example": {
                 "vendor_id": 1,
@@ -87,8 +88,6 @@ class VendorResponse(VendorBase):
         }
     )
 
-    class Config:
-        from_attributes = True
 
 
 # -------------------
