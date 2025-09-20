@@ -91,7 +91,6 @@ def create_vendor(
         )
        
 
-
 @router.get("/", status_code=status.HTTP_200_OK)
 def read_vendors(
     skip: int = Query(0, ge=0, description="Number of records to skip"),
@@ -103,11 +102,19 @@ def read_vendors(
     user_data=Depends(PermissionChecker(["vendor.read"], check_tenant=True))
 ):
     """
-    Fetch paginated list of vendors with optional filters.
+    Fetch paginated list of vendors.
+    If user has a tenant_id in token, vendors are scoped to that tenant.
+    Otherwise, return vendors across all tenants.
     """
     try:
         query = db.query(Vendor)
 
+        # Apply tenant scoping if present in JWT
+        tenant_id = user_data.get("tenant_id")
+        if tenant_id:
+            query = query.filter(Vendor.tenant_id == tenant_id)
+
+        # Apply filters
         if name:
             query = query.filter(Vendor.name.ilike(f"%{name}%"))
         if code:
@@ -118,23 +125,30 @@ def read_vendors(
         total, items = paginate_query(query, skip, limit)
         vendors = [VendorResponse.model_validate(v, from_attributes=True) for v in items]
 
-        logger.info(f"Fetched {len(vendors)} vendors (total={total}, skip={skip}, limit={limit})")
+        logger.info(
+            f"Fetched {len(vendors)} vendors "
+            f"(total={total}, tenant={tenant_id or 'ALL'}, skip={skip}, limit={limit})"
+        )
 
         return ResponseWrapper.success(
             data=VendorPaginationResponse(total=total, items=vendors),
             message="Vendors fetched successfully"
         )
-
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise handle_db_error(e)
     except Exception as e:
         logger.exception(f"Unexpected error while fetching vendors: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=ResponseWrapper.error(
                 message="Unexpected error while fetching vendors",
-                error_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                error_code="DATABASE_ERROR",
                 details={"error": str(e)},
             ),
         )
+
 
 
 @router.get("/{vendor_id}", status_code=status.HTTP_200_OK)
@@ -145,21 +159,36 @@ def read_vendor(
 ):
     """
     Fetch a single vendor by ID.
+    If user has a tenant_id in token, vendor must belong to that tenant.
+    Otherwise, allow fetching across all tenants.
     """
     try:
-        db_vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
+        query = db.query(Vendor).filter(Vendor.vendor_id == vendor_id)
+
+        # Apply tenant scoping if tenant_id is present
+        tenant_id = user_data.get("tenant_id")
+        if tenant_id:
+            query = query.filter(Vendor.tenant_id == tenant_id)
+
+        db_vendor = query.first()
 
         if not db_vendor:
-            logger.warning(f"Vendor fetch failed - not found: {vendor_id}")
+            logger.warning(
+                f"Vendor fetch failed - not found or not in tenant scope: "
+                f"vendor_id={vendor_id}, tenant={tenant_id or 'ALL'}"
+            )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error(
-                    message=f"Vendor with ID '{vendor_id}' not found",
-                    error_code=status.HTTP_404_NOT_FOUND,
+                    message=f"Vendor with ID '{vendor_id}' not found"
+                            f"{' in tenant ' + tenant_id if tenant_id else ''}",
+                    error_code="VENDOR_NOT_FOUND",
                 ),
             )
 
-        logger.info(f"Vendor fetched successfully: {vendor_id}")
+        logger.info(
+            f"Vendor fetched successfully: vendor_id={vendor_id}, tenant={tenant_id or 'ALL'}"
+        )
 
         return ResponseWrapper.success(
             data=VendorResponse.model_validate(db_vendor, from_attributes=True),
@@ -169,12 +198,14 @@ def read_vendor(
     except HTTPException:
         raise
     except Exception as e:
+        raise handle_db_error(e)
+    except Exception as e:
         logger.exception(f"Unexpected error while fetching vendor {vendor_id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=ResponseWrapper.error(
                 message=f"Unexpected error while fetching vendor '{vendor_id}'",
-                error_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                error_code="DATABASE_ERROR",
                 details={"error": str(e)},
             ),
         )
