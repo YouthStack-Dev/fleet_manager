@@ -237,8 +237,18 @@ def read_tenants(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["admin.tenant.read"], check_tenant=False)),
 ):
+
     """
-    Fetch paginated list of tenants with optional filters.
+    Fetch a list of tenants with optional filters.
+
+    Args:
+        skip (int): Number of records to skip.
+        limit (int): Max number of records to fetch.
+        name (Optional[str]): Filter tenants by name (case-insensitive).
+        is_active (Optional[bool]): Filter tenants by active status.
+
+    Returns:
+        ResponseWrapper: a successful response with the fetched tenant data.
     """
     try:
         query = db.query(Tenant)
@@ -278,8 +288,21 @@ def read_tenant(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["admin.tenant.read"], check_tenant=False)),
 ):
+
     """
-    Fetch a single tenant by ID.
+    Fetch a tenant by ID.
+
+    **Required permissions:** `admin.tenant.read`
+
+    **Response:**
+
+    * `tenant`: Tenant object with the given ID.
+
+    **Status codes:**
+
+    * `200 OK`: Tenant fetched successfully.
+    * `404 Not Found`: Tenant with the given ID not found.
+    * `500 Internal Server Error`: Unexpected server error while fetching tenant.
     """
     try:
         db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
@@ -323,8 +346,27 @@ def update_tenant(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["admin.tenant.update"], check_tenant=False)),
 ):
+
     """
     Update a tenant by ID.
+
+    **Required permissions:** `admin.tenant.update`
+
+    **Request body:**
+
+    * `name`: Name of the tenant.
+    * `is_active`: Active status of the tenant.
+
+    **Response:**
+
+    * `tenant`: Updated tenant object.
+
+    **Status codes:**
+
+    * `200 OK`: Tenant updated successfully.
+    * `404 Not Found`: Tenant with the given ID not found.
+    * `400 Bad Request`: No valid fields provided for update.
+    * `500 Internal Server Error`: Unexpected server error while updating tenant.
     """
     try:
         db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
@@ -386,13 +428,21 @@ def toggle_tenant_status(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["admin.tenant.update"], check_tenant=False)),
 ):
+
     """
-    Toggle the active/inactive status of a tenant.
+    Toggle a tenant's active status.
 
-    **Required permissions:** `admin.tenant.update`
+    Requires "admin.tenant.update" permission.
 
-    **Response:**
-    * Updated tenant object with new status.
+    If tenant is not found, raises 404.
+
+    If any other error occurs while toggling the tenant's status, raises 500.
+
+    Args:
+        tenant_id (str): The ID of the tenant to toggle.
+
+    Returns:
+        ResponseWrapper: A successful response with the updated tenant data.
     """
     try:
         db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()

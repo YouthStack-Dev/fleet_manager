@@ -20,10 +20,23 @@ def create_vendor(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.create"], check_tenant=False)),
 ):
-    """
-    Create a new vendor under a tenant.
 
-    **Required permissions:** `vendor.create`
+    """
+    Create a new vendor.
+
+    Requires "vendor.create" permission.
+    Tenant ID is required and can be overridden by the tenant ID in the JWT token.
+    If the tenant ID is not provided in the request, it will default to the tenant ID in the JWT token.
+    If the tenant ID is not found or is inactive, a 404 error will be raised.
+    If any other error occurs while creating the vendor, a 500 error will be raised.
+
+    Args:
+        vendor (VendorCreate): The vendor data to create.
+        db (Session): The database session to use.
+        user_data (Depends): The user data from the JWT token.
+
+    Returns:
+        ResponseWrapper: A successful response with the created vendor data.
     """
     try:
         logger.info(f"Create vendor request: {vendor.dict()}")
@@ -101,10 +114,19 @@ def read_vendors(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.read"], check_tenant=True))
 ):
+
     """
-    Fetch paginated list of vendors.
-    If user has a tenant_id in token, vendors are scoped to that tenant.
-    Otherwise, return vendors across all tenants.
+    Fetch paginated list of vendors with optional filters.
+
+    Args:
+        skip (int): number of records to skip.
+        limit (int): max number of records to fetch.
+        name (Optional[str]): filter vendors by name.
+        code (Optional[str]): filter vendors by vendor_code.
+        is_active (Optional[bool]): filter vendors by active status.
+
+    Returns:
+        ResponseWrapper: a successful response with the fetched vendor data.
     """
     try:
         query = db.query(Vendor)
@@ -157,10 +179,13 @@ def read_vendor(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.read"], check_tenant=True))
 ):
+
     """
-    Fetch a single vendor by ID.
+    Fetch a vendor by ID.
     If user has a tenant_id in token, vendor must belong to that tenant.
     Otherwise, allow fetching across all tenants.
+    If vendor is not found, raise 404.
+    If tenant_id is not found, raise 404.
     """
     try:
         query = db.query(Vendor).filter(Vendor.vendor_id == vendor_id)
@@ -218,11 +243,15 @@ def update_vendor(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.update"], check_tenant=True))
 ):
+
     """
     Update a vendor by ID.
-
-    - SuperAdmin: must send tenant_id in payload/query (used as scope & can be updated).
-    - Tenant admin: tenant_id from JWT overrides anything sent in payload (cannot change tenant).
+    If user has a tenant_id in token, vendor must belong to that tenant.
+    Otherwise, allow updating across all tenants.
+    If tenant_id is not provided in payload, overwrite with tenant_id from token if present.
+    If vendor is not found, raise 404.
+    If tenant_id is not found, raise 404.
+    If no valid fields are provided for update, raise 400.
     """
     try:
         # First take from payload
@@ -307,9 +336,19 @@ def toggle_vendor_status(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.update"], check_tenant=True))
 ):
+
     """
-    Toggle the active/inactive status of a vendor.
-    Tenant scoping is applied if tenant_id is present in the JWT.
+    Toggle a vendor's active status.
+
+    - SuperAdmin: can toggle active status of vendors across all tenants.
+    - Tenant admin: can only toggle active status of vendors within their tenant scope.
+
+    Args:
+        vendor_id (int): the ID of the vendor to toggle.
+        tenant_id (Optional[int], optional): for superadmin the ID of the tenant to scope the vendor to.
+
+    Returns:
+        ResponseWrapper: a successful response with the updated vendor data.
     """
     try:
         tenant_id = tenant_id or user_data.get("tenant_id")

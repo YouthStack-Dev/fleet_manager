@@ -16,6 +16,19 @@ class TenantBase(BaseModel):
     latitude: Optional[float] = Field(None, ge=-90, le=90, description="Latitude coordinate")
     is_active: bool = Field(default=True, description="Is tenant active?")
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "tenant_id": "tenant_123",
+                "name": "Acme Corp",
+                "address": "123 Main St, Anytown, USA",
+                "longitude": -75.1652,
+                "latitude": 39.9526,
+                "is_active": True
+            }
+        }
+    )
+
 
 # ------------------------------
 # Tenant Create Schema
@@ -73,11 +86,11 @@ class TenantUpdate(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "name": "Acme Corp",
-                "address": "123 Main St, Anytown, USA",
-                "longitude": -75.1652,
-                "latitude": 39.9526,
-                "is_active": True,
+                "name": "Acme Corp Updated",
+                "address": "456 Market St, Metropolis",
+                "longitude": -74.0059,
+                "latitude": 40.7128,
+                "is_active": False,
             }
         }
     )
@@ -90,6 +103,21 @@ class TenantResponse(TenantBase):
     created_at: datetime = Field(..., description="Record creation timestamp")
     updated_at: datetime = Field(..., description="Record last update timestamp")
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "tenant_id": "tenant_123",
+                "name": "Acme Corp",
+                "address": "123 Main St, Anytown, USA",
+                "longitude": -75.1652,
+                "latitude": 39.9526,
+                "is_active": True,
+                "created_at": "2025-09-20T10:00:00Z",
+                "updated_at": "2025-09-20T12:00:00Z",
+            }
+        }
+    )
+
 
 # ------------------------------
 # Paginated Response Schema
@@ -97,3 +125,23 @@ class TenantResponse(TenantBase):
 class TenantPaginationResponse(BaseModel):
     total: int = Field(..., description="Total number of tenants")
     items: List[TenantResponse] = Field(..., description="List of tenant records")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "total": 1,
+                "items": [
+                    {
+                        "tenant_id": "tenant_123",
+                        "name": "Acme Corp",
+                        "address": "123 Main St, Anytown, USA",
+                        "longitude": -75.1652,
+                        "latitude": 39.9526,
+                        "is_active": True,
+                        "created_at": "2025-09-20T10:00:00Z",
+                        "updated_at": "2025-09-20T12:00:00Z",
+                    }
+                ]
+            }
+        }
+    )

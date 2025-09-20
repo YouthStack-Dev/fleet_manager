@@ -1,18 +1,42 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, ConfigDict
 from typing import Optional, List
 from datetime import datetime
 
+# -------------------
+# Base schema
+# -------------------
 class VendorBase(BaseModel):
     name: str
     vendor_code: str
     email: EmailStr
     phone: str
     is_active: bool = True
-    tenant_id: Optional[str] = None  
+    tenant_id: Optional[str] = None  # only set at creation
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "Acme Corp",
+                "vendor_code": "ACM123",
+                "email": "contact@acme.com",
+                "phone": "+1-555-1234",
+                "is_active": True,
+                "tenant_id": "tenant_001"
+            }
+        }
+    )
+
+
+# -------------------
+# Create schema
+# -------------------
 class VendorCreate(VendorBase):
     pass
 
+
+# -------------------
+# Update schema
+# -------------------
 class VendorUpdate(BaseModel):
     tenant_id: Optional[str] = None
     name: Optional[str] = None
@@ -21,15 +45,78 @@ class VendorUpdate(BaseModel):
     phone: Optional[str] = None
     is_active: Optional[bool] = None
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "tenant_id": "tenant_001",
+                "name": "Acme Corp Updated",
+                "vendor_code": "ACM456",
+                "email": "support@acme.com",
+                "phone": "+1-555-5678",
+                "is_active": False
+            }
+        }
+    )
+
+
+# -------------------
+# Response schema
+# -------------------
 class VendorResponse(VendorBase):
-    
     vendor_id: int
+    is_deleted: bool
     created_at: datetime
     updated_at: datetime
+    deleted_at: Optional[datetime] = None
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "vendor_id": 1,
+                "name": "Acme Corp",
+                "vendor_code": "ACM123",
+                "email": "contact@acme.com",
+                "phone": "+1-555-1234",
+                "is_active": True,
+                "tenant_id": "tenant_001",
+                "is_deleted": False,
+                "created_at": "2025-09-20T10:00:00Z",
+                "updated_at": "2025-09-20T12:00:00Z",
+                "deleted_at": None,
+            }
+        }
+    )
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
+
+# -------------------
+# Pagination wrapper
+# -------------------
 class VendorPaginationResponse(BaseModel):
     total: int
     items: List[VendorResponse]
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "total": 1,
+                "items": [
+                    {
+                        "vendor_id": 1,
+                        "name": "Acme Corp",
+                        "vendor_code": "ACM123",
+                        "email": "contact@acme.com",
+                        "phone": "+1-555-1234",
+                        "is_active": True,
+                        "tenant_id": "tenant_001",
+                        "is_deleted": False,
+                        "created_at": "2025-09-20T10:00:00Z",
+                        "updated_at": "2025-09-20T12:00:00Z",
+                        "deleted_at": None,
+                    }
+                ]
+            }
+        }
+    )
