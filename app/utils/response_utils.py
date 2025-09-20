@@ -1,3 +1,4 @@
+import re
 from typing import Any, Dict, List, Optional, Type, TypeVar
 from fastapi import HTTPException, status
 from pydantic import BaseModel
@@ -53,25 +54,39 @@ class ResponseWrapper:
         return create_success_response(None, message)
 
 def handle_db_error(error: Exception) -> HTTPException:
-    """Convert database errors to HTTP exceptions with standard format"""
+    """Convert database errors to HTTP exceptions with detailed info"""
     error_msg = str(error)
-    
+
     if "duplicate key" in error_msg.lower():
+        # Extract the field that caused the unique constraint
+        match = re.search(r'Key \((.*?)\)=\((.*?)\)', error_msg)
+        field_info = {}
+        if match:
+            columns = match.group(1).split(", ")
+            values = match.group(2).split(", ")
+            field_info = {col: val for col, val in zip(columns, values)}
+
         return HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=ResponseWrapper.error(
-                message="Resource already exists",
+                message="Resource already exists with the same values",
                 error_code="DUPLICATE_RESOURCE",
-                details={"db_error": error_msg}
+                details={"db_error": error_msg, "conflicting_fields": field_info}
             )
         )
     elif "foreign key" in error_msg.lower():
+        match = re.search(r'Key \((.*?)\)=\((.*?)\)', error_msg)
+        field_info = {}
+        if match:
+            columns = match.group(1).split(", ")
+            values = match.group(2).split(", ")
+            field_info = {col: val for col, val in zip(columns, values)}
         return HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail=ResponseWrapper.error(
                 message="Referenced resource not found",
                 error_code="FOREIGN_KEY_VIOLATION",
-                details={"db_error": error_msg}
+                details={"db_error": error_msg ,"conflicting_fields": field_info}
             )
         )
     else:

@@ -10,7 +10,7 @@ class VendorBase(BaseModel):
     is_active: bool = True
 
 class VendorCreate(VendorBase):
-    tenant_id: Optional[str] = Field(..., description="ID of the tenant this vendor belongs to")
+    tenant_id: Optional[str] = None
 
 class VendorUpdate(BaseModel):
     name: Optional[str] = None

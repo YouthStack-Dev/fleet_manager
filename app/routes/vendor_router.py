@@ -27,39 +27,36 @@ def create_vendor(
     """
     try:
         logger.info(f"Create vendor request: {vendor.dict()}")
+        logger.debug(f"User data from token: {user_data}")
 
-        # Determine tenant_id from JWT or request
-        tenant_id = getattr(user_data, "tenant_id", None) or vendor.tenant_id
-        if not tenant_id:
+
+        # If token has tenant_id, it overrides request
+        if user_data.get("tenant_id"):
+            vendor.tenant_id = user_data["tenant_id"]
+
+
+        logger.debug(f"Tenant ID from JWT or request: {vendor.tenant_id}")
+
+        if not vendor.tenant_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ResponseWrapper.error(
                     message="Tenant ID is required",
-                    error_code=status.HTTP_400_BAD_REQUEST,
+                    error_code="TENANT_ID_REQUIRED",
                 ),
             )
 
         # Validate tenant exists and is active
-        tenant = tenant_crud.get_by_id(db, tenant_id=tenant_id)
+        tenant = tenant_crud.get_by_id(db, tenant_id=vendor.tenant_id)
         if not tenant or not tenant.is_active:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error(
-                    message=f"Tenant '{tenant_id}' not found or inactive",
-                    error_code=status.HTTP_404_NOT_FOUND,
+                    message=f"Tenant '{vendor.tenant_id}' not found or inactive",
+                    error_code="TENANT_NOT_FOUND",
                 ),
             )
 
-        # Check for duplicates using CRUD method
-        existing = vendor_crud.get_by_code(db, tenant_id=tenant.tenant_id, vendor_code=vendor.vendor_code)
-        if existing:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=ResponseWrapper.error(
-                    message=f"Vendor with code '{vendor.vendor_code}' already exists in this tenant",
-                    error_code=status.HTTP_409_CONFLICT,
-                ),
-            )
 
         # Create vendor using CRUD
         logger.debug(f"Creating vendor: {vendor.dict()}")
@@ -75,8 +72,10 @@ def create_vendor(
         )
 
     except HTTPException:
+        db.rollback()
         raise
     except Exception as e:
+        db.rollback()
         raise handle_db_error(e) 
 
     except Exception as e:
@@ -86,7 +85,7 @@ def create_vendor(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=ResponseWrapper.error(
                 message="Unexpected server error while creating vendor",
-                error_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                error_code="INTERNAL_SERVER_ERROR",
                 details={"error": str(e)},
             ),
         )
