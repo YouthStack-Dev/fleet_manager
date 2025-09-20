@@ -436,7 +436,7 @@ def toggle_tenant_status(
         )
 
 
-@router.delete("/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
+# @router.delete("/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_tenant(
     tenant_id: str, 
     db: Session = Depends(get_db),

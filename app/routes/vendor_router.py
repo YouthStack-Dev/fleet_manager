@@ -371,7 +371,7 @@ def toggle_vendor_status(
         )
 
 
-@router.delete("/{vendor_id}", status_code=status.HTTP_204_NO_CONTENT)
+# @router.delete("/{vendor_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_vendor(
     vendor_id: int,
     db: Session = Depends(get_db),
