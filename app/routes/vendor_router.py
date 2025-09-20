@@ -220,11 +220,27 @@ def update_vendor(
 ):
     """
     Update a vendor by ID.
+
+    - SuperAdmin: must send tenant_id in payload/query (used as scope).
+    - Tenant admin: tenant_id from JWT overrides anything sent in payload.
     """
     try:
-        tenant_id = user_data.get("tenant_id")
+        # Determine tenant scope
+        token_tenant_id = user_data.get("tenant_id")  # tenant_id from JWT
+        payload_tenant_id = getattr(vendor_update, "tenant_id", None)  # if included in payload
+        # Tenant ID must be present either in token or payload
+        if not token_tenant_id and not payload_tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Tenant ID not found. Cannot update vendor without tenant scope.",
+                    error_code="TENANT_NOT_FOUND",
+                ),
+            )
+        # If tenant_id exists in token, override any payload tenant_id
+        tenant_id = token_tenant_id or payload_tenant_id
 
-        # Apply tenant scoping if present
+        # Fetch the vendor with tenant scoping
         query = db.query(Vendor).filter(Vendor.vendor_id == vendor_id)
         if tenant_id:
             query = query.filter(Vendor.tenant_id == tenant_id)
@@ -232,10 +248,6 @@ def update_vendor(
         db_vendor = query.first()
 
         if not db_vendor:
-            logger.warning(
-                f"Vendor update failed - not found or not in tenant scope: "
-                f"vendor_id={vendor_id}, tenant={tenant_id or 'ALL'}"
-            )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error(
@@ -245,12 +257,12 @@ def update_vendor(
                 ),
             )
 
+        # Prepare update data
         update_data = vendor_update.dict(exclude_unset=True)
-        if "code" in update_data:  # normalize field name
+        if "code" in update_data:
             update_data["vendor_code"] = update_data.pop("code")
 
         if not update_data:
-            logger.warning(f"No update fields provided for vendor: {vendor_id}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ResponseWrapper.error(
@@ -259,15 +271,12 @@ def update_vendor(
                 ),
             )
 
+        # Apply updates
         for key, value in update_data.items():
             setattr(db_vendor, key, value)
 
         db.commit()
         db.refresh(db_vendor)
-
-        logger.info(
-            f"Vendor updated successfully: vendor_id={vendor_id}, tenant={tenant_id or 'ALL'}"
-        )
 
         return ResponseWrapper.success(
             data=VendorResponse.model_validate(db_vendor, from_attributes=True),
@@ -277,48 +286,59 @@ def update_vendor(
     except HTTPException:
         raise
     except Exception as e:
-        raise handle_db_error(e)
-    except Exception as e:
         db.rollback()
-        logger.exception(f"Unexpected error while updating vendor {vendor_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=ResponseWrapper.error(
-                message=f"Unexpected error while updating vendor '{vendor_id}'",
-                error_code="DATABASE_ERROR",
-                details={"error": str(e)},
-            ),
-        )
+        raise handle_db_error(e)
 
 
 @router.patch("/{vendor_id}/toggle-status", status_code=status.HTTP_200_OK)
 def toggle_vendor_status(
     vendor_id: int,
+    tenant_id: Optional[int] = None,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.update"], check_tenant=True))
 ):
     """
     Toggle the active/inactive status of a vendor.
+    Tenant scoping is applied if tenant_id is present in the JWT.
     """
     try:
-        db_vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
+        tenant_id = tenant_id or user_data.get("tenant_id")
+        if user_data.get("tenant_id") and tenant_id != user_data.get("tenant_id"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Cannot toggle vendor status outside your tenant scope",
+                    error_code="FORBIDDEN_TENANT_SCOPE"
+                )
+            )
+
+        # Fetch vendor with tenant scoping
+        if tenant_id:
+            db_vendor = db.query(Vendor).filter(
+                Vendor.vendor_id == vendor_id,
+                Vendor.tenant_id == tenant_id
+            ).first()
+        else:
+            db_vendor = vendor_crud.get_by_id(db, vendor_id=vendor_id)
 
         if not db_vendor:
-            logger.warning(f"Vendor toggle failed - not found: {vendor_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error(
-                    message=f"Vendor with ID '{vendor_id}' not found",
-                    error_code=status.HTTP_404_NOT_FOUND,
-                ),
+                    message=f"Vendor with ID '{vendor_id}' not found"
+                            f"{' in tenant ' + tenant_id if tenant_id else ''}",
+                    error_code="VENDOR_NOT_FOUND"
+                )
             )
 
-        db_vendor.is_active = not db_vendor.is_active
+        # Toggle status using CRUD method
+        db_vendor = vendor_crud.toggle_active(db, vendor_id=vendor_id)
         db.commit()
         db.refresh(db_vendor)
 
         logger.info(
-            f"Toggled vendor {vendor_id} status to {'active' if db_vendor.is_active else 'inactive'}"
+            f"Toggled vendor {vendor_id} status to "
+            f"{'active' if db_vendor.is_active else 'inactive'}"
         )
 
         return ResponseWrapper.success(
@@ -335,7 +355,7 @@ def toggle_vendor_status(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=ResponseWrapper.error(
                 message=f"Unexpected error while toggling vendor '{vendor_id}' status",
-                error_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                error_code="DATABASE_ERROR",
                 details={"error": str(e)},
             ),
         )

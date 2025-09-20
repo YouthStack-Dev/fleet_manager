@@ -13,6 +13,7 @@ class VendorCreate(VendorBase):
     tenant_id: Optional[str] = None
 
 class VendorUpdate(BaseModel):
+    tenant_id: Optional[str] = None
     name: Optional[str] = None
     vendor_code: Optional[str] = None
     email: Optional[EmailStr] = None
