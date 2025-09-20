@@ -380,6 +380,61 @@ def update_tenant(
             ),
         )
 
+@router.patch("/{tenant_id}/toggle-status", response_model=dict, status_code=status.HTTP_200_OK)
+def toggle_tenant_status(
+    tenant_id: str,
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["admin.tenant.update"], check_tenant=False)),
+):
+    """
+    Toggle the active/inactive status of a tenant.
+
+    **Required permissions:** `admin.tenant.update`
+
+    **Response:**
+    * Updated tenant object with new status.
+    """
+    try:
+        db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+
+        if not db_tenant:
+            logger.warning(f"Tenant toggle failed - not found: {tenant_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Tenant with ID '{tenant_id}' not found",
+                    error_code=status.HTTP_404_NOT_FOUND,
+                ),
+            )
+
+        # --- Toggle status ---
+        db_tenant.is_active = not db_tenant.is_active
+        db.commit()
+        db.refresh(db_tenant)
+
+        logger.info(
+            f"Toggled tenant {tenant_id} status to {'active' if db_tenant.is_active else 'inactive'}"
+        )
+
+        return ResponseWrapper.success(
+            data=TenantResponse.model_validate(db_tenant, from_attributes=True),
+            message=f"Tenant '{tenant_id}' is now {'active' if db_tenant.is_active else 'inactive'}"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.exception(f"Unexpected error while toggling tenant {tenant_id} status: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message=f"Unexpected error while toggling tenant '{tenant_id}' status",
+                error_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                details={"error": str(e)},
+            ),
+        )
+
 
 @router.delete("/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_tenant(
