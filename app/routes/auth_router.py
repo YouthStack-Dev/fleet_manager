@@ -84,11 +84,11 @@ def introspect_token_direct(token: str) -> dict:
     try:
         user_id = payload.get("user_id")
         tenant_id = payload.get("tenant_id")
-        token_context = payload.get("token_context")  # Get token context from JWT
+        user_type = payload.get("user_type")  # Get token context from JWT
         
-        logger.debug(f"Fetching roles and permissions for introspection - user: {user_id}, tenant: {tenant_id}, context: {token_context}")
+        logger.debug(f"Fetching roles and permissions for introspection - user: {user_id}, tenant: {tenant_id}, context: {user_type}")
         
-        if token_context == "admin":
+        if user_type == "admin":
             admin = db.query(Admin).filter(Admin.admin_id == int(user_id)).first()
             if not admin:
                 logger.warning(f"Introspection failed - Admin not found: {user_id}")
@@ -152,7 +152,7 @@ def introspect_token_direct(token: str) -> dict:
                     detail="Failed to fetch user roles"
                 )
         
-        logger.info(f"Token introspection successful for user: {user_id}, context: {token_context}, roles: {roles}, permissions: {len(all_permissions)} modules")
+        logger.info(f"Token introspection successful for user: {user_id}, context: {user_type}, roles: {roles}, permissions: {len(all_permissions)} modules")
         
         current_time = int(time.time())
         expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
@@ -168,11 +168,11 @@ def introspect_token_direct(token: str) -> dict:
             "exp": expiry_time,
         }
         
-        if token_context != "admin" and tenant_id:
+        if user_type != "admin" and tenant_id:
             token_payload["tenant_id"] = str(tenant_id)
         
-        if token_context:
-            token_payload["token_context"] = token_context
+        if user_type:
+            token_payload["user_type"] = user_type
 
         return token_payload
         
@@ -271,7 +271,7 @@ async def employee_login(
             "opaque_token": opaque_token,
             "roles": roles,
             "permissions": all_permissions,
-            "token_context": "employee",  # Add token context
+            "user_type": "employee",  # Add token context
             "iat": current_time,
             "exp": expiry_time,
         }
@@ -294,11 +294,11 @@ async def employee_login(
             user_id=str(employee.employee_id),
             tenant_id=str(tenant.tenant_id),
             opaque_token=opaque_token,
-            token_context="employee" 
+            user_type="employee" 
         )
         refresh_token = create_refresh_token(
             user_id=str(employee.employee_id),
-            token_context="employee"
+            user_type="employee"
         )
 
         logger.info(f"🚀 Login successful for employee: {employee.employee_id} ({employee.email}) in tenant: {tenant.tenant_id}")
@@ -396,7 +396,7 @@ async def admin_login(
         token_payload = {
             "user_id": str(admin.admin_id),
             "user_type": "admin",
-            "token_context": "admin",  # Add token context
+            "user_type": "admin",  # Add token context
             "roles": roles,
             "permissions": all_permissions,
             "opaque_token": opaque_token,
@@ -421,11 +421,11 @@ async def admin_login(
         access_token = create_access_token(
             user_id=str(admin.admin_id),
             opaque_token=opaque_token,
-            token_context="admin"
+            user_type="admin"
         )
         refresh_token = create_refresh_token(
             user_id=str(admin.admin_id),
-            token_context="admin"
+            user_type="admin"
         )
         
         logger.info(f"🚀 Admin login successful for admin: {admin.admin_id} ({admin.email})")

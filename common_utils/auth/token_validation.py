@@ -621,7 +621,7 @@ def validate_bearer_token(use_cache: bool = True):
                 "tenant_id": tenant_id,
                 "roles": validation_result.get("roles", []),
                 "permissions": validation_result.get("permissions", []),
-                "token_context": validation_result.get("token_context"),
+                "user_type": validation_result.get("user_type"),
             }
             
         except PyJWTError as e:
