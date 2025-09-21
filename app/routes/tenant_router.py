@@ -16,7 +16,7 @@ from app.schemas.iam.role import RoleResponse
 from app.schemas.team import TeamCreate, TeamResponse
 from app.schemas.tenant import TenantCreate, TenantUpdate, TenantResponse, TenantPaginationResponse
 from app.utils.pagination import paginate_query
-from app.utils.response_utils import ResponseWrapper
+from app.utils.response_utils import ResponseWrapper , handle_db_error
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
 logger = get_logger(__name__)
@@ -220,6 +220,9 @@ def create_tenant(
         raise
     except Exception as e:
         db.rollback()
+        raise handle_db_error(e)
+    except Exception as e:
+        db.rollback()
         logger.exception(f"Unexpected error while creating tenant: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -330,6 +333,9 @@ def read_tenant(
     except HTTPException:
         raise
     except Exception as e:
+        db.rollback()
+        raise handle_db_error(e)
+    except Exception as e:
         logger.exception(f"Unexpected error while fetching tenant {tenant_id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -413,6 +419,9 @@ def update_tenant(
         raise
     except Exception as e:
         db.rollback()
+        raise handle_db_error(e)
+    except Exception as e:
+        db.rollback()
         logger.exception(f"Unexpected error while updating tenant {tenant_id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -474,6 +483,9 @@ def toggle_tenant_status(
 
     except HTTPException:
         raise
+    except Exception as e:
+        db.rollback()
+        raise handle_db_error(e)
     except Exception as e:
         db.rollback()
         logger.exception(f"Unexpected error while toggling tenant {tenant_id} status: {e}")

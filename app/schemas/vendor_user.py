@@ -82,13 +82,12 @@ class VendorUserResponse(BaseModel):
     name: str
     email: EmailStr
     phone: str
-    username: Optional[str] = None  # Make username optional to handle cases where it's not in the database
     vendor_id: int
     is_active: bool
     created_at: datetime
     updated_at: datetime
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True)  # allows SQLAlchemy model -> Pydantic
 
 class VendorUserPaginationResponse(BaseModel):
     total: int

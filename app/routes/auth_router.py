@@ -3,6 +3,7 @@ import secrets
 import time
 import logging
 import sys
+from app.crud.vendor_user import vendor_user_crud
 from app.models.admin import Admin
 from app.models.tenant import Tenant
 from fastapi import APIRouter, Depends, HTTPException, Header, status, Body, Query
@@ -13,10 +14,12 @@ from typing import Optional
 
 from app.database.session import get_db
 from app.models import Employee
+from app.models.vendor import Vendor
+from app.models.vendor_user import VendorUser
 from app.schemas.auth import (
-    AdminLoginRequest, AdminLoginResponse, TokenResponse, RefreshTokenRequest, LoginResponse, 
-    EmployeeLoginRequest, PasswordResetRequest
+    AdminLoginRequest, AdminLoginResponse, LoginRequest, TokenResponse, RefreshTokenRequest, LoginResponse, PasswordResetRequest
 )
+from app.schemas.vendor_user import VendorUserResponse
 from common_utils.auth.utils import (
     create_access_token, create_refresh_token, 
     verify_token, hash_password, verify_password
@@ -26,7 +29,7 @@ from app.schemas.employee import EmployeeResponse
 from app.crud.employee import employee_crud
 from app.crud.admin import admin_crud
 from app.core.logging_config import get_logger
-from app.utils.response_utils import ResponseWrapper
+from app.utils.response_utils import ResponseWrapper, handle_db_error
 
 from app.config import settings
 
@@ -189,7 +192,7 @@ def introspect_token_direct(token: str) -> dict:
 
 @router.post("/employee/login")
 async def employee_login(
-    form_data: EmployeeLoginRequest = Body(...),
+    form_data: LoginRequest = Body(...),
     db: Session = Depends(get_db)
 ):
     """
@@ -328,6 +331,167 @@ async def employee_login(
             )
         )
 
+@router.post("/vendor/login")
+async def vendor_user_login(
+    form_data: LoginRequest = Body(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Authenticate a vendor user in a tenant and return access/refresh tokens
+    """
+    logger.info(f"Vendor login attempt for user: {form_data.username} in tenant: {form_data.tenant_id}")
+
+    try:
+        vendor_user = (
+            db.query(VendorUser)
+            .join(Vendor, Vendor.vendor_id == VendorUser.vendor_id)
+            .filter(
+                VendorUser.email == form_data.username,
+                Vendor.tenant_id == form_data.tenant_id
+            )
+            .first()
+        )
+
+        if not vendor_user:
+            logger.warning(
+                f"Login failed - Vendor user not found or invalid tenant: "
+                f"{form_data.username} in tenant_id {form_data.tenant_id}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error(
+                    message="Incorrect tenant, email, or password",
+                    error_code=status.HTTP_401_UNAUTHORIZED
+                )
+            )
+
+        vendor = vendor_user.vendor
+        tenant = vendor.tenant
+        logger.debug(f"Tenant validation successful - ID: {tenant.tenant_id}")
+
+        if not verify_password(form_data.password, vendor_user.password):
+            logger.warning(
+                f"🔒 Login failed - Invalid password for vendor_user: "
+                f"{vendor_user.vendor_user_id} ({form_data.username})"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error(
+                    message="Incorrect email or password",
+                    error_code=status.HTTP_401_UNAUTHORIZED
+                )
+            )
+
+        if not vendor_user.is_active or not vendor.is_active or not tenant.is_active:
+            logger.warning(
+                f"🚫 Login failed - Inactive account for vendor_user: "
+                f"{vendor_user.vendor_user_id} ({form_data.username})"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="User account is inactive",
+                    error_code="ACCOUNT_INACTIVE"
+                )
+            )
+
+        logger.debug(
+            f"Fetching roles and permissions for vendor_user: "
+            f"{vendor_user.vendor_user_id} in tenant: {tenant.tenant_id}"
+        )
+        vendor_user_with_roles, roles, all_permissions = vendor_user_crud.get_roles_and_permissions(
+            db, vendor_user_id=vendor_user.vendor_user_id, vendor_id=vendor.vendor_id
+        )
+
+        if not vendor_user_with_roles:
+            logger.error(f"Failed to fetch vendor_user roles for user: {vendor_user.vendor_user_id}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error(
+                    message="Failed to fetch user roles",
+                    error_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            )
+
+        logger.info(
+            f"🎯 Permissions collected for vendor_user {vendor_user.vendor_user_id}: "
+            f"{len(all_permissions)} modules, roles: {roles}"
+        )
+
+        current_time = int(time.time())
+        expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
+        opaque_token = secrets.token_hex(16)
+
+        token_payload = {
+            "user_id": str(vendor_user.vendor_user_id),
+            "tenant_id": str(tenant.tenant_id),  # 👈 tenant_id instead of vendor_id
+            "opaque_token": opaque_token,
+            "roles": roles,
+            "permissions": all_permissions,
+            "user_type": "vendor_user",
+            "iat": current_time,
+            "exp": expiry_time,
+        }
+
+        oauth_accessor = Oauth2AsAccessor()
+        ttl = expiry_time - current_time
+        if not oauth_accessor.store_opaque_token(opaque_token, token_payload, 1800):
+            logger.error(
+                f"💥 Failed to store opaque token in Redis for vendor_user: {vendor_user.vendor_user_id}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error(
+                    message="Failed to store authentication token",
+                    error_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            )
+
+        logger.debug(f"💾 Opaque token stored in Redis with TTL: {ttl} seconds")
+
+        access_token = create_access_token(
+            user_id=str(vendor_user.vendor_user_id),
+            tenant_id=str(tenant.tenant_id),  # 👈 use tenant_id
+            opaque_token=opaque_token,
+            user_type="vendor_user"
+        )
+        refresh_token = create_refresh_token(
+            user_id=str(vendor_user.vendor_user_id),
+            user_type="vendor_user"
+        )
+
+        logger.info(
+            f"🚀 Login successful for vendor_user: {vendor_user.vendor_user_id} "
+            f"({vendor_user.email}) in tenant: {tenant.tenant_id}"
+        )
+
+        response_data = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "user": VendorUserResponse.model_validate(vendor_user)
+        }
+
+        return ResponseWrapper.success(
+            data=response_data,
+            message="Vendor user login successful"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise handle_db_error(e)
+    except Exception as e:
+        logger.error(f"Vendor user login failed with unexpected error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message="Login failed due to server error",
+                error_code="SERVER_ERROR",
+                details={"error": str(e)}
+            )
+        )
+
 @router.post("/admin/login")
 async def admin_login(
     form_data: AdminLoginRequest = Body(...),
@@ -449,6 +613,8 @@ async def admin_login(
         
     except HTTPException:
         raise
+    except Exception as e:
+        raise handle_db_error(e)
     except Exception as e:
         logger.error(f"Admin login failed with unexpected error: {str(e)}")
         raise HTTPException(
