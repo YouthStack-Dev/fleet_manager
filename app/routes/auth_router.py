@@ -227,7 +227,7 @@ async def employee_login(
         tenant = employee.tenant
         logger.debug(f"Tenant validation successful - ID: {tenant.tenant_id}")
 
-        if not verify_password(form_data.password, employee.password):
+        if not verify_password(hash_password(form_data.password), employee.password):
             logger.warning(f"🔒 Login failed - Invalid password for employee: {employee.employee_id} ({form_data.username})")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -369,7 +369,7 @@ async def vendor_user_login(
         tenant = vendor.tenant
         logger.debug(f"Tenant validation successful - ID: {tenant.tenant_id}")
 
-        if not verify_password(form_data.password, vendor_user.password):
+        if not verify_password(hash_password(form_data.password), vendor_user.password):
             logger.warning(
                 f"🔒 Login failed - Invalid password for vendor_user: "
                 f"{vendor_user.vendor_user_id} ({form_data.username})"
@@ -512,7 +512,7 @@ async def admin_login(
                 )
             )
         
-        if not verify_password(form_data.password, admin.password):
+        if not verify_password(hash_password(form_data.password), admin.password):   
             logger.warning(f"Admin login failed - Invalid password for admin: {admin.admin_id} ({form_data.username})")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
