@@ -514,6 +514,7 @@ def seed_vendor_users(db: Session):
             # Default users to seed for each vendor
             users_data = [
                 {
+                    "tenant_id": tenant.tenant_id,
                     "vendor_id": vendor.vendor_id,
                     "name": f"{vendor.name} Admin",
                     "email": f"{vendor.vendor_code.lower()}_admin@example.com",
@@ -523,6 +524,7 @@ def seed_vendor_users(db: Session):
                     "is_active": True
                 },
                 {
+                    "tenant_id": tenant.tenant_id,
                     "vendor_id": vendor.vendor_id,
                     "name": f"{vendor.name} Dispatcher",
                     "email": f"{vendor.vendor_code.lower()}_dispatcher@example.com",

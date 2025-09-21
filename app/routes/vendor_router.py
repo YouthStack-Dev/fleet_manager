@@ -26,6 +26,20 @@ def create_vendor(
         logger.info(f"Create vendor request: {vendor.dict()}")
         logger.debug(f"User data from token: {user_data}")
 
+        # --- Restrict by user_type ---
+        if user_data.get("user_type") not in ["admin", "employee"]:
+            logger.warning(
+                f"Unauthorized vendor creation attempt by user_type={user_data.get('user_type')}, "
+                f"user_id={user_data.get('user_id')}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Only Admin and Employee users can create vendors",
+                    error_code="UNAUTHORIZED_USER_TYPE",
+                ),
+            )
+
         # --- Override tenant_id from token if present ---
         if user_data.get("tenant_id"):
             vendor.tenant_id = user_data["tenant_id"]
@@ -88,6 +102,7 @@ def create_vendor(
         # --- Create Default VendorAdmin User ---
         default_password = vendor.admin_password or "default@123"
         vendor_user_in = VendorUser(
+            tenant_id=vendor.tenant_id,   # ✅ always set
             vendor_id=db_vendor.vendor_id,
             name=vendor.admin_name or f"Admin_{db_vendor.vendor_id}",
             email=vendor.admin_email,
@@ -119,24 +134,6 @@ def create_vendor(
             },
             message="Vendor and default admin user created successfully",
         )
-
-    except HTTPException:
-        db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        raise handle_db_error(e)
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Unexpected error while creating vendor: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=ResponseWrapper.error(
-                message="Unexpected error while creating vendor",
-                error_code="VENDOR_CREATION_FAILED",
-            ),
-        )
-
 
     except HTTPException:
         db.rollback()
