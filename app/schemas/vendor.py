@@ -20,6 +20,10 @@ class VendorBase(BaseModel):
                 "vendor_code": "ACM123",
                 "email": "contact@acme.com",
                 "phone": "+1-555-1234",
+                "admin_password": "new_secure_password",
+                "admin_name": "John Doe",
+                "admin_email": "admin@acme.com",
+                "admin_phone": "+1-555-6789",
                 "is_active": True,
                 "tenant_id": "tenant_001"
             }
@@ -31,7 +35,10 @@ class VendorBase(BaseModel):
 # Create schema
 # -------------------
 class VendorCreate(VendorBase):
-    pass
+    admin_name: str
+    admin_email: EmailStr
+    admin_phone: str
+    admin_password: Optional[str] = None
 
 
 # -------------------
@@ -64,10 +71,8 @@ class VendorUpdate(BaseModel):
 # -------------------
 class VendorResponse(VendorBase):
     vendor_id: int
-    is_deleted: bool
     created_at: datetime
     updated_at: datetime
-    deleted_at: Optional[datetime] = None
 
     model_config = ConfigDict(
         from_attributes=True,  # replaces orm_mode=True
@@ -80,10 +85,8 @@ class VendorResponse(VendorBase):
                 "phone": "+1-555-1234",
                 "is_active": True,
                 "tenant_id": "tenant_001",
-                "is_deleted": False,
                 "created_at": "2025-09-20T10:00:00Z",
                 "updated_at": "2025-09-20T12:00:00Z",
-                "deleted_at": None,
             }
         }
     )
@@ -109,11 +112,9 @@ class VendorPaginationResponse(BaseModel):
                         "email": "contact@acme.com",
                         "phone": "+1-555-1234",
                         "is_active": True,
-                        "tenant_id": "tenant_001",
-                        "is_deleted": False,
+                        "tenant_id": "tenant_001",                        
                         "created_at": "2025-09-20T10:00:00Z",
                         "updated_at": "2025-09-20T12:00:00Z",
-                        "deleted_at": None,
                     }
                 ]
             }

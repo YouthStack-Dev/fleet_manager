@@ -54,13 +54,13 @@ class TenantCreate(TenantBase):
     employee_latitude: Optional[float] = Field(None, ge=-90, le=90, description="Employee latitude")
     employee_code: Optional[str] = Field(None, max_length=50, description="Custom employee code like EMP123")
     employee_gender: Optional[Literal["Male", "Female", "Other"]] = Field(None, description="Employee gender")
-    @validator('phone')
+    @validator('employee_phone')
     def validate_phone(cls, v):
         if not re.match(PHONE_REGEX, v):
             raise ValueError('Phone number must be in E.164 format (e.g., +1234567890)')
         return v
 
-    @validator('name')
+    @validator('employee_name')
     def validate_name(cls, v):
         if not re.match(NAME_REGEX, v):
             raise ValueError('Name must be 2-50 characters long and can only contain letters, spaces, hyphens, and apostrophes')

@@ -2,7 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import Optional
 from app.database.session import get_db
+from app.models.iam.role import Role
 from app.models.vendor import Vendor
+from app.models.vendor_user import VendorUser
 from app.schemas.vendor import VendorCreate, VendorUpdate, VendorResponse, VendorPaginationResponse
 from app.utils.pagination import paginate_query
 from app.utils.response_utils import ResponseWrapper, handle_db_error
@@ -10,10 +12,10 @@ from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
 from app.crud.tenant import tenant_crud
 from app.crud.vendor import vendor_crud
+from common_utils.auth.utils import hash_password
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/vendors", tags=["vendors"])
-
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def create_vendor(
     vendor: VendorCreate,
@@ -21,34 +23,15 @@ def create_vendor(
     user_data=Depends(PermissionChecker(["vendor.create"], check_tenant=False)),
 ):
 
-    """
-    Create a new vendor.
-
-    Requires "vendor.create" permission.
-    Tenant ID is required and can be overridden by the tenant ID in the JWT token.
-    If the tenant ID is not provided in the request, it will default to the tenant ID in the JWT token.
-    If the tenant ID is not found or is inactive, a 404 error will be raised.
-    If any other error occurs while creating the vendor, a 500 error will be raised.
-
-    Args:
-        vendor (VendorCreate): The vendor data to create.
-        db (Session): The database session to use.
-        user_data (Depends): The user data from the JWT token.
-
-    Returns:
-        ResponseWrapper: A successful response with the created vendor data.
-    """
     try:
         logger.info(f"Create vendor request: {vendor.dict()}")
         logger.debug(f"User data from token: {user_data}")
 
-
-        # If token has tenant_id, it overrides request
+        # --- Override tenant_id from token if present ---
         if user_data.get("tenant_id"):
             vendor.tenant_id = user_data["tenant_id"]
 
-
-        logger.debug(f"Tenant ID from JWT or request: {vendor.tenant_id}")
+        logger.debug(f"Tenant ID resolved: {vendor.tenant_id}")
 
         if not vendor.tenant_id:
             raise HTTPException(
@@ -59,7 +42,7 @@ def create_vendor(
                 ),
             )
 
-        # Validate tenant exists and is active
+        # --- Validate tenant ---
         tenant = tenant_crud.get_by_id(db, tenant_id=vendor.tenant_id)
         if not tenant or not tenant.is_active:
             raise HTTPException(
@@ -70,18 +53,75 @@ def create_vendor(
                 ),
             )
 
-
-        # Create vendor using CRUD
-        logger.debug(f"Creating vendor: {vendor.dict()}")
+        # ================================
+        # Transaction Start
+        # ================================
+        # --- Create Vendor ---
         db_vendor = vendor_crud.create(db, obj_in=vendor)
+        db.flush()
+        logger.info(f"Vendor created: {db_vendor.vendor_id}")
+
+        # --- Create Default VendorAdmin Role ---
+        admin_role_name = f"{db_vendor.vendor_id}_VendorAdmin"
+        admin_role = db.query(Role).filter(
+            Role.tenant_id == vendor.tenant_id,
+            Role.name == admin_role_name
+        ).first()
+
+        if not admin_role:
+            admin_role = Role(
+                tenant_id=vendor.tenant_id,
+                name=admin_role_name,
+                description=f"Vendor admin role for vendor {db_vendor.name}",
+                is_active=True,
+            )
+            db.add(admin_role)
+            db.flush()
+            logger.info(f"Vendor admin role created: {admin_role_name}")
+
+        # --- Validate admin details ---
+        if not vendor.admin_email or not vendor.admin_phone:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Admin email and phone are mandatory",
+                    error_code="ADMIN_DETAILS_REQUIRED",
+                ),
+            )
+
+        # --- Create Default VendorAdmin User ---
+        default_password = vendor.admin_password or "default@123"
+        vendor_user_in = VendorUser(
+            vendor_id=db_vendor.vendor_id,
+            name=vendor.admin_name or f"Admin_{db_vendor.vendor_id}",
+            email=vendor.admin_email,
+            phone=vendor.admin_phone,
+            password=hash_password(default_password),
+            role_id=admin_role.role_id,
+            is_active=True
+        )
+        db.add(vendor_user_in)
+        db.flush()
+        logger.info(f"VendorAdmin user created: {vendor_user_in.email}")
+
+        # --- Commit transaction ---
         db.commit()
         db.refresh(db_vendor)
 
-        logger.info(f"Vendor created successfully: {db_vendor.vendor_id}")
+        logger.info(f"Vendor creation completed: {db_vendor.vendor_id}")
 
         return ResponseWrapper.success(
-            data=VendorResponse.model_validate(db_vendor, from_attributes=True),
-            message="Vendor created successfully",
+            data={
+                "vendor": VendorResponse.model_validate(db_vendor, from_attributes=True),
+                "vendor_admin": {
+                    "vendor_user_id": vendor_user_in.vendor_user_id,
+                    "name": vendor_user_in.name,
+                    "email": vendor_user_in.email,
+                    "phone": vendor_user_in.phone,
+                    "role_id": vendor_user_in.role_id,
+                },
+            },
+            message="Vendor and default admin user created successfully",
         )
 
     except HTTPException:
@@ -89,8 +129,7 @@ def create_vendor(
         raise
     except Exception as e:
         db.rollback()
-        raise handle_db_error(e) 
-
+        raise handle_db_error(e)
     except Exception as e:
         db.rollback()
         logger.exception(f"Unexpected error while creating vendor: {e}")
@@ -102,6 +141,7 @@ def create_vendor(
                 details={"error": str(e)},
             ),
         )
+
        
 
 @router.get("/", status_code=status.HTTP_200_OK)
