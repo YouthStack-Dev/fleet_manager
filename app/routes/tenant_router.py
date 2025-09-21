@@ -245,35 +245,61 @@ def read_tenants(
     """
     Fetch a list of tenants with optional filters.
 
-    Args:
-        skip (int): Number of records to skip.
-        limit (int): Max number of records to fetch.
-        name (Optional[str]): Filter tenants by name (case-insensitive).
-        is_active (Optional[bool]): Filter tenants by active status.
-
-    Returns:
-        ResponseWrapper: a successful response with the fetched tenant data.
+    Rules:
+    - user_type == vendor/driver or missing → Forbidden
+    - user_type == employee → can fetch only their tenant
+    - other (admin/superadmin) → can apply filters and fetch multiple tenants
     """
     try:
+        # 🚫 Block unauthorized user types
+        if not user_data or user_data.get("user_type") in {"vendor", "driver"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to access this resource",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
         query = db.query(Tenant)
 
-        # --- Apply filters ---
-        if name:
-            query = query.filter(Tenant.name.ilike(f"%{name}%"))
-        if is_active is not None:
-            query = query.filter(Tenant.is_active == is_active)
+        # 👷 Employee restriction
+        if user_data.get("user_type") == "employee":
+            tenant_id = user_data.get("tenant_id")
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+            query = query.filter(Tenant.tenant_id == tenant_id)
+
+        # 👑 Admin/SuperAdmin filters
+        else:
+            if name:
+                query = query.filter(Tenant.name.ilike(f"%{name}%"))
+            if is_active is not None:
+                query = query.filter(Tenant.is_active == is_active)
 
         total, items = paginate_query(query, skip, limit)
-
         tenants = [TenantResponse.model_validate(t, from_attributes=True) for t in items]
 
-        logger.info(f"Fetched {len(tenants)} tenants (total={total}, skip={skip}, limit={limit})")
+        logger.info(
+            f"Fetched {len(tenants)} tenants (total={total}, skip={skip}, limit={limit}) "
+            f"for user {user_data.get('user_id')} of type {user_data.get('user_type')}"
+        )
 
         return ResponseWrapper.success(
             data=TenantPaginationResponse(total=total, items=tenants),
-            message="Tenants fetched successfully"
+            message="Tenants fetched successfully",
         )
 
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise handle_db_error(e)
     except Exception as e:
         logger.exception(f"Unexpected error while fetching tenants: {e}")
         raise HTTPException(
@@ -281,7 +307,7 @@ def read_tenants(
             detail=ResponseWrapper.error(
                 message="Unexpected error while fetching tenants",
                 error_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                details={"error": str(e)}
+                details={"error": str(e)},
             ),
         )
 
