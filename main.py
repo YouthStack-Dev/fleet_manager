@@ -36,7 +36,7 @@ from app.routes import (
 )
 
 # Import the IAM routers
-from app.routes.iam import permission_router, policy_router, role_router, user_role_router
+from app.routes.iam import permission_router, policy_router, role_router
 
 from app.core.logging_config import setup_logging, get_logger
 
@@ -92,7 +92,7 @@ app.include_router(auth_router, prefix="/api/v1")  # Add the auth router
 app.include_router(permission_router, prefix="/api/v1/iam")
 app.include_router(policy_router, prefix="/api/v1/iam")
 app.include_router(role_router, prefix="/api/v1/iam")
-# app.include_router(user_role_router, prefix="/api/v1/iam")
+
 
 
 # Direct PostgreSQL connection for seeding database

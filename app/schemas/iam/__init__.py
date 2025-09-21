@@ -8,7 +8,4 @@ from app.schemas.iam.policy import (
 from app.schemas.iam.role import (
     RoleBase, RoleCreate, RoleUpdate, RoleResponse, RolePaginationResponse
 )
-from app.schemas.iam.user_role import (
-    UserRoleBase, UserRoleCreate, UserRoleUpdate, UserRoleResponse, 
-    UserRolePaginationResponse, UserRoleAssignment
-)
+

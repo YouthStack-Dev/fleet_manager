@@ -22,7 +22,6 @@ from common_utils.auth.utils import (
     verify_token, hash_password, verify_password
 )
 from common_utils.auth.token_validation import Oauth2AsAccessor, validate_bearer_token
-from app.crud.iam import user_role_crud
 from app.schemas.employee import EmployeeResponse
 from app.crud.employee import employee_crud
 from app.crud.admin import admin_crud
@@ -477,110 +476,110 @@ async def introspect(x_introspect_secret: str = Header(...,alias="X_Introspect_S
     
     return introspect_token_direct(authorization.credentials)
 
-@router.post("/refresh-token", response_model=TokenResponse)
-async def refresh_token(
-    refresh_req: RefreshTokenRequest,
-    db: Session = Depends(get_db)
-):
-    """
-    Use refresh token to get a new access token
-    """
-    logger.info("Refresh token request received")
+# @router.post("/refresh-token", response_model=TokenResponse)
+# async def refresh_token(
+#     refresh_req: RefreshTokenRequest,
+#     db: Session = Depends(get_db)
+# ):
+#     """
+#     Use refresh token to get a new access token
+#     """
+#     logger.info("Refresh token request received")
     
-    try:
-        payload = verify_token(refresh_req.refresh_token)
-        logger.debug(f"Refresh token verified for user: {payload.get('user_id')}")
+#     try:
+#         payload = verify_token(refresh_req.refresh_token)
+#         logger.debug(f"Refresh token verified for user: {payload.get('user_id')}")
         
-        if payload.get("token_type") != "refresh":
-            logger.warning("Refresh token validation failed - Invalid token type")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid refresh token"
-            )
+#         if payload.get("token_type") != "refresh":
+#             logger.warning("Refresh token validation failed - Invalid token type")
+#             raise HTTPException(
+#                 status_code=status.HTTP_401_UNAUTHORIZED,
+#                 detail="Invalid refresh token"
+#             )
         
-        user_id = payload.get("user_id")
-        if not user_id:
-            logger.warning("Refresh token validation failed - Missing user_id")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid refresh token"
-            )
+#         user_id = payload.get("user_id")
+#         if not user_id:
+#             logger.warning("Refresh token validation failed - Missing user_id")
+#             raise HTTPException(
+#                 status_code=status.HTTP_401_UNAUTHORIZED,
+#                 detail="Invalid refresh token"
+#             )
         
-        employee = db.query(Employee).filter(Employee.employee_id == int(user_id)).first()
-        if not employee:
-            logger.warning(f"Refresh token failed - Employee not found: {user_id}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found or inactive"
-            )
+#         employee = db.query(Employee).filter(Employee.employee_id == int(user_id)).first()
+#         if not employee:
+#             logger.warning(f"Refresh token failed - Employee not found: {user_id}")
+#             raise HTTPException(
+#                 status_code=status.HTTP_401_UNAUTHORIZED,
+#                 detail="User not found or inactive"
+#             )
         
-        if not employee.is_active:
-            logger.warning(f"Refresh token failed - Inactive employee: {user_id}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found or inactive"
-            )
+#         if not employee.is_active:
+#             logger.warning(f"Refresh token failed - Inactive employee: {user_id}")
+#             raise HTTPException(
+#                 status_code=status.HTTP_401_UNAUTHORIZED,
+#                 detail="User not found or inactive"
+#             )
             
-        logger.debug(f"Fetching updated permissions for refresh token - employee: {employee.employee_id}")
+#         logger.debug(f"Fetching updated permissions for refresh token - employee: {employee.employee_id}")
         
-        user_roles = user_role_crud.get_by_user_and_tenant(
-            db, user_id=employee.employee_id, tenant_id=employee.tenant_id
-        )
+#         user_roles = user_role_crud.get_by_user_and_tenant(
+#             db, user_id=employee.employee_id, tenant_id=employee.tenant_id
+#         )
         
-        roles = []
-        all_permissions = []
+#         roles = []
+#         all_permissions = []
         
-        for user_role in user_roles:
-            roles.append(user_role.role.name)
+#         for user_role in user_roles:
+#             roles.append(user_role.role.name)
             
-            for policy in user_role.role.policies:
-                for permission in policy.permissions:
-                    module = permission.module
-                    action = permission.action
+#             for policy in user_role.role.policies:
+#                 for permission in policy.permissions:
+#                     module = permission.module
+#                     action = permission.action
                     
-                    existing_module = next(
-                        (p for p in all_permissions if p["module"] == module),
-                        None
-                    )
+#                     existing_module = next(
+#                         (p for p in all_permissions if p["module"] == module),
+#                         None
+#                     )
                     
-                    if existing_module:
-                        if action == "*":
-                            existing_module["action"] = ["create", "read", "update", "delete", "*"]
-                        elif action not in existing_module["action"]:
-                            existing_module["action"].append(action)
-                    else:
-                        if action == "*":
-                            actions = ["create", "read", "update", "delete", "*"]
-                        else:
-                            actions = [action]
+#                     if existing_module:
+#                         if action == "*":
+#                             existing_module["action"] = ["create", "read", "update", "delete", "*"]
+#                         elif action not in existing_module["action"]:
+#                             existing_module["action"].append(action)
+#                     else:
+#                         if action == "*":
+#                             actions = ["create", "read", "update", "delete", "*"]
+#                         else:
+#                             actions = [action]
                             
-                        all_permissions.append({
-                            "module": module,
-                            "action": actions
-                        })
+#                         all_permissions.append({
+#                             "module": module,
+#                             "action": actions
+#                         })
         
-        new_access_token = create_access_token(
-            user_id=str(employee.employee_id),
-            tenant_id=str(employee.tenant_id),
-            roles=roles,
-            permissions=all_permissions
-        )
+#         new_access_token = create_access_token(
+#             user_id=str(employee.employee_id),
+#             tenant_id=str(employee.tenant_id),
+#             roles=roles,
+#             permissions=all_permissions
+#         )
         
-        new_refresh_token = create_refresh_token(user_id=str(employee.employee_id))
+#         new_refresh_token = create_refresh_token(user_id=str(employee.employee_id))
         
-        logger.info(f"Refresh token successful for employee: {employee.employee_id} ({employee.email})")
+#         logger.info(f"Refresh token successful for employee: {employee.employee_id} ({employee.email})")
         
-        return TokenResponse(
-            access_token=new_access_token,
-            refresh_token=new_refresh_token,
-            token_type="bearer"
-        )
-    except Exception as e:
-        logger.error(f"Refresh token failed with error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid refresh token: {str(e)}"
-        )
+#         return TokenResponse(
+#             access_token=new_access_token,
+#             refresh_token=new_refresh_token,
+#             token_type="bearer"
+#         )
+#     except Exception as e:
+#         logger.error(f"Refresh token failed with error: {str(e)}")
+#         raise HTTPException(
+#             status_code=status.HTTP_401_UNAUTHORIZED,
+#             detail=f"Invalid refresh token: {str(e)}"
+#         )
 
 @router.post("/reset-password", status_code=status.HTTP_200_OK)
 async def reset_password(

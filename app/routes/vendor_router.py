@@ -22,7 +22,6 @@ def create_vendor(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.create"], check_tenant=False)),
 ):
-
     try:
         logger.info(f"Create vendor request: {vendor.dict()}")
         logger.debug(f"User data from token: {user_data}")
@@ -61,23 +60,20 @@ def create_vendor(
         db.flush()
         logger.info(f"Vendor created: {db_vendor.vendor_id}")
 
-        # --- Create Default VendorAdmin Role ---
-        admin_role_name = f"{db_vendor.vendor_id}_VendorAdmin"
+        # --- Get System VendorAdmin Role ---
         admin_role = db.query(Role).filter(
-            Role.tenant_id == vendor.tenant_id,
-            Role.name == admin_role_name
+            Role.is_system_role == True,
+            Role.name == "VendorAdmin"
         ).first()
 
         if not admin_role:
-            admin_role = Role(
-                tenant_id=vendor.tenant_id,
-                name=admin_role_name,
-                description=f"Vendor admin role for vendor {db_vendor.name}",
-                is_active=True,
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error(
+                    message="System role 'VendorAdmin' is missing. Please contact admin.",
+                    error_code="SYSTEM_ROLE_MISSING",
+                ),
             )
-            db.add(admin_role)
-            db.flush()
-            logger.info(f"Vendor admin role created: {admin_role_name}")
 
         # --- Validate admin details ---
         if not vendor.admin_email or not vendor.admin_phone:
@@ -97,8 +93,8 @@ def create_vendor(
             email=vendor.admin_email,
             phone=vendor.admin_phone,
             password=hash_password(default_password),
-            role_id=admin_role.role_id,
-            is_active=True
+            role_id=admin_role.role_id,   # ✅ assign system VendorAdmin role
+            is_active=True,
         )
         db.add(vendor_user_in)
         db.flush()
@@ -123,6 +119,24 @@ def create_vendor(
             },
             message="Vendor and default admin user created successfully",
         )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise handle_db_error(e)
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Unexpected error while creating vendor: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message="Unexpected error while creating vendor",
+                error_code="VENDOR_CREATION_FAILED",
+            ),
+        )
+
 
     except HTTPException:
         db.rollback()

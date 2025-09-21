@@ -140,6 +140,7 @@ class TenantResponse(TenantBase):
     updated_at: datetime = Field(..., description="Record last update timestamp")
 
     model_config = ConfigDict(
+        from_attributes=True,
         json_schema_extra={
             "example": {
                 "tenant_id": "tenant_123",

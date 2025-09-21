@@ -14,7 +14,7 @@ from jwt.exceptions import PyJWTError
 from functools import lru_cache
 
 from app.database.session import SessionLocal
-from app.models.iam import Permission, Policy, Role, UserRole
+from app.models.iam import Permission, Policy, Role
 from sqlalchemy.orm import Session, joinedload
 from app.config import settings
 
@@ -589,62 +589,6 @@ def access_token_validator(token, opaque_token, verbosity, use_cache: bool = Tru
     accessor = Oauth2AsAccessor()
     return accessor.validate_oauth2_token(token, opaque_token, use_cache=use_cache)
 
-def get_permission_set(user_id: int, tenant_id: str = None, use_cache: bool = True) -> Set[str]:
-    """Get all permissions for a user, with optional caching"""
-    
-    cache_key = f"{user_id}_{tenant_id}"
-    
-    # Check cache first if enabled
-    if use_cache and cache_key in permission_cache:
-        cache_entry = permission_cache[cache_key]
-        if time.time() < cache_entry["expiry"]:
-            return cache_entry["permissions"]
-    
-    # Cache miss or expired, need to fetch from database
-    db = SessionLocal()
-    try:
-        # Get user roles
-        user_roles_query = db.query(UserRole).filter(
-            UserRole.user_id == user_id,
-            UserRole.is_active == True
-        )
-        
-        if tenant_id:
-            # Get tenant-specific roles and system roles
-            user_roles_query = user_roles_query.filter(
-                (UserRole.tenant_id == tenant_id) | (UserRole.tenant_id == None)
-            )
-            
-        user_roles = user_roles_query.options(
-            joinedload(UserRole.role).joinedload(Role.policies).joinedload(Policy.permissions)
-        ).all()
-        
-        # Collect all permissions
-        permissions = set()
-        for user_role in user_roles:
-            for policy in user_role.role.policies:
-                for permission in policy.permissions:
-                    # Handle wildcard permissions
-                    if permission.action == "*":
-                        # Add all possible actions for this module
-                        permissions.add(f"{permission.module}.create")
-                        permissions.add(f"{permission.module}.read")
-                        permissions.add(f"{permission.module}.update")
-                        permissions.add(f"{permission.module}.delete")
-                    else:
-                        permissions.add(f"{permission.module}.{permission.action}")
-        
-        # Cache the result if caching is enabled
-        if use_cache:
-            permission_cache[cache_key] = {
-                "permissions": permissions,
-                "expiry": time.time() + permission_cache_ttl
-            }
-            
-        return permissions
-            
-    finally:
-        db.close()
 
 def validate_bearer_token(use_cache: bool = True):
     async def get_token_data(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict:

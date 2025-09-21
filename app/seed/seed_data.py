@@ -132,16 +132,20 @@ def seed_iam(db: Session):
             db.add(perm)
             db.flush()
             permissions_map[f"{module}:{action}"] = perm
-            logger.info(f"Permission {module}:{action} created.")
 
-    # --- Step 2: Policies (group by module) ---
+    # --- Step 2: Policies (system-wide, grouped by module) ---
     policies_map = {}
     for module in modules:
         policy_name = f"{module.capitalize()}Policy".replace("-", "").replace(".", "")
         perms = [f"{module}:{a}" for a in actions]
-        policy = db.query(Policy).filter(Policy.name == policy_name).first()
+
+        policy = db.query(Policy).filter(Policy.name == policy_name, Policy.is_system_policy == True).first()
         if not policy:
-            policy = Policy(name=policy_name, description=f"Policy for {module}")
+            policy = Policy(
+                name=policy_name,
+                description=f"Policy for {module}",
+                is_system_policy=True,   # ✅ mark as system
+            )
             db.add(policy)
             logger.info(f"Policy {policy_name} created.")
         else:
@@ -150,43 +154,56 @@ def seed_iam(db: Session):
         policy.permissions = [permissions_map[p] for p in perms if p in permissions_map]
         policies_map[policy_name] = policy
 
-    # --- Step 2.1: Extra TenantPolicies (all-in-one) ---
+    # --- Step 2.1: Aggregated TenantPolicies (system-wide) ---
     tenant_policy_name = "TenantPolicies"
-    tenant_policy = db.query(Policy).filter(Policy.name == tenant_policy_name).first()
+    tenant_policy = db.query(Policy).filter(
+        Policy.name == tenant_policy_name, Policy.is_system_policy == True
+    ).first()
+
     if not tenant_policy:
         tenant_policy = Policy(
             name=tenant_policy_name,
             description="Aggregated policy with all tenant-related permissions",
+            is_system_policy=True,
         )
         db.add(tenant_policy)
         logger.info(f"Policy {tenant_policy_name} created.")
     else:
         logger.debug(f"Policy {tenant_policy_name} already exists.")
 
-    # attach ALL listed module permissions into this one policy
-    tenant_perms = []
-    for module in modules:
-        for action in actions:
-            key = f"{module}:{action}"
-            if key in permissions_map:
-                tenant_perms.append(permissions_map[key])
+    # Attach all permissions
+    tenant_perms = [perm for perm in permissions_map.values()]
     tenant_policy.permissions = tenant_perms
     policies_map[tenant_policy_name] = tenant_policy
 
-    # --- Step 3: Roles ---
+    # --- Step 3: Roles (system-wide) ---
     roles_def = {
         "SuperAdmin": list(policies_map.keys()),  # all policies
-        "Admin": [p for p in policies_map.keys() if p not in ["PermissionsPolicy", "PolicyPolicy", "RolePolicy"]],
+        "Admin": [
+            p for p in policies_map.keys()
+            if p not in ["PermissionsPolicy", "PolicyPolicy", "RolePolicy"]
+        ],
         "Employee": ["EmployeePolicy", "ShiftPolicy", "BookingPolicy"],
+        "Driver": ["DriverPolicy", "ShiftPolicy", "BookingPolicy"],
+        "VendorAdmin": [
+            "DriverPolicy",
+            "RoutebookingPolicy",
+            "VehiclePolicy",
+            "VehicletypePolicy",
+            "VendoruserPolicy",
+            "PermissionsPolicy",
+            "PolicyPolicy",
+            "RolePolicy",
+        ],
     }
 
     for role_name, assigned_policies in roles_def.items():
-        role = db.query(Role).filter(Role.name == role_name).first()
+        role = db.query(Role).filter(Role.name == role_name, Role.is_system_role == True).first()
         if not role:
             role = Role(
                 name=role_name,
                 description=f"{role_name} system role",
-                is_system_role=True,
+                is_system_role=True,   # ✅ mark as system
             )
             db.add(role)
             logger.info(f"Role {role_name} created.")

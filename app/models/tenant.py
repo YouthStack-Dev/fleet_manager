@@ -21,6 +21,7 @@ class Tenant(Base):
     shifts = relationship("Shift", back_populates="tenant", cascade="all, delete-orphan")
     bookings = relationship("Booking", back_populates="tenant", cascade="all, delete-orphan")
     routes = relationship("Route", back_populates="tenant", cascade="all, delete-orphan")
+    # policy = relationship("Policy", back_populates="tenant", cascade="all, delete-orphan")
 
     # ✅ One-to-many Tenant → Vendor
     vendors = relationship("Vendor", back_populates="tenant", cascade="all, delete-orphan")

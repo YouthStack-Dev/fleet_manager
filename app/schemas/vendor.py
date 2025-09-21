@@ -39,6 +39,7 @@ class VendorCreate(VendorBase):
     admin_email: EmailStr
     admin_phone: str
     admin_password: Optional[str] = None
+    permission_ids: Optional[List[int]] = []
 
 
 # -------------------

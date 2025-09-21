@@ -123,6 +123,7 @@ def create_tenant(
             # --- Create Admin Policy ---
             admin_policy_name = f"{new_tenant.tenant_id}_AdminPolicy"
             admin_policy = Policy(
+                tenant_id=new_tenant.tenant_id,
                 name=admin_policy_name,
                 description=f"Admin policy for tenant {new_tenant.name}",
                 is_active=True
