@@ -43,7 +43,7 @@ class ShiftResponse(ShiftBase):
     updated_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class ShiftPaginationResponse(BaseModel):
     total: int

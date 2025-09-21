@@ -123,6 +123,7 @@ def create_tenant(
             # --- Create Admin Policy ---
             admin_policy_name = f"{new_tenant.tenant_id}_AdminPolicy"
             admin_policy = Policy(
+                tenant_id=new_tenant.tenant_id,
                 name=admin_policy_name,
                 description=f"Admin policy for tenant {new_tenant.name}",
                 is_active=True
@@ -228,64 +229,265 @@ def create_tenant(
                 details={"error": str(e)}
             )
         )
-
-@router.get("/", response_model=TenantPaginationResponse)
+@router.get("/", response_model=dict, status_code=status.HTTP_200_OK)
 def read_tenants(
-    skip: int = 0,
-    limit: int = 100,
-    name: Optional[str] = None,
-    is_active: Optional[bool] = None,
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(100, ge=1, le=500, description="Max number of records to fetch"),
+    name: Optional[str] = Query(None, description="Filter tenants by name (case-insensitive)"),
+    is_active: Optional[bool] = Query(None, description="Filter tenants by active status"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["admin.tenant.read"], check_tenant=False))
+    user_data=Depends(PermissionChecker(["admin.tenant.read"], check_tenant=False)),
 ):
-    query = db.query(Tenant)
-    
-    # Apply filters
-    if name:
-        query = query.filter(Tenant.name.ilike(f"%{name}%"))
-    if is_active is not None:
-        query = query.filter(Tenant.is_active == is_active)
-    
-    total, items = paginate_query(query, skip, limit)
-    return {"total": total, "items": items}
 
-@router.get("/{tenant_id}", response_model=TenantResponse)
+    """
+    Fetch a list of tenants with optional filters.
+
+    Args:
+        skip (int): Number of records to skip.
+        limit (int): Max number of records to fetch.
+        name (Optional[str]): Filter tenants by name (case-insensitive).
+        is_active (Optional[bool]): Filter tenants by active status.
+
+    Returns:
+        ResponseWrapper: a successful response with the fetched tenant data.
+    """
+    try:
+        query = db.query(Tenant)
+
+        # --- Apply filters ---
+        if name:
+            query = query.filter(Tenant.name.ilike(f"%{name}%"))
+        if is_active is not None:
+            query = query.filter(Tenant.is_active == is_active)
+
+        total, items = paginate_query(query, skip, limit)
+
+        tenants = [TenantResponse.model_validate(t, from_attributes=True) for t in items]
+
+        logger.info(f"Fetched {len(tenants)} tenants (total={total}, skip={skip}, limit={limit})")
+
+        return ResponseWrapper.success(
+            data=TenantPaginationResponse(total=total, items=tenants),
+            message="Tenants fetched successfully"
+        )
+
+    except Exception as e:
+        logger.exception(f"Unexpected error while fetching tenants: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message="Unexpected error while fetching tenants",
+                error_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                details={"error": str(e)}
+            ),
+        )
+
+
+@router.get("/{tenant_id}", response_model=dict, status_code=status.HTTP_200_OK)
 def read_tenant(
-    tenant_id: str, 
+    tenant_id: str,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["admin.tenant.read"], check_tenant=False))
+    user_data=Depends(PermissionChecker(["admin.tenant.read"], check_tenant=False)),
 ):
-    db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
-    if not db_tenant:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tenant with ID {tenant_id} not found"
-        )
-    return db_tenant
 
-@router.put("/{tenant_id}", response_model=TenantResponse)
+    """
+    Fetch a tenant by ID.
+
+    **Required permissions:** `admin.tenant.read`
+
+    **Response:**
+
+    * `tenant`: Tenant object with the given ID.
+
+    **Status codes:**
+
+    * `200 OK`: Tenant fetched successfully.
+    * `404 Not Found`: Tenant with the given ID not found.
+    * `500 Internal Server Error`: Unexpected server error while fetching tenant.
+    """
+    try:
+        db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+
+        if not db_tenant:
+            logger.warning(f"Tenant fetch failed - not found: {tenant_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Tenant with ID '{tenant_id}' not found",
+                    error_code=status.HTTP_404_NOT_FOUND,
+                ),
+            )
+
+        tenant = TenantResponse.model_validate(db_tenant, from_attributes=True)
+
+        logger.info(f"Tenant fetched successfully: {tenant_id}")
+
+        return ResponseWrapper.success(
+            data=tenant,
+            message="Tenant fetched successfully"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error while fetching tenant {tenant_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message=f"Unexpected error while fetching tenant '{tenant_id}'",
+                error_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                details={"error": str(e)},
+            ),
+        )
+
+@router.put("/{tenant_id}", response_model=dict, status_code=status.HTTP_200_OK)
 def update_tenant(
-    tenant_id: str, 
-    tenant_update: TenantUpdate, 
+    tenant_id: str,
+    tenant_update: TenantUpdate,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["admin.tenant.update"], check_tenant=False))
+    user_data=Depends(PermissionChecker(["admin.tenant.update"], check_tenant=False)),
 ):
-    db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
-    if not db_tenant:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tenant with ID {tenant_id} not found"
-        )
-    
-    update_data = tenant_update.dict(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(db_tenant, key, value)
-    
-    db.commit()
-    db.refresh(db_tenant)
-    return db_tenant
 
-@router.delete("/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
+    """
+    Update a tenant by ID.
+
+    **Required permissions:** `admin.tenant.update`
+
+    **Request body:**
+
+    * `name`: Name of the tenant.
+    * `is_active`: Active status of the tenant.
+
+    **Response:**
+
+    * `tenant`: Updated tenant object.
+
+    **Status codes:**
+
+    * `200 OK`: Tenant updated successfully.
+    * `404 Not Found`: Tenant with the given ID not found.
+    * `400 Bad Request`: No valid fields provided for update.
+    * `500 Internal Server Error`: Unexpected server error while updating tenant.
+    """
+    try:
+        db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+
+        if not db_tenant:
+            logger.warning(f"Tenant update failed - not found: {tenant_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Tenant with ID '{tenant_id}' not found",
+                    error_code=status.HTTP_404_NOT_FOUND,
+                ),
+            )
+
+        update_data = tenant_update.dict(exclude_unset=True)
+
+        if not update_data:
+            logger.warning(f"No update fields provided for tenant: {tenant_id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="No valid fields provided for update",
+                    error_code=status.HTTP_400_BAD_REQUEST,
+                ),
+            )
+
+        for key, value in update_data.items():
+            setattr(db_tenant, key, value)
+
+        db.commit()
+        db.refresh(db_tenant)
+
+        updated_tenant = TenantResponse.model_validate(db_tenant, from_attributes=True)
+
+        logger.info(f"Tenant updated successfully: {tenant_id}")
+
+        return ResponseWrapper.success(
+            data=updated_tenant,
+            message=f"Tenant '{tenant_id}' updated successfully"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.exception(f"Unexpected error while updating tenant {tenant_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message=f"Unexpected error while updating tenant '{tenant_id}'",
+                error_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                details={"error": str(e)},
+            ),
+        )
+
+@router.patch("/{tenant_id}/toggle-status", response_model=dict, status_code=status.HTTP_200_OK)
+def toggle_tenant_status(
+    tenant_id: str,
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["admin.tenant.update"], check_tenant=False)),
+):
+
+    """
+    Toggle a tenant's active status.
+
+    Requires "admin.tenant.update" permission.
+
+    If tenant is not found, raises 404.
+
+    If any other error occurs while toggling the tenant's status, raises 500.
+
+    Args:
+        tenant_id (str): The ID of the tenant to toggle.
+
+    Returns:
+        ResponseWrapper: A successful response with the updated tenant data.
+    """
+    try:
+        db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+
+        if not db_tenant:
+            logger.warning(f"Tenant toggle failed - not found: {tenant_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Tenant with ID '{tenant_id}' not found",
+                    error_code=status.HTTP_404_NOT_FOUND,
+                ),
+            )
+
+        # --- Toggle status ---
+        db_tenant.is_active = not db_tenant.is_active
+        db.commit()
+        db.refresh(db_tenant)
+
+        logger.info(
+            f"Toggled tenant {tenant_id} status to {'active' if db_tenant.is_active else 'inactive'}"
+        )
+
+        return ResponseWrapper.success(
+            data=TenantResponse.model_validate(db_tenant, from_attributes=True),
+            message=f"Tenant '{tenant_id}' is now {'active' if db_tenant.is_active else 'inactive'}"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.exception(f"Unexpected error while toggling tenant {tenant_id} status: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message=f"Unexpected error while toggling tenant '{tenant_id}' status",
+                error_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                details={"error": str(e)},
+            ),
+        )
+
+
+# @router.delete("/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_tenant(
     tenant_id: str, 
     db: Session = Depends(get_db),

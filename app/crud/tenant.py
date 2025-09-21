@@ -1,3 +1,4 @@
+from app.core.logging_config import get_logger
 from typing import List, Dict, Any, Optional, Union
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
@@ -5,15 +6,21 @@ from app.models import Tenant
 from app.schemas.tenant import TenantCreate, TenantUpdate
 from app.crud.base import CRUDBase
 
+logger = get_logger(__name__)
 
 class CRUDTenant(CRUDBase[Tenant, TenantCreate, TenantUpdate]):
     def get_by_id(self, db: Session, *, tenant_id: str) -> Optional[Tenant]:
         """Get tenant by unique ID"""
-        return db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        logger.debug(f"Fetching tenant by ID: {tenant_id}")
+        result = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        logger.debug(f"get_by_id({tenant_id}) returned: {vars(result) if result else None}")
+        return result
 
     def get_by_name(self, db: Session, *, name: str) -> Optional[Tenant]:
         """Get tenant by unique name"""
-        return db.query(Tenant).filter(Tenant.name == name).first()
+        result = db.query(Tenant).filter(Tenant.name == name).first()
+        logger.debug(f"get_by_name({name}) returned: {result}")
+        return result
 
     def create(self, db: Session, *, obj_in: TenantCreate) -> Tenant:
         """Create a tenant"""

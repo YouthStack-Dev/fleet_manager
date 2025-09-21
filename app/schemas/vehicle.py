@@ -49,7 +49,7 @@ class VehicleResponse(VehicleBase):
     updated_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class VehiclePaginationResponse(BaseModel):
     total: int

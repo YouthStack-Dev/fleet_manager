@@ -22,7 +22,6 @@ from common_utils.auth.utils import (
     verify_token, hash_password, verify_password
 )
 from common_utils.auth.token_validation import Oauth2AsAccessor, validate_bearer_token
-from app.crud.iam import user_role_crud
 from app.schemas.employee import EmployeeResponse
 from app.crud.employee import employee_crud
 from app.crud.admin import admin_crud
@@ -85,11 +84,11 @@ def introspect_token_direct(token: str) -> dict:
     try:
         user_id = payload.get("user_id")
         tenant_id = payload.get("tenant_id")
-        token_context = payload.get("token_context")  # Get token context from JWT
+        user_type = payload.get("user_type")  # Get token context from JWT
         
-        logger.debug(f"Fetching roles and permissions for introspection - user: {user_id}, tenant: {tenant_id}, context: {token_context}")
+        logger.debug(f"Fetching roles and permissions for introspection - user: {user_id}, tenant: {tenant_id}, context: {user_type}")
         
-        if token_context == "admin":
+        if user_type == "admin":
             admin = db.query(Admin).filter(Admin.admin_id == int(user_id)).first()
             if not admin:
                 logger.warning(f"Introspection failed - Admin not found: {user_id}")
@@ -153,7 +152,7 @@ def introspect_token_direct(token: str) -> dict:
                     detail="Failed to fetch user roles"
                 )
         
-        logger.info(f"Token introspection successful for user: {user_id}, context: {token_context}, roles: {roles}, permissions: {len(all_permissions)} modules")
+        logger.info(f"Token introspection successful for user: {user_id}, context: {user_type}, roles: {roles}, permissions: {len(all_permissions)} modules")
         
         current_time = int(time.time())
         expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
@@ -169,11 +168,11 @@ def introspect_token_direct(token: str) -> dict:
             "exp": expiry_time,
         }
         
-        if token_context != "admin" and tenant_id:
+        if user_type != "admin" and tenant_id:
             token_payload["tenant_id"] = str(tenant_id)
         
-        if token_context:
-            token_payload["token_context"] = token_context
+        if user_type:
+            token_payload["user_type"] = user_type
 
         return token_payload
         
@@ -235,13 +234,13 @@ async def employee_login(
                 )
             )
 
-        if not employee.is_active:
+        if not employee.is_active or not tenant.is_active:
             logger.warning(f"🚫 Login failed - Inactive account for employee: {employee.employee_id} ({form_data.username})")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
-                    message="Account is inactive",
-                    error_code=status.HTTP_403_FORBIDDEN
+                    message="User account is inactive",
+                    error_code="ACCOUNT_INACTIVE"
                 )
             )
 
@@ -272,7 +271,7 @@ async def employee_login(
             "opaque_token": opaque_token,
             "roles": roles,
             "permissions": all_permissions,
-            "token_context": "employee",  # Add token context
+            "user_type": "employee",  # Add token context
             "iat": current_time,
             "exp": expiry_time,
         }
@@ -295,11 +294,11 @@ async def employee_login(
             user_id=str(employee.employee_id),
             tenant_id=str(tenant.tenant_id),
             opaque_token=opaque_token,
-            token_context="employee" 
+            user_type="employee" 
         )
         refresh_token = create_refresh_token(
             user_id=str(employee.employee_id),
-            token_context="employee"
+            user_type="employee"
         )
 
         logger.info(f"🚀 Login successful for employee: {employee.employee_id} ({employee.email}) in tenant: {tenant.tenant_id}")
@@ -397,7 +396,7 @@ async def admin_login(
         token_payload = {
             "user_id": str(admin.admin_id),
             "user_type": "admin",
-            "token_context": "admin",  # Add token context
+            "user_type": "admin",  # Add token context
             "roles": roles,
             "permissions": all_permissions,
             "opaque_token": opaque_token,
@@ -422,11 +421,11 @@ async def admin_login(
         access_token = create_access_token(
             user_id=str(admin.admin_id),
             opaque_token=opaque_token,
-            token_context="admin"
+            user_type="admin"
         )
         refresh_token = create_refresh_token(
             user_id=str(admin.admin_id),
-            token_context="admin"
+            user_type="admin"
         )
         
         logger.info(f"🚀 Admin login successful for admin: {admin.admin_id} ({admin.email})")
@@ -477,110 +476,110 @@ async def introspect(x_introspect_secret: str = Header(...,alias="X_Introspect_S
     
     return introspect_token_direct(authorization.credentials)
 
-@router.post("/refresh-token", response_model=TokenResponse)
-async def refresh_token(
-    refresh_req: RefreshTokenRequest,
-    db: Session = Depends(get_db)
-):
-    """
-    Use refresh token to get a new access token
-    """
-    logger.info("Refresh token request received")
+# @router.post("/refresh-token", response_model=TokenResponse)
+# async def refresh_token(
+#     refresh_req: RefreshTokenRequest,
+#     db: Session = Depends(get_db)
+# ):
+#     """
+#     Use refresh token to get a new access token
+#     """
+#     logger.info("Refresh token request received")
     
-    try:
-        payload = verify_token(refresh_req.refresh_token)
-        logger.debug(f"Refresh token verified for user: {payload.get('user_id')}")
+#     try:
+#         payload = verify_token(refresh_req.refresh_token)
+#         logger.debug(f"Refresh token verified for user: {payload.get('user_id')}")
         
-        if payload.get("token_type") != "refresh":
-            logger.warning("Refresh token validation failed - Invalid token type")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid refresh token"
-            )
+#         if payload.get("token_type") != "refresh":
+#             logger.warning("Refresh token validation failed - Invalid token type")
+#             raise HTTPException(
+#                 status_code=status.HTTP_401_UNAUTHORIZED,
+#                 detail="Invalid refresh token"
+#             )
         
-        user_id = payload.get("user_id")
-        if not user_id:
-            logger.warning("Refresh token validation failed - Missing user_id")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid refresh token"
-            )
+#         user_id = payload.get("user_id")
+#         if not user_id:
+#             logger.warning("Refresh token validation failed - Missing user_id")
+#             raise HTTPException(
+#                 status_code=status.HTTP_401_UNAUTHORIZED,
+#                 detail="Invalid refresh token"
+#             )
         
-        employee = db.query(Employee).filter(Employee.employee_id == int(user_id)).first()
-        if not employee:
-            logger.warning(f"Refresh token failed - Employee not found: {user_id}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found or inactive"
-            )
+#         employee = db.query(Employee).filter(Employee.employee_id == int(user_id)).first()
+#         if not employee:
+#             logger.warning(f"Refresh token failed - Employee not found: {user_id}")
+#             raise HTTPException(
+#                 status_code=status.HTTP_401_UNAUTHORIZED,
+#                 detail="User not found or inactive"
+#             )
         
-        if not employee.is_active:
-            logger.warning(f"Refresh token failed - Inactive employee: {user_id}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found or inactive"
-            )
+#         if not employee.is_active:
+#             logger.warning(f"Refresh token failed - Inactive employee: {user_id}")
+#             raise HTTPException(
+#                 status_code=status.HTTP_401_UNAUTHORIZED,
+#                 detail="User not found or inactive"
+#             )
             
-        logger.debug(f"Fetching updated permissions for refresh token - employee: {employee.employee_id}")
+#         logger.debug(f"Fetching updated permissions for refresh token - employee: {employee.employee_id}")
         
-        user_roles = user_role_crud.get_by_user_and_tenant(
-            db, user_id=employee.employee_id, tenant_id=employee.tenant_id
-        )
+#         user_roles = user_role_crud.get_by_user_and_tenant(
+#             db, user_id=employee.employee_id, tenant_id=employee.tenant_id
+#         )
         
-        roles = []
-        all_permissions = []
+#         roles = []
+#         all_permissions = []
         
-        for user_role in user_roles:
-            roles.append(user_role.role.name)
+#         for user_role in user_roles:
+#             roles.append(user_role.role.name)
             
-            for policy in user_role.role.policies:
-                for permission in policy.permissions:
-                    module = permission.module
-                    action = permission.action
+#             for policy in user_role.role.policies:
+#                 for permission in policy.permissions:
+#                     module = permission.module
+#                     action = permission.action
                     
-                    existing_module = next(
-                        (p for p in all_permissions if p["module"] == module),
-                        None
-                    )
+#                     existing_module = next(
+#                         (p for p in all_permissions if p["module"] == module),
+#                         None
+#                     )
                     
-                    if existing_module:
-                        if action == "*":
-                            existing_module["action"] = ["create", "read", "update", "delete", "*"]
-                        elif action not in existing_module["action"]:
-                            existing_module["action"].append(action)
-                    else:
-                        if action == "*":
-                            actions = ["create", "read", "update", "delete", "*"]
-                        else:
-                            actions = [action]
+#                     if existing_module:
+#                         if action == "*":
+#                             existing_module["action"] = ["create", "read", "update", "delete", "*"]
+#                         elif action not in existing_module["action"]:
+#                             existing_module["action"].append(action)
+#                     else:
+#                         if action == "*":
+#                             actions = ["create", "read", "update", "delete", "*"]
+#                         else:
+#                             actions = [action]
                             
-                        all_permissions.append({
-                            "module": module,
-                            "action": actions
-                        })
+#                         all_permissions.append({
+#                             "module": module,
+#                             "action": actions
+#                         })
         
-        new_access_token = create_access_token(
-            user_id=str(employee.employee_id),
-            tenant_id=str(employee.tenant_id),
-            roles=roles,
-            permissions=all_permissions
-        )
+#         new_access_token = create_access_token(
+#             user_id=str(employee.employee_id),
+#             tenant_id=str(employee.tenant_id),
+#             roles=roles,
+#             permissions=all_permissions
+#         )
         
-        new_refresh_token = create_refresh_token(user_id=str(employee.employee_id))
+#         new_refresh_token = create_refresh_token(user_id=str(employee.employee_id))
         
-        logger.info(f"Refresh token successful for employee: {employee.employee_id} ({employee.email})")
+#         logger.info(f"Refresh token successful for employee: {employee.employee_id} ({employee.email})")
         
-        return TokenResponse(
-            access_token=new_access_token,
-            refresh_token=new_refresh_token,
-            token_type="bearer"
-        )
-    except Exception as e:
-        logger.error(f"Refresh token failed with error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid refresh token: {str(e)}"
-        )
+#         return TokenResponse(
+#             access_token=new_access_token,
+#             refresh_token=new_refresh_token,
+#             token_type="bearer"
+#         )
+#     except Exception as e:
+#         logger.error(f"Refresh token failed with error: {str(e)}")
+#         raise HTTPException(
+#             status_code=status.HTTP_401_UNAUTHORIZED,
+#             detail=f"Invalid refresh token: {str(e)}"
+#         )
 
 @router.post("/reset-password", status_code=status.HTTP_200_OK)
 async def reset_password(
