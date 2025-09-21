@@ -70,6 +70,16 @@ def create_tenant(
     logger.info(f"Create tenant request received: {tenant.dict()}")
 
     try:
+        # --- Restrict access ---
+        if user_data.get("user_type") not in ["admin", "superadmin"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Please contact super admin for creation",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
         with db.begin():  # Ensures atomic commit/rollback
             # --- Check duplicates ---
             if tenant_crud.get_by_id(db, tenant_id=tenant.tenant_id):
@@ -78,8 +88,8 @@ def create_tenant(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=ResponseWrapper.error(
                         message=f"Tenant with id '{tenant.tenant_id}' already exists",
-                        error_code=status.HTTP_409_CONFLICT
-                    )
+                        error_code=status.HTTP_409_CONFLICT,
+                    ),
                 )
 
             if tenant_crud.get_by_name(db, name=tenant.name):
@@ -88,9 +98,10 @@ def create_tenant(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=ResponseWrapper.error(
                         message=f"Tenant with name '{tenant.name}' already exists",
-                        error_code=status.HTTP_409_CONFLICT
-                    )
+                        error_code=status.HTTP_409_CONFLICT,
+                    ),
                 )
+
             default_team_name: str = "Default Team"
             default_team_desc: str = "Auto-created team for this tenant"
             # --- Create tenant ---
@@ -103,8 +114,8 @@ def create_tenant(
                 obj_in=TeamCreate(
                     tenant_id=new_tenant.tenant_id,
                     name=f"{default_team_name}_{new_tenant.tenant_id}",
-                    description=default_team_desc
-                )
+                    description=default_team_desc,
+                ),
             )
             logger.info(f"Default team created: {default_team.name}")
 
@@ -126,7 +137,7 @@ def create_tenant(
                 tenant_id=new_tenant.tenant_id,
                 name=admin_policy_name,
                 description=f"Admin policy for tenant {new_tenant.name}",
-                is_active=True
+                is_active=True,
             )
             db.add(admin_policy)
             db.flush()
@@ -213,7 +224,7 @@ def create_tenant(
                 "admin_policy": PolicyResponse.model_validate(admin_policy),
                 "employee": EmployeeResponse.model_validate(new_employee),
             },
-            message="Tenant, default team, admin role, policy, and employee created successfully"
+            message="Tenant, default team, admin role, policy, and employee created successfully",
         )
 
     except HTTPException:
@@ -229,8 +240,8 @@ def create_tenant(
             detail=ResponseWrapper.error(
                 message="Unexpected server error while creating tenant",
                 error_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                details={"error": str(e)}
-            )
+                details={"error": str(e)},
+            ),
         )
 @router.get("/", response_model=dict, status_code=status.HTTP_200_OK)
 def read_tenants(
@@ -387,7 +398,6 @@ def read_tenant(
                 details={"error": str(e)},
             ),
         )
-
 @router.put("/{tenant_id}", response_model=dict, status_code=status.HTTP_200_OK)
 def update_tenant(
     tenant_id: str,
@@ -395,31 +405,31 @@ def update_tenant(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["admin.tenant.update"], check_tenant=False)),
 ):
-
     """
     Update a tenant by ID.
 
-    **Required permissions:** `admin.tenant.update`
-
-    **Request body:**
-
-    * `name`: Name of the tenant.
-    * `is_active`: Active status of the tenant.
-
-    **Response:**
-
-    * `tenant`: Updated tenant object.
-
-    **Status codes:**
-
-    * `200 OK`: Tenant updated successfully.
-    * `404 Not Found`: Tenant with the given ID not found.
-    * `400 Bad Request`: No valid fields provided for update.
-    * `500 Internal Server Error`: Unexpected server error while updating tenant.
+    Rules:
+    - Only admins/superadmins can update.
+    - Employees, vendors, and drivers → blocked with a clear message.
     """
     try:
-        db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        # 🚫 Block employees, vendors, drivers explicitly
+        if not user_data or user_data.get("user_type") in {"employee", "vendor", "driver"}:
+            logger.warning(
+                f"Unauthorized tenant update attempt by user {user_data.get('user_id')} "
+                f"of type {user_data.get('user_type')} on tenant {tenant_id}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don’t have permission to update tenant details. "
+                            "Please contact your superadmin for changes.",
+                    error_code="FORBIDDEN",
+                ),
+            )
 
+        # ✅ Admin/SuperAdmin logic
+        db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
         if not db_tenant:
             logger.warning(f"Tenant update failed - not found: {tenant_id}")
             raise HTTPException(
@@ -431,7 +441,6 @@ def update_tenant(
             )
 
         update_data = tenant_update.dict(exclude_unset=True)
-
         if not update_data:
             logger.warning(f"No update fields provided for tenant: {tenant_id}")
             raise HTTPException(
@@ -449,12 +458,11 @@ def update_tenant(
         db.refresh(db_tenant)
 
         updated_tenant = TenantResponse.model_validate(db_tenant, from_attributes=True)
-
         logger.info(f"Tenant updated successfully: {tenant_id}")
 
         return ResponseWrapper.success(
             data=updated_tenant,
-            message=f"Tenant '{tenant_id}' updated successfully"
+            message=f"Tenant '{tenant_id}' updated successfully",
         )
 
     except HTTPException:
@@ -480,25 +488,21 @@ def toggle_tenant_status(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["admin.tenant.update"], check_tenant=False)),
 ):
-
     """
-    Toggle a tenant's active status.
-
-    Requires "admin.tenant.update" permission.
-
-    If tenant is not found, raises 404.
-
-    If any other error occurs while toggling the tenant's status, raises 500.
-
-    Args:
-        tenant_id (str): The ID of the tenant to toggle.
-
-    Returns:
-        ResponseWrapper: A successful response with the updated tenant data.
+    Toggle a tenant's active status (Admins only).
     """
     try:
-        db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        # --- Restrict access ---
+        if user_data.get("user_type") not in ["admin", "superadmin"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Please contact super admin for changes",
+                    error_code="FORBIDDEN",
+                ),
+            )
 
+        db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
         if not db_tenant:
             logger.warning(f"Tenant toggle failed - not found: {tenant_id}")
             raise HTTPException(
@@ -520,7 +524,7 @@ def toggle_tenant_status(
 
         return ResponseWrapper.success(
             data=TenantResponse.model_validate(db_tenant, from_attributes=True),
-            message=f"Tenant '{tenant_id}' is now {'active' if db_tenant.is_active else 'inactive'}"
+            message=f"Tenant '{tenant_id}' is now {'active' if db_tenant.is_active else 'inactive'}",
         )
 
     except HTTPException:
