@@ -318,23 +318,41 @@ def read_tenant(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["admin.tenant.read"], check_tenant=False)),
 ):
-
     """
     Fetch a tenant by ID.
 
-    **Required permissions:** `admin.tenant.read`
-
-    **Response:**
-
-    * `tenant`: Tenant object with the given ID.
-
-    **Status codes:**
-
-    * `200 OK`: Tenant fetched successfully.
-    * `404 Not Found`: Tenant with the given ID not found.
-    * `500 Internal Server Error`: Unexpected server error while fetching tenant.
+    Rules:
+    - vendors/drivers → forbidden
+    - employees → always restricted to their own tenant_id from token (ignores path param)
+    - admins/superadmins → can fetch by provided tenant_id
     """
     try:
+        # 🚫 Block unauthorized user types
+        if not user_data or user_data.get("user_type") in {"vendor", "driver"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to access this resource",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # 👷 Employee restriction
+        if user_data.get("user_type") == "employee":
+            token_tenant_id = user_data.get("tenant_id")
+            if not token_tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+            # 🚨 Force override → ignore the requested tenant_id
+            tenant_id = token_tenant_id
+
+        # 👑 Admin/SuperAdmin → tenant_id is taken directly from path param
+
         db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
 
         if not db_tenant:
@@ -353,15 +371,13 @@ def read_tenant(
 
         return ResponseWrapper.success(
             data=tenant,
-            message="Tenant fetched successfully"
+            message="Tenant fetched successfully",
         )
 
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
-        raise handle_db_error(e)
-    except Exception as e:
         logger.exception(f"Unexpected error while fetching tenant {tenant_id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
