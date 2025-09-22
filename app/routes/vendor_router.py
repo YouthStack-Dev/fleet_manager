@@ -438,62 +438,84 @@ def update_vendor(
 @router.patch("/{vendor_id}/toggle-status", status_code=status.HTTP_200_OK)
 def toggle_vendor_status(
     vendor_id: int,
-    tenant_id: Optional[int] = None,
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (Admin only)"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.update"], check_tenant=True))
 ):
-
     """
     Toggle a vendor's active status.
 
-    - SuperAdmin: can toggle active status of vendors across all tenants.
-    - Tenant admin: can only toggle active status of vendors within their tenant scope.
+    - Admin: can toggle status for any tenant by passing tenant_id.
+    - Employee: can only toggle status within their tenant (tenant_id from token).
+    - Other user types are forbidden.
 
     Args:
         vendor_id (int): the ID of the vendor to toggle.
-        tenant_id (Optional[int], optional): for superadmin the ID of the tenant to scope the vendor to.
+        tenant_id (Optional[int]): tenant ID (required only if Admin toggles outside their tenant).
 
     Returns:
         ResponseWrapper: a successful response with the updated vendor data.
     """
     try:
-        tenant_id = tenant_id or user_data.get("tenant_id")
-        if user_data.get("tenant_id") and tenant_id != user_data.get("tenant_id"):
+        user_type = user_data.get("user_type")
+        user_tenant_id = user_data.get("tenant_id")
+
+        # Only Admin or Employee allowed
+        if user_type not in ["admin", "employee"]:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
-                    message="Cannot toggle vendor status outside your tenant scope",
-                    error_code="FORBIDDEN_TENANT_SCOPE"
+                    message="Only Admin or Employee can toggle vendor status",
+                    error_code="FORBIDDEN_USER_TYPE"
                 )
             )
 
-        # Fetch vendor with tenant scoping
-        if tenant_id:
-            db_vendor = db.query(Vendor).filter(
-                Vendor.vendor_id == vendor_id,
-                Vendor.tenant_id == tenant_id
-            ).first()
-        else:
-            db_vendor = vendor_crud.get_by_id(db, vendor_id=vendor_id)
+        # Determine effective tenant_id
+        if user_type == "employee":
+            tenant_id = user_tenant_id
+        elif user_type == "admin":
+            if tenant_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Admin must provide tenant_id to toggle status",
+                        error_code="TENANT_ID_REQUIRED"
+                    )
+                )
+
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Tenant ID cannot be determined",
+                    error_code="TENANT_ID_REQUIRED"
+                )
+            )
+
+        # Fetch vendor within tenant
+        db_vendor = db.query(Vendor).filter(
+            Vendor.vendor_id == vendor_id,
+            Vendor.tenant_id == tenant_id
+        ).first()
 
         if not db_vendor:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error(
-                    message=f"Vendor with ID '{vendor_id}' not found"
-                            f"{' in tenant ' + tenant_id if tenant_id else ''}",
+                    message=f"Vendor with ID '{vendor_id}' not found in tenant '{tenant_id}'",
                     error_code="VENDOR_NOT_FOUND"
                 )
             )
 
-        # Toggle status using CRUD method
+        # Toggle status
         db_vendor = vendor_crud.toggle_active(db, vendor_id=vendor_id)
         db.commit()
         db.refresh(db_vendor)
 
         logger.info(
             f"Toggled vendor {vendor_id} status to "
-            f"{'active' if db_vendor.is_active else 'inactive'}"
+            f"{'active' if db_vendor.is_active else 'inactive'} "
+            f"by user_type={user_type}, tenant_id={tenant_id}"
         )
 
         return ResponseWrapper.success(
@@ -503,18 +525,13 @@ def toggle_vendor_status(
 
     except HTTPException:
         raise
+    except SQLAlchemyError as e:
+        db.rollback()
+        raise handle_db_error(e)
     except Exception as e:
         db.rollback()
         logger.exception(f"Unexpected error while toggling vendor {vendor_id} status: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=ResponseWrapper.error(
-                message=f"Unexpected error while toggling vendor '{vendor_id}' status",
-                error_code="DATABASE_ERROR",
-                details={"error": str(e)},
-            ),
-        )
-
+        raise handle_http_error(e)
 
 # @router.delete("/{vendor_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_vendor(
