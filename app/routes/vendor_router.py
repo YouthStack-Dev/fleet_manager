@@ -164,6 +164,7 @@ def read_vendors(
     name: Optional[str] = Query(None, description="Filter vendors by name"),
     code: Optional[str] = Query(None, description="Filter vendors by vendor_code"),
     is_active: Optional[bool] = Query(None, description="Filter vendors by active status"),
+    tenant: Optional[str] = Query(None, description="Filter by tenant_id (SuperAdmin only)"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.read"], check_tenant=True)),
 ):
@@ -173,6 +174,7 @@ def read_vendors(
     - employee → only within tenant
     - vendor → only their vendor
     - admin → unrestricted
+    - superadmin → can filter across tenants using tenant
     """
     try:
         user_type = user_data.get("user_type")
@@ -190,20 +192,8 @@ def read_vendors(
                 ),
             )
 
-        query = db.query(Vendor)
-
-        if user_type == "employee":
-            if not tenant_id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=ResponseWrapper.error(
-                        message="Tenant ID missing in token for employee",
-                        error_code="TENANT_ID_REQUIRED",
-                    ),
-                )
-            query = query.filter(Vendor.tenant_id == tenant_id)
-
-        elif user_type == "vendor":
+        # Vendor user → only their own vendor
+        if user_type == "vendor":
             if not vendor_id:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -230,21 +220,26 @@ def read_vendors(
                 message="Vendor details fetched successfully",
             )
 
+        # Employee → scoped by tenant
+        query = db.query(Vendor)
+        if user_type == "employee":
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+            query = query.filter(Vendor.tenant_id == tenant_id)
+
+        # Admin → unrestricted
         elif user_type == "admin":
-            # unrestricted → no tenant/vendor filter
-            pass
+            logger.info("teant filter ignored for admin users")
+            if tenant:
+                query = query.filter(Vendor.tenant_id == tenant)
 
-        else:
-            logger.warning(f"Unknown user_type={user_type} blocked in vendor list")
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=ResponseWrapper.error(
-                    message="Unauthorized user type to fetch vendors",
-                    error_code="UNAUTHORIZED_USER_TYPE",
-                ),
-            )
-
-        # --- Apply filters ---
+        # --- Apply other optional filters ---
         if name:
             query = query.filter(Vendor.name.ilike(f"%{name}%"))
         if code:
@@ -257,9 +252,8 @@ def read_vendors(
 
         logger.info(
             f"Fetched {len(vendors)} vendors "
-            f"(total={total}, user_type={user_type}, tenant={tenant_id}, vendor={vendor_id}, skip={skip}, limit={limit})"
+            f"(total={total}, user_type={user_type}, tenant={tenant_id or tenant or 'ALL'}, vendor={vendor_id or 'ALL'}, skip={skip}, limit={limit})"
         )
-
         return ResponseWrapper.success(
             data=VendorPaginationResponse(total=total, items=vendors),
             message="Vendors fetched successfully",
