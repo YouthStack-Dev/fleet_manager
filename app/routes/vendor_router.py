@@ -278,61 +278,68 @@ def read_vendor(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.read"], check_tenant=True))
 ):
-
-    """
-    Fetch a vendor by ID.
-    If user has a tenant_id in token, vendor must belong to that tenant.
-    Otherwise, allow fetching across all tenants.
-    If vendor is not found, raise 404.
-    If tenant_id is not found, raise 404.
-    """
     try:
-        query = db.query(Vendor).filter(Vendor.vendor_id == vendor_id)
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+        token_vendor_id = user_data.get("vendor_id")
 
-        # Apply tenant scoping if tenant_id is present
-        tenant_id = user_data.get("tenant_id")
-        if tenant_id:
-            query = query.filter(Vendor.tenant_id == tenant_id)
+        query = db.query(Vendor)
+
+        # Vendor user → only their own vendor
+        if user_type == "vendor":
+            if not token_vendor_id or int(token_vendor_id) != vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Vendors can only access their own record",
+                        error_code="FORBIDDEN_VENDOR_ACCESS"
+                    )
+                )
+            query = query.filter(Vendor.vendor_id == vendor_id)
+
+        # Employee → only vendors in their tenant
+        elif user_type == "employee":
+            if not token_tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED"
+                    )
+                )
+            query = query.filter(Vendor.vendor_id == vendor_id, Vendor.tenant_id == token_tenant_id)
+
+        # Admin → unrestricted
+        else:
+            query = query.filter(Vendor.vendor_id == vendor_id)
 
         db_vendor = query.first()
 
         if not db_vendor:
-            logger.warning(
-                f"Vendor fetch failed - not found or not in tenant scope: "
-                f"vendor_id={vendor_id}, tenant={tenant_id or 'ALL'}"
-            )
+            scope = token_tenant_id if token_tenant_id else "ALL"
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error(
-                    message=f"Vendor with ID '{vendor_id}' not found"
-                            f"{' in tenant ' + tenant_id if tenant_id else ''}",
-                    error_code="VENDOR_NOT_FOUND",
-                ),
+                    message=f"Vendor with ID '{vendor_id}' not found in tenant '{scope}'",
+                    error_code="VENDOR_NOT_FOUND"
+                )
             )
 
-        logger.info(
-            f"Vendor fetched successfully: vendor_id={vendor_id}, tenant={tenant_id or 'ALL'}"
-        )
+        logger.info(f"Vendor fetched successfully: vendor_id={vendor_id}, scope={token_tenant_id or 'ALL'}")
 
         return ResponseWrapper.success(
             data=VendorResponse.model_validate(db_vendor, from_attributes=True),
             message="Vendor fetched successfully"
         )
 
+    except SQLAlchemyError as e:
+        raise handle_db_error(e)
     except HTTPException:
         raise
     except Exception as e:
-        raise handle_db_error(e)
-    except Exception as e:
         logger.exception(f"Unexpected error while fetching vendor {vendor_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=ResponseWrapper.error(
-                message=f"Unexpected error while fetching vendor '{vendor_id}'",
-                error_code="DATABASE_ERROR",
-                details={"error": str(e)},
-            ),
-        )
+        raise handle_http_error(e)
+
 
 
 @router.put("/{vendor_id}", status_code=status.HTTP_200_OK)
