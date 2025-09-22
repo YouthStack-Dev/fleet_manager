@@ -1,5 +1,7 @@
+import json
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 from typing import Optional
 from app.database.session import get_db
 from app.models.iam.role import Role
@@ -7,7 +9,7 @@ from app.models.vendor import Vendor
 from app.models.vendor_user import VendorUser
 from app.schemas.vendor import VendorCreate, VendorUpdate, VendorResponse, VendorPaginationResponse
 from app.utils.pagination import paginate_query
-from app.utils.response_utils import ResponseWrapper, handle_db_error
+from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
 from app.crud.tenant import tenant_crud
@@ -163,31 +165,86 @@ def read_vendors(
     code: Optional[str] = Query(None, description="Filter vendors by vendor_code"),
     is_active: Optional[bool] = Query(None, description="Filter vendors by active status"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vendor.read"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["vendor.read"], check_tenant=True)),
 ):
-
     """
-    Fetch paginated list of vendors with optional filters.
-
-    Args:
-        skip (int): number of records to skip.
-        limit (int): max number of records to fetch.
-        name (Optional[str]): filter vendors by name.
-        code (Optional[str]): filter vendors by vendor_code.
-        is_active (Optional[bool]): filter vendors by active status.
-
-    Returns:
-        ResponseWrapper: a successful response with the fetched vendor data.
+    Fetch vendors with role-based restrictions:
+    - driver → forbidden
+    - employee → only within tenant
+    - vendor → only their vendor
+    - admin → unrestricted
     """
     try:
+        user_type = user_data.get("user_type")
+        tenant_id = user_data.get("tenant_id")
+        vendor_id = user_data.get("vendor_id")
+
+        # --- Restrict by user_type ---
+        if user_type == "driver":
+            logger.warning(f"Driver tried to access vendor list: user_id={user_data.get('user_id')}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Drivers are not allowed to fetch vendors",
+                    error_code="FORBIDDEN_USER_TYPE",
+                ),
+            )
+
         query = db.query(Vendor)
 
-        # Apply tenant scoping if present in JWT
-        tenant_id = user_data.get("tenant_id")
-        if tenant_id:
+        if user_type == "employee":
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
             query = query.filter(Vendor.tenant_id == tenant_id)
 
-        # Apply filters
+        elif user_type == "vendor":
+            if not vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Vendor ID missing in token for vendor",
+                        error_code="VENDOR_ID_REQUIRED",
+                    ),
+                )
+            vendor = db.query(Vendor).filter(Vendor.vendor_id == int(vendor_id)).first()
+            if not vendor:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message=f"Vendor not found for vendor_id={vendor_id}",
+                        error_code="VENDOR_NOT_FOUND",
+                    ),
+                )
+            vendor_response = VendorResponse.model_validate(vendor, from_attributes=True)
+            logger.info(f"Fetched vendor details for vendor_id={vendor_id}, user_type=vendor")
+
+            # ✅ Return in pagination format for schema consistency
+            return ResponseWrapper.success(
+                data=VendorPaginationResponse(total=1, items=[vendor_response]),
+                message="Vendor details fetched successfully",
+            )
+
+        elif user_type == "admin":
+            # unrestricted → no tenant/vendor filter
+            pass
+
+        else:
+            logger.warning(f"Unknown user_type={user_type} blocked in vendor list")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Unauthorized user type to fetch vendors",
+                    error_code="UNAUTHORIZED_USER_TYPE",
+                ),
+            )
+
+        # --- Apply filters ---
         if name:
             query = query.filter(Vendor.name.ilike(f"%{name}%"))
         if code:
@@ -200,27 +257,24 @@ def read_vendors(
 
         logger.info(
             f"Fetched {len(vendors)} vendors "
-            f"(total={total}, tenant={tenant_id or 'ALL'}, skip={skip}, limit={limit})"
+            f"(total={total}, user_type={user_type}, tenant={tenant_id}, vendor={vendor_id}, skip={skip}, limit={limit})"
         )
 
         return ResponseWrapper.success(
             data=VendorPaginationResponse(total=total, items=vendors),
-            message="Vendors fetched successfully"
+            message="Vendors fetched successfully",
         )
+
+    except SQLAlchemyError as e:
+        # Handle DB errors in a structured way
+        raise handle_db_error(e)
     except HTTPException:
+        # Propagate known HTTPExceptions
         raise
     except Exception as e:
-        raise handle_db_error(e)
-    except Exception as e:
-        logger.exception(f"Unexpected error while fetching vendors: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=ResponseWrapper.error(
-                message="Unexpected error while fetching vendors",
-                error_code="DATABASE_ERROR",
-                details={"error": str(e)},
-            ),
-        )
+        # Catch-all for unexpected errors
+        logger.exception(f"Unexpected error while fetching vendors: {str(e)}")
+        raise handle_http_error(e)
 
 
 

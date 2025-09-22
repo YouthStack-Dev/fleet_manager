@@ -606,6 +606,7 @@ def validate_bearer_token(use_cache: bool = True):
             # Get user permissions from validation result
             user_id = validation_result.get("user_id") or payload.get("user_id")
             tenant_id = validation_result.get("tenant_id") or payload.get("tenant_id")
+            vendor_id = validation_result.get("vendor_id") or payload.get("vendor_id")
             
             logger.debug(f"User ID: {user_id}, Tenant ID: {tenant_id}")
             
@@ -619,6 +620,7 @@ def validate_bearer_token(use_cache: bool = True):
             return {
                 "user_id": user_id,
                 "tenant_id": tenant_id,
+                "vendor_id": vendor_id,
                 "roles": validation_result.get("roles", []),
                 "permissions": validation_result.get("permissions", []),
                 "user_type": validation_result.get("user_type"),

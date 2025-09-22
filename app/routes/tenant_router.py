@@ -71,11 +71,11 @@ def create_tenant(
 
     try:
         # --- Restrict access ---
-        if user_data.get("user_type") not in ["admin", "superadmin"]:
+        if user_data.get("user_type") not in ["admin"]:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
-                    message="Please contact super admin for creation",
+                    message="Please contact admin for creation",
                     error_code="FORBIDDEN",
                 ),
             )
@@ -493,11 +493,11 @@ def toggle_tenant_status(
     """
     try:
         # --- Restrict access ---
-        if user_data.get("user_type") not in ["admin", "superadmin"]:
+        if user_data.get("user_type") not in ["admin"]:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
-                    message="Please contact super admin for changes",
+                    message="Please contact your admin for changes",
                     error_code="FORBIDDEN",
                 ),
             )

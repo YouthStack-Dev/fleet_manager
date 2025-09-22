@@ -11,7 +11,8 @@ from app.schemas.base import (
     create_error_response,
     create_paginated_response
 )
-
+from app.core.logging_config import get_logger
+logger = get_logger(__name__)
 T = TypeVar('T', bound=BaseModel)
 
 class ResponseWrapper:
@@ -98,7 +99,37 @@ def handle_db_error(error: Exception) -> HTTPException:
                 details={"db_error": error_msg}
             )
         )
+def handle_http_error(error: Exception) -> HTTPException:
+    """
+    Convert HTTP errors and other exceptions into structured ResponseWrapper format.
+    Handles FastAPI HTTPException and generic errors.
+    """
+    # If it's already an HTTPException, wrap its detail in ResponseWrapper
+    if isinstance(error, HTTPException):
+        detail = getattr(error, "detail", str(error))
+        # Avoid double-wrapping if already a ResponseWrapper dict
+        if isinstance(detail, dict) and detail.get("success") is not None:
+            return error
 
+        return HTTPException(
+            status_code=error.status_code,
+            detail=ResponseWrapper.error(
+                message=str(detail),
+                error_code="HTTP_ERROR",
+                details={"original_error": detail},
+            ),
+        )
+
+    # Generic exceptions fallback
+    logger.exception(f"Unexpected HTTP error: {error}")
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=ResponseWrapper.error(
+            message="Unexpected server error",
+            error_code="INTERNAL_SERVER_ERROR",
+            details={"original_error": str(error)},
+        ),
+    )
 def validate_pagination_params(skip: int, limit: int) -> tuple[int, int]:
     """Validate and normalize pagination parameters"""
     if skip < 0:
