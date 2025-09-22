@@ -87,9 +87,9 @@ def introspect_token_direct(token: str) -> dict:
     try:
         user_id = payload.get("user_id")
         tenant_id = payload.get("tenant_id")
-        user_type = payload.get("user_type")  # Get token context from JWT
+        user_type = payload.get("user_type")  # Get token user_type from JWT
         
-        logger.debug(f"Fetching roles and permissions for introspection - user: {user_id}, tenant: {tenant_id}, context: {user_type}")
+        logger.debug(f"Fetching roles and permissions for introspection - user: {user_id}, tenant: {tenant_id}, user_type: {user_type}")
         
         if user_type == "admin":
             admin = db.query(Admin).filter(Admin.admin_id == int(user_id)).first()
@@ -119,7 +119,7 @@ def introspect_token_direct(token: str) -> dict:
                 )
         else:
             if not tenant_id:
-                logger.warning(f"Introspection failed - Missing tenant_id for employee context: {user_id}")
+                logger.warning(f"Introspection failed - Missing tenant_id for employee user_type: {user_id}")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid token - missing tenant information"
@@ -155,7 +155,7 @@ def introspect_token_direct(token: str) -> dict:
                     detail="Failed to fetch user roles"
                 )
         
-        logger.info(f"Token introspection successful for user: {user_id}, context: {user_type}, roles: {roles}, permissions: {len(all_permissions)} modules")
+        logger.info(f"Token introspection successful for user: {user_id}, user_type: {user_type}, roles: {roles}, permissions: {len(all_permissions)} modules")
         
         current_time = int(time.time())
         expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
@@ -274,7 +274,7 @@ async def employee_login(
             "opaque_token": opaque_token,
             "roles": roles,
             "permissions": all_permissions,
-            "user_type": "employee",  # Add token context
+            "user_type": "employee",  # Add token user_type
             "iat": current_time,
             "exp": expiry_time,
         }
@@ -425,10 +425,11 @@ async def vendor_user_login(
         token_payload = {
             "user_id": str(vendor_user.vendor_user_id),
             "tenant_id": str(tenant.tenant_id),  # 👈 tenant_id instead of vendor_id
+            "vendor_id": str(vendor.vendor_id),
             "opaque_token": opaque_token,
             "roles": roles,
             "permissions": all_permissions,
-            "user_type": "vendor_user",
+            "user_type": "vendor",
             "iat": current_time,
             "exp": expiry_time,
         }
@@ -452,12 +453,13 @@ async def vendor_user_login(
         access_token = create_access_token(
             user_id=str(vendor_user.vendor_user_id),
             tenant_id=str(tenant.tenant_id),  # 👈 use tenant_id
+            vendor_id=str(vendor.vendor_id),  # 👈 include vendor_id
             opaque_token=opaque_token,
-            user_type="vendor_user"
+            user_type="vendor"
         )
         refresh_token = create_refresh_token(
             user_id=str(vendor_user.vendor_user_id),
-            user_type="vendor_user"
+            user_type="vendor"
         )
 
         logger.info(
@@ -560,7 +562,6 @@ async def admin_login(
         token_payload = {
             "user_id": str(admin.admin_id),
             "user_type": "admin",
-            "user_type": "admin",  # Add token context
             "roles": roles,
             "permissions": all_permissions,
             "opaque_token": opaque_token,

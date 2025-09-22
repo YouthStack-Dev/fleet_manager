@@ -15,6 +15,7 @@ def create_access_token(
     user_id: str,
     tenant_id: Optional[str] = None,
     opaque_token: Optional[str] = None,
+    vendor_id: Optional[str] = None,
     user_type: str = "generic",   # 👈 e.g. "employee", "admin", "driver", "vendor"
     custom_claims: Optional[Dict] = None,  # 👈 flexible extension
     expires_delta: Optional[timedelta] = None
@@ -24,7 +25,8 @@ def create_access_token(
         "tenant_id": tenant_id,
         "opaque_token": opaque_token,
         "token_type": "access",
-        "context": user_type,  # 👈 differentiate token usage
+        "user_type": user_type,  # 👈 differentiate token usage
+        "vendor_id": vendor_id,  # 👈 include vendor_id if provided
     }
 
     if custom_claims:
@@ -45,7 +47,7 @@ def create_refresh_token(
     to_encode = {
         "user_id": user_id,
         "token_type": "refresh",
-        "context": user_type,  # 👈 keep it consistent
+        "user_type": user_type,  # 👈 keep it consistent
         "exp": expire,
         "iat": datetime.utcnow(),
     }
