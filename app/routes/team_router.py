@@ -2,11 +2,13 @@ from email.mime import message
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import Optional
+from app.crud.tenant import tenant_crud
 from app.database.session import get_db
 from app.models.employee import Employee
 from app.models.team import Team
 from app.crud.team import team_crud
 from sqlalchemy.exc import SQLAlchemyError
+from app.models.tenant import Tenant
 from app.schemas.team import TeamCreate, TeamUpdate, TeamResponse, TeamPaginationResponse
 from app.utils.pagination import paginate_query
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_db_error, handle_http_error, handle_http_error
@@ -102,7 +104,7 @@ def read_teams(
     skip: int = 0,
     limit: int = 100,
     name: Optional[str] = None,
-    tenant_id: Optional[str] = None,   # from query param
+    tenant_id: Optional[str] = None,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["team.read"], check_tenant=True)),
 ):
@@ -112,7 +114,7 @@ def read_teams(
     Rules:
     - 🚫 Vendors/Drivers → forbidden
     - 👷 Employees → tenant_id always taken from token
-    - 👑 Admin/SuperAdmin → must provide tenant_id in query params
+    - 👑 Admin/SuperAdmin → must provide tenant_id in query params (payload)
     """
     try:
         user_type = user_data.get("user_type")
@@ -127,8 +129,9 @@ def read_teams(
                 ),
             )
 
-        # --- Tenant resolution ---
+        # --- Tenant validation ---
         if user_type == "employee":
+            # Tenant comes strictly from token
             tenant_id = user_data.get("tenant_id")
             if not tenant_id:
                 raise HTTPException(
@@ -139,13 +142,25 @@ def read_teams(
                     ),
                 )
 
-        elif user_type in {"admin", "superadmin"}:
-            if not tenant_id:  # must come from query param
+        elif user_type in {"admin"}:
+            # Must come from query param
+            if not tenant_id:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ResponseWrapper.error(
-                        message="Tenant ID is required for admin/superadmin",
+                        message="Tenant ID is required for admin",
                         error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+
+            # Check tenant exists
+            tenant_exists = tenant_crud.get_by_id(db, tenant_id=tenant_id) is not None
+            if not tenant_exists:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message=f"Tenant with ID {tenant_id} not found",
+                        error_code="TENANT_NOT_FOUND",
                     ),
                 )
 
@@ -158,29 +173,29 @@ def read_teams(
 
         enriched_items = []
         for team in items:
-            active_count = (
-                db.query(Employee)
-                .filter(Employee.team_id == team.team_id, Employee.is_active == True)
-                .count()
-            )
-            inactive_count = (
-                db.query(Employee)
-                .filter(Employee.team_id == team.team_id, Employee.is_active == False)
-                .count()
-            )
+            active_count = db.query(Employee).filter(
+                Employee.team_id == team.team_id,
+                Employee.is_active == True
+            ).count()
+
+            inactive_count = db.query(Employee).filter(
+                Employee.team_id == team.team_id,
+                Employee.is_active == False
+            ).count()
 
             team_data = TeamResponse.model_validate(team, from_attributes=True).dict()
-            team_data.update(
-                {
-                    "active_employee_count": active_count,
-                    "inactive_employee_count": inactive_count,
-                }
-            )
+            team_data.update({
+                "active_employee_count": active_count,
+                "inactive_employee_count": inactive_count,
+            })
             enriched_items.append(team_data)
 
         return ResponseWrapper.success(
-            data={"total": total, "items": enriched_items},
-            message="Teams fetched successfully",
+            data={
+                "total": total,
+                "items": enriched_items,
+            },
+            message="Teams fetched successfully"
         )
 
     except SQLAlchemyError as e:
