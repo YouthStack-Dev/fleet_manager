@@ -21,16 +21,19 @@ def create_access_token(
     expires_delta: Optional[timedelta] = None
 ) -> str:
     to_encode = {
-        "user_id": user_id,
-        "tenant_id": tenant_id,
-        "opaque_token": opaque_token,
-        "token_type": "access",
-        "user_type": user_type,  # 👈 differentiate token usage
-        "vendor_id": vendor_id,  # 👈 include vendor_id if provided
+    "user_id": user_id,
+    "tenant_id": tenant_id,
+    "opaque_token": opaque_token,
+    "token_type": "access",
+    "user_type": user_type,
+    "vendor_id": vendor_id,
     }
 
     if custom_claims:
-        to_encode.update(custom_claims)  # 👈 allow endpoint-specific claims
+        to_encode.update(custom_claims)
+
+    # 🚨 remove all None values
+    to_encode = {k: v for k, v in to_encode.items() if v is not None}
 
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire, "iat": datetime.utcnow()})
