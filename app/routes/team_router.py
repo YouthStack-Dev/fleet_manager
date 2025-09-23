@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import Optional
 from app.database.session import get_db
+from app.models.employee import Employee
 from app.models.team import Team
 from app.crud.team import team_crud
 from sqlalchemy.exc import SQLAlchemyError
@@ -96,22 +97,100 @@ def create_team(
         logger.exception(f"Unexpected error while fetching vendors: {str(e)}")
         raise handle_http_error(e)
 
-@router.get("/", response_model=TeamPaginationResponse)
+@router.get("/", status_code=status.HTTP_200_OK)
 def read_teams(
     skip: int = 0,
     limit: int = 100,
     name: Optional[str] = None,
+    tenant_id: Optional[str] = None,   # from query param
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["team.read"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["team.read"], check_tenant=True)),
 ):
-    query = db.query(Team)
-    
-    # Apply filters
-    if name:
-        query = query.filter(Team.name.ilike(f"%{name}%"))
-    
-    total, items = paginate_query(query, skip, limit)
-    return {"total": total, "items": items}
+    """
+    Fetch teams with pagination and employee counts.
+
+    Rules:
+    - 🚫 Vendors/Drivers → forbidden
+    - 👷 Employees → tenant_id always taken from token
+    - 👑 Admin/SuperAdmin → must provide tenant_id in query params
+    """
+    try:
+        user_type = user_data.get("user_type")
+
+        # 🚫 Vendors/Drivers are not allowed
+        if user_type in {"vendor", "driver"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to view teams",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # --- Tenant resolution ---
+        if user_type == "employee":
+            tenant_id = user_data.get("tenant_id")
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+
+        elif user_type in {"admin", "superadmin"}:
+            if not tenant_id:  # must come from query param
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID is required for admin/superadmin",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+
+        # --- Teams fetch ---
+        query = db.query(Team).filter(Team.tenant_id == tenant_id)
+        if name:
+            query = query.filter(Team.name.ilike(f"%{name}%"))
+
+        total, items = paginate_query(query, skip, limit)
+
+        enriched_items = []
+        for team in items:
+            active_count = (
+                db.query(Employee)
+                .filter(Employee.team_id == team.team_id, Employee.is_active == True)
+                .count()
+            )
+            inactive_count = (
+                db.query(Employee)
+                .filter(Employee.team_id == team.team_id, Employee.is_active == False)
+                .count()
+            )
+
+            team_data = TeamResponse.model_validate(team, from_attributes=True).dict()
+            team_data.update(
+                {
+                    "active_employee_count": active_count,
+                    "inactive_employee_count": inactive_count,
+                }
+            )
+            enriched_items.append(team_data)
+
+        return ResponseWrapper.success(
+            data={"total": total, "items": enriched_items},
+            message="Teams fetched successfully",
+        )
+
+    except SQLAlchemyError as e:
+        raise handle_db_error(e)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error while fetching teams: {str(e)}")
+        raise handle_http_error(e)
+
 
 @router.get("/{team_id}", response_model=TeamResponse)
 def read_team(

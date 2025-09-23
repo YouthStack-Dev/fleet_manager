@@ -6,6 +6,7 @@ from app.models.employee import Employee
 from app.schemas.employee import EmployeeCreate, EmployeeUpdate, EmployeeResponse, EmployeePaginationResponse
 from app.utils.pagination import paginate_query
 from common_utils.auth.permission_checker import PermissionChecker
+from common_utils.auth.utils import hash_password
 
 router = APIRouter(prefix="/employees", tags=["employees"])
 
@@ -82,7 +83,7 @@ def update_employee(
     
     # Hash password if it's being updated
     if "password" in update_data:
-        update_data["password"] = get_password_hash(update_data["password"])
+        update_data["password"] = hash_password(update_data["password"])
     
     for key, value in update_data.items():
         setattr(db_employee, key, value)
