@@ -69,13 +69,13 @@ jobs:
           username: ${{ secrets.VPS_USERNAME }}
           password: ${{ secrets.VPS_PASSWORD }}
           script: |
-            cat <<EOF > ~/service.env
-            REDIS_URL=${{ secrets.REDIS_URL }}
-            OAUTH2_ENV=${{ secrets.OAUTH2_ENV }}
-            DEV_OAUTH2_URL=${{ secrets.DEV_OAUTH2_URL }}
-            PROD_OAUTH2_URL=${{ secrets.PROD_OAUTH2_URL }}
-            X_INTROSPECT_SECRET=${{ secrets.X_INTROSPECT_SECRET }}
-            EOF
+            # cat <<EOF > ~/service.env
+            # REDIS_URL=${{ secrets.REDIS_URL }}
+            # OAUTH2_ENV=${{ secrets.OAUTH2_ENV }}
+            # DEV_OAUTH2_URL=${{ secrets.DEV_OAUTH2_URL }}
+            # PROD_OAUTH2_URL=${{ secrets.PROD_OAUTH2_URL }}
+            # X_INTROSPECT_SECRET=${{ secrets.X_INTROSPECT_SECRET }}
+            # EOF
 
             # Cleanup old resources
             docker compose -f ~/docker-compose_${{ env.ENV }}.yaml down --volumes --remove-orphans
