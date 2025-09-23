@@ -24,7 +24,7 @@ services:
     image: postgres:15
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      - "5434:5432"
     environment:
       POSTGRES_USER: fleetadmin
       POSTGRES_PASSWORD: fleetpass
