@@ -12,6 +12,7 @@ class TeamCreate(TeamBase):
 class TeamUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    is_active: Optional[bool] = None
 
 class TeamResponse(TeamBase):
     team_id: int

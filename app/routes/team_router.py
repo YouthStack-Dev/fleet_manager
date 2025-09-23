@@ -273,27 +273,60 @@ def read_team(
         logger.exception(f"Unexpected error while fetching team {team_id}: {str(e)}")
         raise handle_http_error(e)
 
-@router.put("/{team_id}", response_model=TeamResponse)
+@router.put("/{team_id}", status_code=status.HTTP_200_OK)
 def update_team(
-    team_id: int, 
-    team_update: TeamUpdate, 
+    team_id: int,
+    team_update: TeamUpdate,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["team.update"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["team.update"], check_tenant=True)),
 ):
-    db_team = db.query(Team).filter(Team.team_id == team_id).first()
-    if not db_team:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Team with ID {team_id} not found"
+    try:
+        user_type = user_data.get("user_type")
+        tenant_id = user_data.get("tenant_id")
+        
+        if user_type in {"vendor", "driver"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to view teams",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        query = db.query(Team).filter(Team.team_id == team_id)
+        if user_type == "employee":
+            query = query.filter(Team.tenant_id == tenant_id)
+
+        db_team = query.first()
+        if not db_team:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Team with ID {team_id} not found",
+                    error_code="TEAM_NOT_FOUND",
+                ),
+            )
+
+        update_data = team_crud.update(
+            db, db_obj=db_team, obj_in=team_update
         )
-    
-    update_data = team_update.dict(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(db_team, key, value)
-    
-    db.commit()
-    db.refresh(db_team)
-    return db_team
+
+        db.commit()
+        db.refresh(db_team)
+
+        return ResponseWrapper.success(
+            data={"team": TeamResponse.model_validate(db_team, from_attributes=True)},
+            message="Team updated successfully",
+        )
+
+    except SQLAlchemyError as e:
+        raise handle_db_error(e)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error while updating team {team_id}: {str(e)}")
+        raise handle_http_error(e)
+
 
 @router.delete("/{team_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_team(
