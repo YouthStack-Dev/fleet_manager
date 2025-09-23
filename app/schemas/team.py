@@ -7,7 +7,7 @@ class TeamBase(BaseModel):
     description: Optional[str] = None
 
 class TeamCreate(TeamBase):
-    pass
+    tenant_id: str
 
 class TeamUpdate(BaseModel):
     name: Optional[str] = None
@@ -19,7 +19,7 @@ class TeamResponse(TeamBase):
     updated_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class TeamPaginationResponse(BaseModel):
     total: int

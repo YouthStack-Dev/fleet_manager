@@ -24,7 +24,7 @@ class Route(Base):
     )
 
     route_id = Column(Integer, primary_key=True, index=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
+    tenant_id = Column(String(50), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
 
     shift_id = Column(Integer, ForeignKey("shifts.shift_id", ondelete="CASCADE"))
     route_code = Column(String(100), nullable=False)

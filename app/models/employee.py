@@ -17,7 +17,7 @@ class Employee(Base):
     __tablename__ = "employees"
 
     employee_id = Column(Integer, primary_key=True, index=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
+    tenant_id = Column(String(50), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
     role_id = Column(Integer, ForeignKey("iam_roles.role_id", ondelete="CASCADE"), nullable=False)
     name = Column(String(150), nullable=False)
     employee_code = Column(String(50), nullable=False)  # unique per tenant

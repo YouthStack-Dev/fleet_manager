@@ -1,0 +1,96 @@
+name: Build & Deploy to VPS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to deploy"
+        required: true
+        default: "main"
+
+env:
+  AWS_REGION: ap-south-1
+  REPO_NAME: fleet
+  IMAGE_TAG: latest
+  STACK_NAME: fleet-service_manager
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref_name }}
+
+      - name: Set environment based on branch
+        id: set_env
+        run: |
+          BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
+          if [ "$BRANCH" = "main" ]; then
+            echo "env=prod" >> $GITHUB_OUTPUT
+          elif [[ "$BRANCH" == dev-* ]]; then
+            echo "env=dev" >> $GITHUB_OUTPUT
+          else
+            echo "Invalid branch: $BRANCH"
+            exit 1
+          fi
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build & push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./service_manager
+          push: true
+          tags: dheerajkumarp/fleet_service_manager:latest
+
+      - name: Copy docker-compose file to VPS
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.VPS_IP }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          source: "docker-compose_prod.yaml"
+          target: "~/"
+
+      - name: SSH & deploy on VPS
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.VPS_IP }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          script: |
+            echo "${{ secrets.FIREBASE_KEY_JSON }}" | base64 -d > ~/firebase_key.json
+            cat <<EOF > ~/service.env
+            FIREBASE_KEY_PATH=/app/secrets/firebase_key.json
+            REDIS_URL=${{ secrets.REDIS_URL }}
+            OAUTH2_ENV=${{ secrets.OAUTH2_ENV }}
+            DEV_OAUTH2_URL=${{ secrets.DEV_OAUTH2_URL }}
+            PROD_OAUTH2_URL=${{ secrets.PROD_OAUTH2_URL }}
+            X_INTROSPECT_SECRET=${{ secrets.X_INTROSPECT_SECRET }}
+            EOF
+
+            # Cleanup old resources
+            docker compose -f ~/docker-compose_prod.yaml down --volumes --remove-orphans
+            docker image prune -af
+            docker volume prune -f
+            docker network prune -f
+
+            # Pull latest image
+            docker pull dheerajkumarp/fleet_service_manager:latest
+
+            # # Run migrations before starting app
+            docker compose -f ~/docker-compose_prod.yaml run --rm service_manager alembic upgrade head
+
+            # Deploy new version
+            docker compose -f ~/docker-compose_prod.yaml up -d --force-recreate
+            docker system prune -af

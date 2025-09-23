@@ -3,18 +3,20 @@ import hashlib
 from typing import Optional, Dict, List
 import jwt
 from fastapi import HTTPException, status
+from app.config import settings
 
-# Configuration
-SECRET_KEY = "your-secret-key"  
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 1 day
+# Configuration - use centralized settings
+SECRET_KEY = settings.SECRET_KEY
+ALGORITHM = settings.ALGORITHM
+ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 def create_access_token(
     user_id: str,
     tenant_id: Optional[str] = None,
     opaque_token: Optional[str] = None,
-    token_context: str = "generic",   # 👈 e.g. "employee", "admin", "driver", "vendor"
+    vendor_id: Optional[str] = None,
+    user_type: str = "generic",   # 👈 e.g. "employee", "admin", "driver", "vendor"
     custom_claims: Optional[Dict] = None,  # 👈 flexible extension
     expires_delta: Optional[timedelta] = None
 ) -> str:
@@ -23,7 +25,8 @@ def create_access_token(
         "tenant_id": tenant_id,
         "opaque_token": opaque_token,
         "token_type": "access",
-        "context": token_context,  # 👈 differentiate token usage
+        "user_type": user_type,  # 👈 differentiate token usage
+        "vendor_id": vendor_id,  # 👈 include vendor_id if provided
     }
 
     if custom_claims:
@@ -37,14 +40,14 @@ def create_access_token(
 
 def create_refresh_token(
     user_id: str,
-    token_context: str = "generic",
+    user_type: str = "generic",
     custom_claims: Optional[Dict] = None,
 ) -> str:
     expire = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode = {
         "user_id": user_id,
         "token_type": "refresh",
-        "context": token_context,  # 👈 keep it consistent
+        "user_type": user_type,  # 👈 keep it consistent
         "exp": expire,
         "iat": datetime.utcnow(),
     }

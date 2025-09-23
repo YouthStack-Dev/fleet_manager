@@ -24,7 +24,7 @@ def seed_admins(db: Session):
             "name": f"{role.name} User",
             "email": f"{role.name.lower()}@example.com",
             "phone": f"9000{role.role_id:05d}",
-            "password": "hashed_password_123",  # replace with real hash
+            "password": "e86f78a8a3caf0b60d8e74e5942aa6d86dc150cd3c03338aef25b7d2d7e3acc7",  # Admin@123
             "role_id": role.role_id,
             "is_active": True
         }
@@ -51,14 +51,14 @@ def seed_tenants(db: Session):
     tenants_data = [
         {
             "name": "Sample Tenant",
-            "tenant_code": "SAM001",
+            "tenant_id": "SAM001",
             "address": "123 MG Road, Bangalore",
             "longitude": 77.5946,
             "latitude": 12.9716,
         },
         {
             "name": "Test Tenant",
-            "tenant_code": "TST001",
+            "tenant_id": "TST001",
             "address": "456 Residency Road, Bangalore",
             "longitude": 77.6200,
             "latitude": 12.9500,
@@ -66,14 +66,14 @@ def seed_tenants(db: Session):
     ]
 
     for data in tenants_data:
-        existing = db.query(Tenant).filter(Tenant.tenant_code == data["tenant_code"]).first()
+        existing = db.query(Tenant).filter(Tenant.tenant_id == data["tenant_id"]).first()
         if existing:
-            logger.info(f"Tenant {data['tenant_code']} already exists, skipping.")
+            logger.info(f"Tenant {data['tenant_id']} already exists, skipping.")
             continue
 
         tenant = Tenant(**data)
         db.add(tenant)
-        logger.info(f"Tenant {data['tenant_code']} created.")
+        logger.info(f"Tenant {data['tenant_id']} created.")
 
     db.commit()
     logger.info("Tenant seeding completed.")
@@ -85,21 +85,34 @@ from app.models import Permission, Policy, Role
 import logging
 
 logger = logging.getLogger(__name__)
-
 def seed_iam(db: Session):
     """
     Seed IAM: Permissions, Policies, and Roles (idempotent).
     """
     # --- Step 1: Permissions ---
-    permission_matrix = {
-        "users": ["create", "read", "update", "delete"],
-        "employees": ["create", "read", "update", "delete"],
-        "shifts": ["create", "read", "update", "delete"],
-        "vendors": ["create", "read", "update", "delete"],
-    }
+    modules = [
+        "booking",
+        "driver",
+        "employee",
+        "route-booking",
+        "route",
+        "shift",
+        "team",
+        "admin.tenant",
+        "vehicle",
+        "vehicle-type",
+        "vendor",
+        "vendor-user",
+        "weekoff-config",
+        "permissions",
+        "policy",
+        "role",
+    ]
+
+    actions = ["create", "read", "update", "delete"]
 
     permissions_map = {}
-    for module, actions in permission_matrix.items():
+    for module in modules:
         for action in actions:
             existing = (
                 db.query(Permission)
@@ -117,45 +130,80 @@ def seed_iam(db: Session):
                 description=f"{action.capitalize()} {module}",
             )
             db.add(perm)
-            db.flush()  # assign ID
+            db.flush()
             permissions_map[f"{module}:{action}"] = perm
-            logger.info(f"Permission {module}:{action} created.")
 
-    # --- Step 2: Policies ---
-    policies_def = {
-        "UserManagementPolicy": ["users:create", "users:read", "users:update", "users:delete"],
-        "EmployeeManagementPolicy": ["employees:create", "employees:read", "employees:update"],
-        "ShiftManagementPolicy": ["shifts:create", "shifts:read", "shifts:update"],
-        "VendorManagementPolicy": ["vendors:create", "vendors:read", "vendors:update"],
-    }
-
+    # --- Step 2: Policies (system-wide, grouped by module) ---
     policies_map = {}
-    for name, perms in policies_def.items():
-        policy = db.query(Policy).filter(Policy.name == name).first()
+    for module in modules:
+        policy_name = f"{module.capitalize()}Policy".replace("-", "").replace(".", "")
+        perms = [f"{module}:{a}" for a in actions]
+
+        policy = db.query(Policy).filter(Policy.name == policy_name, Policy.is_system_policy == True).first()
         if not policy:
-            policy = Policy(name=name, description=f"Policy for {name}")
+            policy = Policy(
+                name=policy_name,
+                description=f"Policy for {module}",
+                is_system_policy=True,   # ✅ mark as system
+            )
             db.add(policy)
-            logger.info(f"Policy {name} created.")
+            logger.info(f"Policy {policy_name} created.")
         else:
-            logger.debug(f"Policy {name} already exists.")
+            logger.debug(f"Policy {policy_name} already exists.")
         # attach permissions
         policy.permissions = [permissions_map[p] for p in perms if p in permissions_map]
-        policies_map[name] = policy
+        policies_map[policy_name] = policy
 
-    # --- Step 3: Roles ---
+    # --- Step 2.1: Aggregated TenantPolicies (system-wide) ---
+    tenant_policy_name = "TenantPolicies"
+    tenant_policy = db.query(Policy).filter(
+        Policy.name == tenant_policy_name, Policy.is_system_policy == True
+    ).first()
+
+    if not tenant_policy:
+        tenant_policy = Policy(
+            name=tenant_policy_name,
+            description="Aggregated policy with all tenant-related permissions",
+            is_system_policy=True,
+        )
+        db.add(tenant_policy)
+        logger.info(f"Policy {tenant_policy_name} created.")
+    else:
+        logger.debug(f"Policy {tenant_policy_name} already exists.")
+
+    # Attach all permissions
+    tenant_perms = [perm for perm in permissions_map.values()]
+    tenant_policy.permissions = tenant_perms
+    policies_map[tenant_policy_name] = tenant_policy
+
+    # --- Step 3: Roles (system-wide) ---
     roles_def = {
         "SuperAdmin": list(policies_map.keys()),  # all policies
-        "Admin": ["UserManagementPolicy", "EmployeeManagementPolicy", "ShiftManagementPolicy"],
-        "employee": ["EmployeeManagementPolicy", "ShiftManagementPolicy"],
+        "Admin": [
+            p for p in policies_map.keys()
+            if p not in ["PermissionsPolicy", "PolicyPolicy", "RolePolicy"]
+        ],
+        "Employee": ["EmployeePolicy", "ShiftPolicy", "BookingPolicy"],
+        "Driver": ["DriverPolicy", "ShiftPolicy", "BookingPolicy"],
+        "VendorAdmin": [
+            "DriverPolicy",
+            "RoutebookingPolicy",
+            "VehiclePolicy",
+            "VehicletypePolicy",
+            "VendoruserPolicy",
+            "PermissionsPolicy",
+            "PolicyPolicy",
+            "RolePolicy",
+        ],
     }
 
     for role_name, assigned_policies in roles_def.items():
-        role = db.query(Role).filter(Role.name == role_name).first()
+        role = db.query(Role).filter(Role.name == role_name, Role.is_system_role == True).first()
         if not role:
             role = Role(
                 name=role_name,
-                description=f"Role with {', '.join(assigned_policies)}",
-                is_system_role=True,
+                description=f"{role_name} system role",
+                is_system_role=True,   # ✅ mark as system
             )
             db.add(role)
             logger.info(f"Role {role_name} created.")
@@ -179,7 +227,7 @@ def seed_teams(db: Session):
         return
 
     for tenant in tenants:
-        logger.info(f"Seeding teams for tenant {tenant.tenant_code} ({tenant.name})...")
+        logger.info(f"Seeding teams for tenant {tenant.tenant_id} ({tenant.name})...")
 
         teams_data = [
             {
@@ -201,12 +249,12 @@ def seed_teams(db: Session):
                 .first()
             )
             if existing:
-                logger.info(f"Team '{data['name']}' already exists for tenant {tenant.tenant_code}, skipping.")
+                logger.info(f"Team '{data['name']}' already exists for tenant {tenant.tenant_id}, skipping.")
                 continue
 
             team = Team(**data)
             db.add(team)
-            logger.info(f"Team '{data['name']}' created for tenant {tenant.tenant_code}.")
+            logger.info(f"Team '{data['name']}' created for tenant {tenant.tenant_id}.")
 
     db.commit()
     logger.info("Team seeding completed.")
@@ -235,18 +283,18 @@ def seed_employees(db: Session):
     for tenant in tenants:
         teams = db.query(Team).filter(Team.tenant_id == tenant.tenant_id).all()
         if not teams:
-            logger.warning(f"No teams found for tenant {tenant.tenant_code}, skipping employees.")
+            logger.warning(f"No teams found for tenant {tenant.tenant_id}, skipping employees.")
             continue
 
-        logger.info(f"Seeding employees for tenant {tenant.tenant_code} ({tenant.name})...")
+        logger.info(f"Seeding employees for tenant {tenant.tenant_id} ({tenant.name})...")
 
         employees_data = [
             {
                 "tenant_id": tenant.tenant_id,
-                "employee_code": f"{tenant.tenant_code}-EMP1",
+                "employee_code": f"{tenant.tenant_id}-EMP1",
                 "name": f"{tenant.name} Employee One",
-                "email": f"{tenant.tenant_code.lower()}_emp1@example.com",
-                "password": "hashed_password_123",
+                "email": f"{tenant.tenant_id.lower()}_emp1@example.com",
+                "password": "b4bd29480ab196faa782e0d4ecd10c2f4212814105227e5f7992f5bf4b212a64", #Employee@123
                 "team_id": teams[0].team_id,
                 "role_id": superadmin_role_id,  # guaranteed to exist
                 "phone": f"9000{random.randint(100000,999999)}",
@@ -255,10 +303,10 @@ def seed_employees(db: Session):
             },
             {
                 "tenant_id": tenant.tenant_id,
-                "employee_code": f"{tenant.tenant_code}-EMP2",
+                "employee_code": f"{tenant.tenant_id}-EMP2",
                 "name": f"{tenant.name} Employee Two",
-                "email": f"{tenant.tenant_code.lower()}_emp2@example.com",
-                "password": "hashed_password_123",
+                "email": f"{tenant.tenant_id.lower()}_emp2@example.com",
+                "password": "b4bd29480ab196faa782e0d4ecd10c2f4212814105227e5f7992f5bf4b212a64", #Employee@123
                 "team_id": teams[-1].team_id,
                 "role_id": admin_role_id,  # guaranteed to exist
                 "phone": f"8000{random.randint(100000,999999)}",
@@ -274,12 +322,12 @@ def seed_employees(db: Session):
                 .first()
             )
             if existing:
-                logger.info(f"Employee {data['employee_code']} already exists for tenant {tenant.tenant_code}, skipping.")
+                logger.info(f"Employee {data['employee_code']} already exists for tenant {tenant.tenant_id}, skipping.")
                 continue
 
             emp = Employee(**data)
             db.add(emp)
-            logger.info(f"Employee {data['employee_code']} created for tenant {tenant.tenant_code}.")
+            logger.info(f"Employee {data['employee_code']} created for tenant {tenant.tenant_id}.")
 
     db.commit()
     logger.info("Employee seeding completed.")
@@ -298,12 +346,12 @@ def seed_shifts(db: Session):
         return
 
     for tenant in tenants:
-        logger.info(f"Seeding shifts for tenant {tenant.tenant_code} ({tenant.name})...")
+        logger.info(f"Seeding shifts for tenant {tenant.tenant_id} ({tenant.name})...")
 
         shifts_data = [
             {
                 "tenant_id": tenant.tenant_id,
-                "shift_code": f"{tenant.tenant_code}-SHIFT1",
+                "shift_code": f"{tenant.tenant_id}-SHIFT1",
                 "log_type": ShiftLogTypeEnum.IN,
                 "shift_time": time(9, 0),  # 9:00 AM
                 "pickup_type": PickupTypeEnum.PICKUP,
@@ -312,7 +360,7 @@ def seed_shifts(db: Session):
             },
             {
                 "tenant_id": tenant.tenant_id,
-                "shift_code": f"{tenant.tenant_code}-SHIFT2",
+                "shift_code": f"{tenant.tenant_id}-SHIFT2",
                 "log_type": ShiftLogTypeEnum.OUT,
                 "shift_time": time(18, 0),  # 6:00 PM
                 "pickup_type": PickupTypeEnum.NODAL,
@@ -321,7 +369,7 @@ def seed_shifts(db: Session):
             },
             {
                 "tenant_id": tenant.tenant_id,
-                "shift_code": f"{tenant.tenant_code}-SHIFT3",
+                "shift_code": f"{tenant.tenant_id}-SHIFT3",
                 "log_type": ShiftLogTypeEnum.IN,
                 "shift_time": time(22, 0),  # 10:00 PM
                 "pickup_type": PickupTypeEnum.PICKUP,
@@ -337,12 +385,12 @@ def seed_shifts(db: Session):
                 .first()
             )
             if existing:
-                logger.info(f"Shift '{data['shift_code']}' already exists for tenant {tenant.tenant_code}, skipping.")
+                logger.info(f"Shift '{data['shift_code']}' already exists for tenant {tenant.tenant_id}, skipping.")
                 continue
 
             shift = Shift(**data)
             db.add(shift)
-            logger.info(f"Shift '{data['shift_code']}' created for tenant {tenant.tenant_code}.")
+            logger.info(f"Shift '{data['shift_code']}' created for tenant {tenant.tenant_id}.")
 
     db.commit()
     logger.info("Shift seeding completed.")
@@ -397,7 +445,7 @@ logger = logging.getLogger(__name__)
 def seed_vendors(db: Session):
     """
     Seed one default vendor (MLT) per tenant (idempotent).
-    Vendor code stored as {tenant_code}-MLT.
+    Vendor code stored as {tenant_id}-MLT.
     """
     tenants = db.query(Tenant).all()
     if not tenants:
@@ -405,14 +453,14 @@ def seed_vendors(db: Session):
         return
 
     for tenant in tenants:
-        vendor_code = f"{tenant.tenant_code}-MLT"
+        vendor_code = f"{tenant.tenant_id}-MLT"
         existing = (
             db.query(Vendor)
             .filter(Vendor.tenant_id == tenant.tenant_id, Vendor.vendor_code == vendor_code)
             .first()
         )
         if existing:
-            logger.info(f"Vendor '{vendor_code}' already exists for tenant {tenant.tenant_code}, skipping.")
+            logger.info(f"Vendor '{vendor_code}' already exists for tenant {tenant.tenant_id}, skipping.")
             continue
 
         vendor = Vendor(
@@ -420,11 +468,11 @@ def seed_vendors(db: Session):
             vendor_code=vendor_code,
             name="MLT Logistics",
             email="mlt@vendor.com",
-            phone=f"99999{tenant.tenant_id:05d}",
+            phone=f"9999999999",
             is_active=True,
         )
         db.add(vendor)
-        logger.info(f"Vendor '{vendor_code}' created for tenant {tenant.tenant_code}.")
+        logger.info(f"Vendor '{vendor_code}' created for tenant {tenant.tenant_id}.")
 
     db.commit()
     logger.info("Vendor seeding completed.")
@@ -459,27 +507,29 @@ def seed_vendor_users(db: Session):
     for tenant in tenants:
         vendors = db.query(Vendor).filter(Vendor.tenant_id == tenant.tenant_id).all()
         if not vendors:
-            logger.warning(f"No vendors found for tenant {tenant.tenant_code}, skipping vendor user seeding.")
+            logger.warning(f"No vendors found for tenant {tenant.tenant_id}, skipping vendor user seeding.")
             continue
 
         for vendor in vendors:
             # Default users to seed for each vendor
             users_data = [
                 {
+                    "tenant_id": tenant.tenant_id,
                     "vendor_id": vendor.vendor_id,
                     "name": f"{vendor.name} Admin",
                     "email": f"{vendor.vendor_code.lower()}_admin@example.com",
                     "phone": f"9000{random.randint(100000,999999)}",
-                    "password": "hashed_password_123",  # Replace with real hash in production
+                    "password": "b4bd29480ab196faa782e0d4ecd10c2f4212814105227e5f7992f5bf4b212a64",  # Employee@123
                     "role_id": admin_role_id,
                     "is_active": True
                 },
                 {
+                    "tenant_id": tenant.tenant_id,
                     "vendor_id": vendor.vendor_id,
                     "name": f"{vendor.name} Dispatcher",
                     "email": f"{vendor.vendor_code.lower()}_dispatcher@example.com",
                     "phone": f"8000{random.randint(100000,999999)}",
-                    "password": "hashed_password_123",
+                    "password": "b4bd29480ab196faa782e0d4ecd10c2f4212814105227e5f7992f5bf4b212a64", # Employee@123
                     "role_id": superadmin_role_id,
                     "is_active": True
                 }
@@ -529,7 +579,7 @@ def seed_drivers(db: Session):
                 "email": f"{vendor.vendor_code.lower()}_drv1@example.com",
                 "phone": f"9000{random.randint(100000,999999)}",
                 "gender": "Male",
-                "password": "hashed_password_123",  # replace with actual hash
+                "password": "b4bd29480ab196faa782e0d4ecd10c2f4212814105227e5f7992f5bf4b212a64",  # Employee@123
                 "date_of_birth": date(1990, 1, 1),
                 "date_of_joining": date(2023, 1, 1),
                 "permanent_address": "123 Main Street, Bangalore",
@@ -552,7 +602,7 @@ def seed_drivers(db: Session):
                 "email": f"{vendor.vendor_code.lower()}_drv2@example.com",
                 "phone": f"8000{random.randint(100000,999999)}",
                 "gender": "Female",
-                "password": "hashed_password_123",
+                "password": "b4bd29480ab196faa782e0d4ecd10c2f4212814105227e5f7992f5bf4b212a64",  # Employee@123
                 "date_of_birth": date(1992, 6, 15),
                 "date_of_joining": date(2023, 6, 1),
                 "permanent_address": "456 Market Road, Bangalore",

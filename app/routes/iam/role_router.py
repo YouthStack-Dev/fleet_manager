@@ -155,7 +155,7 @@ async def get_roles(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=100),
     name: Optional[str] = None,
-    tenant_id: Optional[int] = None,
+    tenant_id: Optional[str] = None,
     is_system_role: Optional[bool] = None,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["role.read"], check_tenant=True))

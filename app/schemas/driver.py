@@ -123,7 +123,7 @@ class DriverResponse(DriverBase):
     updated_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class DriverPaginationResponse(BaseModel):
     total: int
