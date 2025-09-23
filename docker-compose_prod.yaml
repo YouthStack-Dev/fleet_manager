@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+
+  redis_server:
+    image: redis:7.4-alpine
+    container_name: redis_server
+    restart: always
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass redispassword --appendonly yes
+    volumes:
+      - redis_data:/data
+
+  postgres:
+    container_name: fleet_postgres
+    image: postgres:15
+    restart: unless-stopped
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: fleetadmin
+      POSTGRES_PASSWORD: fleetpass
+      POSTGRES_DB: fleet_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  service_manager:
+    image: dheerajkumarp/fleet_service_manager:latest
+    container_name: service_manager
+    restart: always
+    env_file:
+      - ./service.env
+    volumes:
+      - ./firebase_key.json:/app/secrets/firebase_key.json
+      - /var/lib/fleet/uploads:/app/uploaded_files
+    environment:
+      - DATABASE_URL=postgresql://fleetadmin:fleetpass@fleet_postgres:5432/fleet_db
+      - OAUTH2_ENV=prod
+      - OAUTH2_URL=http://service_manager:8100/api/auth/introspect
+      - REDIS_HOST=redis_server
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - REDIS_PASSWORD=redispassword
+      - USE_REDIS=1
+      - TOKEN_EXPIRY_HOURS=1
+      - X_INTROSPECT_SECRET=Kjs#idjXw
+    depends_on:
+      - redis_server
+      - postgres
+    ports:
+      - "8100:8100"
+
+volumes:
+  postgres_data:
+  redis_data:
+  servicemgr_data:
