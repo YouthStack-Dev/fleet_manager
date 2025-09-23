@@ -1,4 +1,4 @@
-name: Build & Deploy to VPS
+name: Deploy Fleet Manager
 
 on:
   push:
@@ -32,9 +32,9 @@ jobs:
         run: |
           BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
           if [ "$BRANCH" = "main" ]; then
-            echo "env=prod" >> $GITHUB_OUTPUT
+            echo "ENV=prod" >> $GITHUB_ENV
           elif [[ "$BRANCH" == dev-* ]]; then
-            echo "env=dev" >> $GITHUB_OUTPUT
+            echo "ENV=dev" >> $GITHUB_ENV
           else
             echo "Invalid branch: $BRANCH"
             exit 1
@@ -51,15 +51,15 @@ jobs:
         with:
           context: ./service_manager
           push: true
-          tags: dheerajkumarp/fleet_service_manager:latest
+          tags: dheerajkumarp/fleet_service_manager:${{ env.IMAGE_TAG }}
 
       - name: Copy docker-compose file to VPS
         uses: appleboy/scp-action@v0.1.4
         with:
           host: ${{ secrets.VPS_IP }}
           username: ${{ secrets.VPS_USERNAME }}
-          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
-          source: "docker-compose_prod.yaml"
+          password: ${{ secrets.VPS_PASSWORD }}
+          source: "docker-compose_${{ env.ENV }}.yaml"
           target: "~/"
 
       - name: SSH & deploy on VPS
@@ -67,11 +67,9 @@ jobs:
         with:
           host: ${{ secrets.VPS_IP }}
           username: ${{ secrets.VPS_USERNAME }}
-          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          password: ${{ secrets.VPS_PASSWORD }}
           script: |
-            echo "${{ secrets.FIREBASE_KEY_JSON }}" | base64 -d > ~/firebase_key.json
             cat <<EOF > ~/service.env
-            FIREBASE_KEY_PATH=/app/secrets/firebase_key.json
             REDIS_URL=${{ secrets.REDIS_URL }}
             OAUTH2_ENV=${{ secrets.OAUTH2_ENV }}
             DEV_OAUTH2_URL=${{ secrets.DEV_OAUTH2_URL }}
@@ -80,17 +78,17 @@ jobs:
             EOF
 
             # Cleanup old resources
-            docker compose -f ~/docker-compose_prod.yaml down --volumes --remove-orphans
+            docker compose -f ~/docker-compose_${{ env.ENV }}.yaml down --volumes --remove-orphans
             docker image prune -af
             docker volume prune -f
             docker network prune -f
 
             # Pull latest image
-            docker pull dheerajkumarp/fleet_service_manager:latest
+            docker pull dheerajkumarp/fleet_service_manager:${{ env.IMAGE_TAG }}
 
-            # # Run migrations before starting app
-            docker compose -f ~/docker-compose_prod.yaml run --rm service_manager alembic upgrade head
+            # Run migrations before starting app
+            docker compose -f ~/docker-compose_${{ env.ENV }}.yaml run --rm service_manager alembic upgrade head
 
             # Deploy new version
-            docker compose -f ~/docker-compose_prod.yaml up -d --force-recreate
+            docker compose -f ~/docker-compose_${{ env.ENV }}.yaml up -d --force-recreate
             docker system prune -af
