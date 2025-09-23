@@ -7,7 +7,7 @@ class TeamBase(BaseModel):
     description: Optional[str] = None
 
 class TeamCreate(TeamBase):
-    tenant_id: str
+    tenant_id: Optional[str] = None
 
 class TeamUpdate(BaseModel):
     name: Optional[str] = None
