@@ -283,7 +283,7 @@ def update_team(
     try:
         user_type = user_data.get("user_type")
         tenant_id = user_data.get("tenant_id")
-        
+
         if user_type in {"vendor", "driver"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -327,8 +327,84 @@ def update_team(
         logger.exception(f"Unexpected error while updating team {team_id}: {str(e)}")
         raise handle_http_error(e)
 
+@router.patch("/{team_id}/toggle-status", status_code=status.HTTP_200_OK)
+def toggle_team_status(
+    team_id: int,
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["team.update"], check_tenant=True)),
+):
+    """
+    Toggle a team's active/inactive status.
 
-@router.delete("/{team_id}", status_code=status.HTTP_204_NO_CONTENT)
+    Rules:
+    - 🚫 Vendors/Drivers → forbidden
+    - 👷 Employees → can only toggle teams in their tenant
+    - 👑 Admin/SuperAdmin → can toggle any team under the provided tenant
+    """
+    try:
+        user_type = user_data.get("user_type")
+        tenant_id = user_data.get("tenant_id")
+
+        # 🚫 Vendors/Drivers not allowed
+        if user_type in {"vendor", "driver"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to toggle team status",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # --- Query team ---
+        query = db.query(Team).filter(Team.team_id == team_id)
+
+        if user_type == "employee":
+            # Employees can only toggle teams in their tenant
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+            query = query.filter(Team.tenant_id == tenant_id)
+
+        db_team = query.first()
+        if not db_team:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Team with ID {team_id} not found",
+                    error_code="TEAM_NOT_FOUND",
+                ),
+            )
+
+        # --- Toggle status ---
+        db_team.is_active = not db_team.is_active
+        db.commit()
+        db.refresh(db_team)
+
+        logger.info(
+            f"Team {db_team.team_id} status toggled to "
+            f"{'Active' if db_team.is_active else 'Inactive'} "
+            f"by user {user_data.get('user_id')}"
+        )
+
+        return ResponseWrapper.success(
+            data={"team": TeamResponse.model_validate(db_team, from_attributes=True)},
+            message=f"Team status updated to {'Active' if db_team.is_active else 'Inactive'}"
+        )
+
+    except SQLAlchemyError as e:
+        raise handle_db_error(e)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error while toggling team {team_id} status: {str(e)}")
+        raise handle_http_error(e)
+
+# @router.delete("/{team_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_team(
     team_id: int, 
     db: Session = Depends(get_db),

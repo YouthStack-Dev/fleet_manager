@@ -5,6 +5,7 @@ from datetime import datetime
 class TeamBase(BaseModel):
     name: str
     description: Optional[str] = None
+    is_active: bool = True
 
 class TeamCreate(TeamBase):
     tenant_id: Optional[str] = None
