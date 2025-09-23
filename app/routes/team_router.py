@@ -207,19 +207,71 @@ def read_teams(
         raise handle_http_error(e)
 
 
-@router.get("/{team_id}", response_model=TeamResponse)
+@router.get("/{team_id}", status_code=status.HTTP_200_OK)
 def read_team(
-    team_id: int, 
+    team_id: int,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["team.read"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["team.read"], check_tenant=True)),
 ):
-    db_team = db.query(Team).filter(Team.team_id == team_id).first()
-    if not db_team:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Team with ID {team_id} not found"
+    try:
+        user_type = user_data.get("user_type")
+        tenant_id = user_data.get("tenant_id")
+
+        # 🚫 Vendors/Drivers not allowed
+        if user_type in {"vendor", "driver"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to view teams",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # 🔒 Tenant enforcement
+        query = db.query(Team).filter(Team.team_id == team_id)
+        if user_type == "employee":
+            query = query.filter(Team.tenant_id == tenant_id)
+
+        db_team = query.first()
+        if not db_team:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Team with ID {team_id} not found",
+                    error_code="TEAM_NOT_FOUND",
+                ),
+            )
+
+        # Employee counts
+        active_count = db.query(Employee).filter(
+            Employee.team_id == db_team.team_id,
+            Employee.is_active.is_(True),
+        ).count()
+
+        inactive_count = db.query(Employee).filter(
+            Employee.team_id == db_team.team_id,
+            Employee.is_active.is_(False),
+        ).count()
+
+        team_data = TeamResponse.model_validate(db_team, from_attributes=True).dict()
+        team_data.update(
+            {
+                "active_employee_count": active_count,
+                "inactive_employee_count": inactive_count,
+            }
         )
-    return db_team
+
+        return ResponseWrapper.success(
+            data={"team": team_data}, message="Team fetched successfully"
+        )
+
+    except SQLAlchemyError as e:
+        raise handle_db_error(e)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error while fetching team {team_id}: {str(e)}")
+        raise handle_http_error(e)
 
 @router.put("/{team_id}", response_model=TeamResponse)
 def update_team(
