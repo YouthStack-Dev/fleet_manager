@@ -49,7 +49,7 @@ jobs:
       - name: Build & push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ./service_manager
+          file: ./Dockerfile
           push: true
           tags: dheerajkumarp/fleet_service_manager:${{ env.IMAGE_TAG }}
 
