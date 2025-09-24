@@ -24,6 +24,22 @@ def create_vendor(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.create"], check_tenant=False)),
 ):
+    """
+    Create a new vendor.
+
+    Only Admin and Employee users can create vendors.
+    The vendor object must include a tenant_id, which will be used to scope the vendor to a specific tenant.
+    The vendor object may also include an admin_email and admin_phone, which will be used to create a default VendorAdmin user for the vendor.
+    The vendor object may also include an admin_password, which will be used to set the password for the defaultVendorAdmin user. If not provided, the password will be set to "default@123".
+    The API will return a response containing the created vendor object and the created defaultVendorAdmin user object.
+
+    Raises:
+        HTTPException: If the user is not authorized to create vendors, or if the user does not have a valid tenant_id.
+        HTTPException: If the tenant_id is invalid or inactive.
+        HTTPException: If the vendor object is missing required fields such as tenant_id, admin_email, admin_phone.
+        HTTPException: If the vendor object is invalid, such as duplicate vendor_code or invalid email/phone.
+        HTTPException: If an unexpected error occurs while creating the vendor.
+    """
     try:
         logger.info(f"Create vendor request: {vendor.dict()}")
         logger.debug(f"User data from token: {user_data}")
@@ -168,13 +184,26 @@ def read_vendors(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.read"], check_tenant=True)),
 ):
+
+    
     """
-    Fetch vendors with role-based restrictions:
-    - driver → forbidden
-    - employee → only within tenant
-    - vendor → only their vendor
-    - admin → unrestricted
-    - superadmin → can filter across tenants using tenant
+    Fetch a list of vendors with optional filters.
+
+    Rules:
+    - user_type == vendor/driver or missing → Forbidden
+    - user_type == employee → can fetch only their tenant
+    - other (admin) → can apply filters and fetch multiple vendors
+
+    Args:
+        skip (int): number of records to skip
+        limit (int): max number of records to fetch
+        name (Optional[str]): filter vendors by name
+        code (Optional[str]): filter vendors by vendor_code
+        is_active (Optional[bool]): filter vendors by active status
+        tenant (Optional[str]): filter by tenant_id (Admin only)
+
+    Returns:
+        ResponseWrapper: a successful response with the list of vendors
     """
     try:
         user_type = user_data.get("user_type")
@@ -278,6 +307,25 @@ def read_vendor(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.read"], check_tenant=True))
 ):
+    
+    
+    
+    """
+    Fetch a vendor by ID.
+
+    Rules:
+    - user_type == vendor/driver or missing → Forbidden
+    - user_type == employee → can fetch only vendors in their tenant
+    - other (admin) → can fetch any vendor
+
+    Args:
+        vendor_id (int): the ID of the vendor to fetch
+        db (Session): the DB session
+        user_data (dict): the user data from the token
+
+    Returns:
+        ResponseWrapper: a successful response with the vendor data
+    """
     try:
         user_type = user_data.get("user_type")
         token_tenant_id = user_data.get("tenant_id")
@@ -352,12 +400,18 @@ def update_vendor(
 
     """
     Update a vendor by ID.
-    If user has a tenant_id in token, vendor must belong to that tenant.
-    Otherwise, allow updating across all tenants.
-    If tenant_id is not provided in payload, overwrite with tenant_id from token if present.
-    If vendor is not found, raise 404.
-    If tenant_id is not found, raise 404.
-    If no valid fields are provided for update, raise 400.
+
+    Only Admin and Employee users can update vendors.
+    The vendor object must include a tenant_id, which will be used to scope the vendor to a specific tenant.
+    The vendor object may also include an admin_email and admin_phone, which will be used to create a default VendorAdmin user for the vendor.
+    The vendor object may also include an admin_password, which will be used to set the password for the defaultVendorAdmin user. If not provided, the password will be set to "default@123".
+    The API will return a response containing the updated vendor object and the created defaultVendorAdmin user object.
+
+    Raises:
+        HTTPException: If the user is not authorized to update vendors, or if the user does not have a valid tenant_id.
+        HTTPException: If the vendor object is missing required fields such as tenant_id, admin_email, admin_phone.
+        HTTPException: If the vendor object is invalid, such as duplicate vendor_code or invalid email/phone.
+        HTTPException: If an unexpected error occurs while updating the vendor.
     """
     try:
         # First take from payload
