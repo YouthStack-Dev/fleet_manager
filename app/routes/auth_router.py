@@ -234,7 +234,7 @@ async def employee_login(
                 ),
             )
 
-        if not employee.is_active or not tenant.is_active:
+        if not employee.is_active or not tenant.is_active or employee_crud.is_employee_team_inactive(db, employee.employee_id):
             logger.warning(f"🚫 Login failed - Inactive account for employee: {employee.employee_id} ({form_data.username})")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
