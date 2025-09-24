@@ -9,6 +9,8 @@ from app.models.iam.role import Role
 from app.models.tenant import Tenant
 from app.crud.tenant import tenant_crud
 from app.crud.team import team_crud
+from sqlalchemy.exc import SQLAlchemyError
+
 from app.crud.employee import employee_crud
 from app.schemas.employee import EmployeeCreate, EmployeeResponse
 from app.schemas.iam.policy import PolicyResponse
@@ -16,7 +18,7 @@ from app.schemas.iam.role import RoleResponse
 from app.schemas.team import TeamCreate, TeamResponse
 from app.schemas.tenant import TenantCreate, TenantUpdate, TenantResponse, TenantPaginationResponse
 from app.utils.pagination import paginate_query
-from app.utils.response_utils import ResponseWrapper , handle_db_error
+from app.utils.response_utils import ResponseWrapper , handle_db_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
 logger = get_logger(__name__)
@@ -411,6 +413,7 @@ def update_tenant(
     Rules:
     - Only admins/superadmins can update.
     - Employees, vendors, and drivers → blocked with a clear message.
+    - If `permission_ids` are provided, update the tenant's admin policy.
     """
     try:
         # 🚫 Block employees, vendors, drivers explicitly
@@ -428,7 +431,7 @@ def update_tenant(
                 ),
             )
 
-        # ✅ Admin/SuperAdmin logic
+        # ✅ Fetch tenant
         db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
         if not db_tenant:
             logger.warning(f"Tenant update failed - not found: {tenant_id}")
@@ -441,18 +444,56 @@ def update_tenant(
             )
 
         update_data = tenant_update.dict(exclude_unset=True)
-        if not update_data:
-            logger.warning(f"No update fields provided for tenant: {tenant_id}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="No valid fields provided for update",
-                    error_code=status.HTTP_400_BAD_REQUEST,
-                ),
+
+        # --- Handle tenant field updates ---
+        tenant_fields = {k: v for k, v in update_data.items() if k != "permission_ids"}
+        for key, value in tenant_fields.items():
+            setattr(db_tenant, key, value)
+
+        # --- Handle policy updates ---
+        if "permission_ids" in update_data and update_data["permission_ids"]:
+            admin_policy = (
+                db.query(Policy)
+                .filter(
+                    Policy.tenant_id == tenant_id,
+                    Policy.name == f"{tenant_id}_AdminPolicy"
+                )
+                .first()
+            )
+            if not admin_policy:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message=f"Admin policy not found for tenant '{tenant_id}'",
+                        error_code=status.HTTP_404_NOT_FOUND,
+                    ),
+                )
+
+            permissions = (
+                db.query(Permission)
+                .filter(Permission.permission_id.in_(update_data["permission_ids"]))
+                .all()
             )
 
-        for key, value in update_data.items():
-            setattr(db_tenant, key, value)
+            found_ids = {p.permission_id for p in permissions}
+            missing_ids = set(update_data["permission_ids"]) - found_ids
+            if missing_ids:
+                logger.warning(f"Invalid permission IDs {list(missing_ids)} for tenant {tenant_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Some permission IDs are not found or invalid",
+                        error_code=status.HTTP_400_BAD_REQUEST,
+                        details={"invalid_permission_ids": list(missing_ids)},
+                    ),
+                )
+
+            # Replace existing permissions with new set
+            admin_policy.permissions = permissions
+            logger.info(
+                f"Updated permissions {[p.permission_id for p in permissions]} "
+                f"for policy {admin_policy.name}"
+            )
 
         db.commit()
         db.refresh(db_tenant)
@@ -465,22 +506,16 @@ def update_tenant(
             message=f"Tenant '{tenant_id}' updated successfully",
         )
 
+    except SQLAlchemyError as e:
+        # Handle DB errors in a structured way
+        raise handle_db_error(e)
     except HTTPException:
+        # Propagate known HTTPExceptions
         raise
     except Exception as e:
-        db.rollback()
-        raise handle_db_error(e)
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"Unexpected error while updating tenant {tenant_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=ResponseWrapper.error(
-                message=f"Unexpected error while updating tenant '{tenant_id}'",
-                error_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                details={"error": str(e)},
-            ),
-        )
+        # Catch-all for unexpected errors
+        logger.exception(f"Unexpected error while fetching vendors: {str(e)}")
+        raise handle_http_error(e)
 
 @router.patch("/{tenant_id}/toggle-status", response_model=dict, status_code=status.HTTP_200_OK)
 def toggle_tenant_status(

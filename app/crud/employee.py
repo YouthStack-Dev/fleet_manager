@@ -2,6 +2,7 @@ from typing import List, Dict, Any, Optional, Union
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, and_
 from app.models import Employee
+from app.models.team import Team
 from app.schemas.employee import EmployeeCreate, EmployeeUpdate
 from app.crud.base import CRUDBase
 from common_utils.auth.utils import hash_password
@@ -135,4 +136,15 @@ class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
         
         return employee, roles, all_permissions
 
+    def is_employee_team_inactive(self, db: Session, employee_id: int) -> bool:
+        """
+        Single-query version: join Employee → Team and check if team is inactive.
+        """
+        inactive_team_exists = (
+            db.query(Team)
+            .join(Employee, Employee.team_id == Team.team_id)
+            .filter(Employee.employee_id == employee_id, Team.is_active == False)
+            .first()
+        )
+        return inactive_team_exists is not None
 employee_crud = CRUDEmployee(Employee)

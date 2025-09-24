@@ -6,6 +6,7 @@ from app.models.driver import Driver
 from app.schemas.driver import DriverCreate, DriverUpdate, DriverResponse, DriverPaginationResponse
 from app.utils.pagination import paginate_query
 from common_utils.auth.permission_checker import PermissionChecker
+from common_utils.auth.utils import hash_password
 
 router = APIRouter(prefix="/drivers", tags=["drivers"])
 
@@ -80,7 +81,7 @@ def update_driver(
     
     # Hash password if it's being updated
     if "password" in update_data:
-        update_data["password"] = get_password_hash(update_data["password"])
+        update_data["password"] = hash_password(update_data["password"])
     
     for key, value in update_data.items():
         setattr(db_driver, key, value)

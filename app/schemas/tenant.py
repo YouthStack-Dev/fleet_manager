@@ -112,6 +112,7 @@ class TenantUpdate(BaseModel):
     address: Optional[str] = Field(None, max_length=255)
     longitude: Optional[float] = Field(None, ge=-180, le=180)
     latitude: Optional[float] = Field(None, ge=-90, le=90)
+    permission_ids: Optional[List[int]] = Field(None, min_items=1, description="List of permission IDs to assign to tenant admin policy")
     is_active: Optional[bool] = None
 
     @validator('name')
