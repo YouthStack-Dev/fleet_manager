@@ -23,13 +23,31 @@ def create_team(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["team.create"], check_tenant=True)),
 ):
-    """
-    Create a new team.
 
-    Rules:
-    - 🚫 Vendors/Drivers → forbidden
-    - 👷 Employees → tenant_id always taken from token (payload ignored)
-    - 👑 Admin/SuperAdmin → must provide tenant_id in payload
+    
+    
+    """
+    Create a new team under the provided tenant.
+
+    **Required permissions:** `team.create`
+
+    **Request body:**
+
+    * `tenant_id`: Unique identifier for the tenant (auto-filled for employees).
+    * `name`: Name of the team.
+    * `description`: Description of the team.
+
+    **Response:**
+
+    * `team`: Newly created team object.
+
+    **Status codes:**
+
+    * `201 Created`: Team created successfully.
+    * `400 Bad Request`: Invalid request body or permission IDs.
+    * `403 Forbidden`: Tenant ID missing in token for employee or tenant ID is required for admin.
+    * `500 Internal Server Error`: Unexpected server error while creating team.
+
     """
     try:
         user_type = user_data.get("user_type")
@@ -58,13 +76,13 @@ def create_team(
                     ),
                 )
 
-        elif user_type in {"admin", "superadmin"}:
-            # Admin/SuperAdmin → tenant_id must come from payload
+        elif user_type in {"admin"}:
+            # Admin → tenant_id must come from payload
             if not team.tenant_id:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ResponseWrapper.error(
-                        message="Tenant ID is required for admin/superadmin",
+                        message="Tenant ID is required for admin",
                         error_code="TENANT_ID_REQUIRED",
                     ),
                 )
@@ -108,13 +126,23 @@ def read_teams(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["team.read"], check_tenant=True)),
 ):
-    """
-    Fetch teams with pagination and employee counts.
 
-    Rules:
-    - 🚫 Vendors/Drivers → forbidden
-    - 👷 Employees → tenant_id always taken from token
-    - 👑 Admin/SuperAdmin → must provide tenant_id in query params (payload)
+    """
+    Fetch teams with role-based restrictions:
+    - driver → forbidden
+    - employee → only within their tenant
+    - admin → can filter across tenants using tenant
+    
+    Parameters:
+    - skip: int = Number of records to skip
+    - limit: int = Max number of records to fetch
+    - name: Optional[str] = Filter teams by name
+    - tenant_id: Optional[str] = Filter teams by tenant_id (Admin only)
+    - db: Session = Depends(get_db) = DB session
+    - user_data: Depends(PermissionChecker) = User data from token
+    
+    Returns:
+    - ResponseWrapper = Teams fetched successfully
     """
     try:
         user_type = user_data.get("user_type")
@@ -213,6 +241,21 @@ def read_team(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["team.read"], check_tenant=True)),
 ):
+    """
+    Fetch a team by ID with role-based restrictions:
+    - driver → forbidden
+    - employee → only within tenant
+    - vendor → only their vendor
+    - admin → unrestricted can filter across tenants using tenant
+
+    Args:
+        team_id (int): Team ID to fetch
+        db (Session): Database session
+        user_data (dict): User data with user_type and tenant_id
+
+    Returns:
+        ResponseWrapper: Response object with team data
+    """
     try:
         user_type = user_data.get("user_type")
         tenant_id = user_data.get("tenant_id")
@@ -280,6 +323,27 @@ def update_team(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["team.update"], check_tenant=True)),
 ):
+    
+    
+    
+    """
+    Update a team by ID.
+
+    Rules:
+    - vendors/drivers → forbidden
+    - employees → can only update teams in their tenant
+    - admins → can update any team under the provided tenant
+
+    Parameters:
+    - team_id: int = Team ID to update
+    - team_update: TeamUpdate = Team update object
+    - db: Session = Depends(get_db) = DB session
+    - user_data: Depends(PermissionChecker) = User data from token
+
+    Returns:
+    - ResponseWrapper = Team updated successfully
+    """
+    
     try:
         user_type = user_data.get("user_type")
         tenant_id = user_data.get("tenant_id")
@@ -333,13 +397,22 @@ def toggle_team_status(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["team.update"], check_tenant=True)),
 ):
+
     """
-    Toggle a team's active/inactive status.
+    Toggle a team's active status (Admins and Employees only).
 
     Rules:
-    - 🚫 Vendors/Drivers → forbidden
-    - 👷 Employees → can only toggle teams in their tenant
-    - 👑 Admin/SuperAdmin → can toggle any team under the provided tenant
+    - Employees can only toggle teams in their tenant.
+    - Vendors and Drivers are not allowed to toggle team status.
+    - Admins can toggle any team's status.
+
+    Parameters:
+    - team_id: int = Team ID to toggle
+    - db: Session = Depends(get_db) = DB session
+    - user_data: Depends(PermissionChecker) = User data from token
+
+    Returns:
+    - ResponseWrapper = Team status updated successfully
     """
     try:
         user_type = user_data.get("user_type")
