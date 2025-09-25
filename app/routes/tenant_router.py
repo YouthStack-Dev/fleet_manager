@@ -180,7 +180,7 @@ def create_tenant(
             logger.info(f"Linked role {admin_role_name} to policy {admin_policy_name}")
 
             # --- Create Employee (Tenant Admin User) ---
-            employee_name = tenant.employee_name or f"Admin_{new_tenant.tenant_id}"
+            employee_name = tenant.employee_name or f"Admin{new_tenant.name}"
             employee_email = tenant.employee_email
             employee_phone = tenant.employee_phone
 
@@ -198,7 +198,7 @@ def create_tenant(
                 role_id=admin_role.role_id,
                 team_id=default_team.team_id,
                 name=employee_name,
-                employee_code=tenant.employee_code or f"EMP_{new_tenant.tenant_id}_001",
+                employee_code=tenant.employee_code or f"EMP{new_tenant.tenant_id}001",
                 email=employee_email,
                 password=tenant.employee_password or "default@123",
                 phone=employee_phone,

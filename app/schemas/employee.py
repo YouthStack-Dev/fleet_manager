@@ -89,7 +89,7 @@ class BaseValidatorsMixin:
 
         return self
 
-class EmployeeBase(BaseModel, BaseValidatorsMixin):
+class EmployeeBase(BaseModel):
     name: str
     email: EmailStr
     phone: str
@@ -100,7 +100,7 @@ class EmployeeBase(BaseModel, BaseValidatorsMixin):
     special_needs: Optional[SpecialNeedsEnum] = None
     special_needs_start_date: Optional[date] = None
     special_needs_end_date: Optional[date] = None
-    address: str
+    address: Optional[str] = None
     latitude: Optional[float] = Field(None, ge=-90, le=90)  # Optional to allow null value when creating employee
     longitude: Optional[float] = Field(None, ge=-180, le=180)
     gender: Optional[GenderEnum] = None
@@ -129,7 +129,22 @@ class EmployeeBase(BaseModel, BaseValidatorsMixin):
     )
 
 
-class EmployeeCreate(EmployeeBase , BaseValidatorsMixin):
+class EmployeeCreate(BaseModel, BaseValidatorsMixin):
+    name: str
+    email: EmailStr
+    phone: str
+    employee_code: str
+    team_id: int
+    tenant_id: Optional[str] = None
+    alternate_phone: Optional[str] = None
+    special_needs: Optional[SpecialNeedsEnum] = None
+    special_needs_start_date: Optional[date] = None
+    special_needs_end_date: Optional[date] = None
+    address: Optional[str] = None
+    latitude: Optional[float] = Field(None, ge=-90, le=90)  # Optional to allow null value when creating employee
+    longitude: Optional[float] = Field(None, ge=-180, le=180)
+    gender: Optional[GenderEnum] = None
+    is_active: bool = True
     password: str  # Required when creating
     model_config = ConfigDict(
         json_schema_extra={

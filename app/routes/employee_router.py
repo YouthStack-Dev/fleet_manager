@@ -121,46 +121,161 @@ def create_employee(
         logger.exception(f"Unexpected error while creating employee: {str(e)}")
         raise handle_http_error(e)
 
-
-@router.get("/", response_model=EmployeePaginationResponse)
+@router.get("/", status_code=status.HTTP_200_OK)
 def read_employees(
     skip: int = 0,
     limit: int = 100,
     name: Optional[str] = None,
-    email: Optional[str] = None,
+    tenant_id: Optional[str] = None,
     team_id: Optional[int] = None,
-    is_active: Optional[bool] = None,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["employee.read"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["employee.read"], check_tenant=True)),
 ):
-    query = db.query(Employee)
-    
-    # Apply filters
-    if name:
-        query = query.filter(Employee.name.ilike(f"%{name}%"))
-    if email:
-        query = query.filter(Employee.email.ilike(f"%{email}%"))
-    if team_id:
-        query = query.filter(Employee.team_id == team_id)
-    if is_active is not None:
-        query = query.filter(Employee.is_active == is_active)
-    
-    total, items = paginate_query(query, skip, limit)
-    return {"total": total, "items": items}
+    """
+    Fetch employees with role-based restrictions:
+    - driver/vendor → forbidden
+    - employee → only within their tenant
+    - admin → must filter by tenant_id
+    - team_id → optional filter, must belong to the same tenant
+    """
+    try:
+        user_type = user_data.get("user_type")
 
-@router.get("/{employee_id}", response_model=EmployeeResponse)
-def read_employee(
-    employee_id: int, 
-    db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["employee.read"], check_tenant=True))
-):
-    db_employee = db.query(Employee).filter(Employee.employee_id == employee_id).first()
-    if not db_employee:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Employee with ID {employee_id} not found"
+        # 🚫 Vendors/Drivers forbidden
+        if user_type in {"vendor", "driver"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to view employees",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # Tenant enforcement
+        if user_type == "employee":
+            tenant_id = user_data.get("tenant_id")
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+
+        elif user_type == "admin":
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID is required for admin",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+
+            # Ensure tenant exists
+            if not tenant_crud.get_by_id(db, tenant_id=tenant_id):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message=f"Tenant {tenant_id} not found",
+                        error_code="TENANT_NOT_FOUND",
+                    ),
+                )
+
+        # --- Team filter check ---
+        if team_id is not None:
+            team = team_crud.get_by_id(db, team_id=team_id)
+            if not team:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message=f"Team {team_id} does not belong to tenant {tenant_id}",
+                        error_code="TEAM_NOT_IN_TENANT",
+                    ),
+                )
+
+        # Query employees
+        query = db.query(Employee).filter(Employee.tenant_id == tenant_id)
+        if name:
+            query = query.filter(Employee.name.ilike(f"%{name}%"))
+        if team_id is not None:
+            query = query.filter(Employee.team_id == team_id)
+
+        total, items = paginate_query(query, skip, limit)
+
+        employees = [
+            EmployeeResponse.model_validate(emp, from_attributes=True).dict()
+            for emp in items
+        ]
+
+        return ResponseWrapper.success(
+            data={"total": total, "items": employees},
+            message="Employees fetched successfully"
         )
-    return db_employee
+
+    except SQLAlchemyError as e:
+        raise handle_db_error(e)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error while fetching employees: {str(e)}")
+        raise handle_http_error(e)
+
+@router.get("/{employee_id}", status_code=status.HTTP_200_OK)
+def read_employee(
+    employee_id: int,
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["employee.read"], check_tenant=True)),
+):
+    """
+    Fetch an employee by ID with role-based restrictions:
+    - driver/vendor → forbidden
+    - employee → only within their tenant
+    - admin → unrestricted (but tenant_id should still match employee)
+    """
+    try:
+        user_type = user_data.get("user_type")
+        tenant_id = user_data.get("tenant_id")
+
+        # 🚫 Vendors/Drivers forbidden
+        if user_type in {"vendor", "driver"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to view employees",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # 🔒 Tenant enforcement
+        query = db.query(Employee).filter(Employee.employee_id == employee_id)
+        if user_type == "employee":
+            query = query.filter(Employee.tenant_id == tenant_id)
+
+        db_employee = query.first()
+        if not db_employee:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Employee with ID {employee_id} not found",
+                    error_code="EMPLOYEE_NOT_FOUND",
+                ),
+            )
+
+        employee_data = EmployeeResponse.model_validate(db_employee, from_attributes=True).dict()
+
+        return ResponseWrapper.success(
+            data={"employee": employee_data}, message="Employee fetched successfully"
+        )
+
+    except SQLAlchemyError as e:
+        raise handle_db_error(e)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error while fetching employee {employee_id}: {str(e)}")
+        raise handle_http_error(e)
 
 @router.put("/{employee_id}", response_model=EmployeeResponse)
 def update_employee(
