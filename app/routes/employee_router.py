@@ -386,6 +386,90 @@ def update_employee(
         logger.exception(f"Unexpected error while updating employee {employee_id}: {str(e)}")
         raise handle_http_error(e)
 
+@router.patch("/{employee_id}/toggle-status", status_code=status.HTTP_200_OK)
+def toggle_employee_status(
+    employee_id: int,
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["employee.update"], check_tenant=True)),
+):
+    """
+    Toggle employee active/inactive status.
+    - driver/vendor → forbidden
+    - employee → only within their tenant
+    - admin → must belong to tenant
+    """
+    try:
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        # 🚫 Vendors/Drivers forbidden
+        if user_type in {"vendor", "driver"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to modify employees",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # Fetch employee
+        db_employee = db.query(Employee).filter(Employee.employee_id == employee_id).first()
+        if not db_employee:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Employee with ID {employee_id} not found",
+                    error_code="EMPLOYEE_NOT_FOUND",
+                ),
+            )
+
+        # 🔒 Tenant enforcement
+        if user_type == "employee":
+            if db_employee.tenant_id != token_tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="You cannot modify employees outside your tenant",
+                        error_code="TENANT_FORBIDDEN",
+                    ),
+                )
+        elif user_type == "admin":
+            tenant = tenant_crud.get_by_id(db, tenant_id=db_employee.tenant_id)
+            if not tenant:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message=f"Tenant {db_employee.tenant_id} not found",
+                        error_code="TENANT_NOT_FOUND",
+                    ),
+                )
+
+        # 🚦 Toggle status
+        db_employee.is_active = not db_employee.is_active
+        db.commit()
+        db.refresh(db_employee)
+
+        logger.info(
+            f"Employee {employee_id} status toggled to "
+            f"{'active' if db_employee.is_active else 'inactive'} "
+            f"(tenant_id={db_employee.tenant_id})"
+        )
+
+        return ResponseWrapper.success(
+            data={
+                "employee_id": db_employee.employee_id,
+                "is_active": db_employee.is_active,
+            },
+            message=f"Employee status updated to {'active' if db_employee.is_active else 'inactive'}",
+        )
+
+    except SQLAlchemyError as e:
+        raise handle_db_error(e)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error while toggling employee {employee_id} status: {str(e)}")
+        raise handle_http_error(e)
 
 # @router.delete("/{employee_id}", status_code=status.HTTP_204_NO_CONTENT)
 # def delete_employee(
