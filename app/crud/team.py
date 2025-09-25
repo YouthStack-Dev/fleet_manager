@@ -48,6 +48,16 @@ class CRUDTeam(CRUDBase[Team, TeamCreate, TeamUpdate]):
             .limit(limit)
             .all()
         )
+    def is_team_in_tenant(self, db: Session, *, team_id: int, tenant_id: str) -> bool:
+        """
+        Check if a team belongs to the given tenant.
+        """
+        return (
+            db.query(Team)
+            .filter(Team.team_id == team_id, Team.tenant_id == tenant_id)
+            .first()
+            is not None
+        )   
 
     def count(self, db: Session, *, tenant_id: str) -> int:
         """Count teams per tenant"""

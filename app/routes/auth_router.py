@@ -229,7 +229,7 @@ async def employee_login(
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=ResponseWrapper.error(
-                    message="Incorrect email or password",
+                    message="Incorrect password",
                     error_code=status.HTTP_401_UNAUTHORIZED,
                 ),
             )
