@@ -1,7 +1,8 @@
-from sqlite3 import IntegrityError
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from email.mime import message
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import Optional
+from app.crud.tenant import tenant_crud
 from app.database.session import get_db
 from app.models.iam.permission import Permission
 from app.models.iam.policy import Policy
@@ -10,29 +11,33 @@ from app.models.tenant import Tenant
 from app.crud.tenant import tenant_crud
 from app.crud.team import team_crud
 from sqlalchemy.exc import SQLAlchemyError
+from app.models.tenant import Tenant
+from app.schemas.team import TeamCreate, TeamUpdate, TeamResponse, TeamPaginationResponse
+from app.utils.pagination import paginate_query
+from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_db_error, handle_http_error, handle_http_error
+from common_utils.auth.permission_checker import PermissionChecker
+from app.core.logging_config import get_logger
+from app.core.email_service import get_email_service
 
 from app.crud.employee import employee_crud
 from app.schemas.employee import EmployeeCreate, EmployeeResponse
 from app.schemas.iam.policy import PolicyResponse
 from app.schemas.iam.role import RoleResponse
-from app.schemas.team import TeamCreate, TeamResponse
 from app.schemas.tenant import TenantCreate, TenantUpdate, TenantResponse, TenantPaginationResponse
 from app.utils.pagination import paginate_query
 from app.utils.response_utils import ResponseWrapper , handle_db_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
+
 logger = get_logger(__name__)
 router = APIRouter(prefix="/tenants", tags=["tenants"])
-
-
-
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def create_tenant(
     tenant: TenantCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["admin.tenant.create"], check_tenant=False)),
-    
 ):
     """
     Create a new tenant with associated default team, admin role, policy, and employee.
@@ -217,6 +222,22 @@ def create_tenant(
                 f"{new_employee.name} ({new_employee.email})"
             )
 
+        # --- Send Welcome Emails via Background Task ---
+        background_tasks.add_task(
+            send_tenant_welcome_emails,
+            tenant_data={
+                'name': new_tenant.name,
+                'tenant_id': new_tenant.tenant_id,
+                'admin_name': employee_name,
+            },
+            admin_email=employee_email,
+            admin_name=employee_name,
+            login_credentials={
+                'username': employee_email,
+                'password': tenant.employee_password or "default@123"
+            }
+        )
+
         # --- Response ---
         return ResponseWrapper.success(
             data={
@@ -226,7 +247,7 @@ def create_tenant(
                 "admin_policy": PolicyResponse.model_validate(admin_policy),
                 "employee": EmployeeResponse.model_validate(new_employee),
             },
-            message="Tenant, default team, admin role, policy, and employee created successfully",
+            message="Tenant, default team, admin role, policy, and employee created successfully. Welcome emails will be sent shortly.",
         )
 
     except HTTPException:
@@ -245,6 +266,43 @@ def create_tenant(
                 details={"error": str(e)},
             ),
         )
+
+def send_tenant_welcome_emails(
+    tenant_data: dict, 
+    admin_email: str, 
+    admin_name: str, 
+    login_credentials: dict
+):
+    """Background task to send both welcome and tenant created emails using the simplified email service"""
+    try:
+        email_service = get_email_service()
+        
+        # Send welcome email with login credentials
+        welcome_success = email_service.send_welcome_email(
+            user_email=admin_email,
+            user_name=admin_name,
+            login_credentials=login_credentials
+        )
+        
+        # Send tenant created notification
+        tenant_success = email_service.send_tenant_created_email(
+            admin_email=admin_email,
+            tenant_data=tenant_data
+        )
+        
+        # Log results
+        if welcome_success and tenant_success:
+            logger.info(f"Both welcome emails sent successfully for tenant creation: {tenant_data['tenant_id']}")
+        elif welcome_success:
+            logger.warning(f"Welcome email sent but tenant notification failed for tenant {tenant_data['tenant_id']}")
+        elif tenant_success:
+            logger.warning(f"Tenant notification sent but welcome email failed for tenant {tenant_data['tenant_id']}")
+        else:
+            logger.error(f"Both welcome emails failed for tenant {tenant_data['tenant_id']}")
+        
+    except Exception as e:
+        logger.error(f"Failed to send tenant welcome emails: {str(e)}")
+
 @router.get("/", response_model=dict, status_code=status.HTTP_200_OK)
 def read_tenants(
     skip: int = Query(0, ge=0, description="Number of records to skip"),
