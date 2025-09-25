@@ -277,46 +277,129 @@ def read_employee(
         logger.exception(f"Unexpected error while fetching employee {employee_id}: {str(e)}")
         raise handle_http_error(e)
 
-@router.put("/{employee_id}", response_model=EmployeeResponse)
+@router.put("/{employee_id}", status_code=status.HTTP_200_OK)
 def update_employee(
-    employee_id: int, 
-    employee_update: EmployeeUpdate, 
+    employee_id: int,
+    employee_update: EmployeeUpdate,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["employee.update"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["employee.update"], check_tenant=True)),
 ):
-    db_employee = db.query(Employee).filter(Employee.employee_id == employee_id).first()
-    if not db_employee:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Employee with ID {employee_id} not found"
-        )
-    
-    update_data = employee_update.dict(exclude_unset=True)
-    
-    # Hash password if it's being updated
-    if "password" in update_data:
-        update_data["password"] = hash_password(update_data["password"])
-    
-    for key, value in update_data.items():
-        setattr(db_employee, key, value)
-    
-    db.commit()
-    db.refresh(db_employee)
-    return db_employee
+    """
+    Update an employee with role-based restrictions:
+    - driver/vendor → forbidden
+    - employee → only within their tenant
+    - admin → must provide valid tenant_id (employee must belong to that tenant)
+    """
+    try:
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
 
-@router.delete("/{employee_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_employee(
-    employee_id: int, 
-    db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["employee.delete"], check_tenant=True))
-):
-    db_employee = db.query(Employee).filter(Employee.employee_id == employee_id).first()
-    if not db_employee:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Employee with ID {employee_id} not found"
+        # 🚫 Vendors/Drivers forbidden
+        if user_type in {"vendor", "driver"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to update employees",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # Fetch employee
+        db_employee = db.query(Employee).filter(Employee.employee_id == employee_id).first()
+        if not db_employee:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Employee with ID {employee_id} not found",
+                    error_code="EMPLOYEE_NOT_FOUND",
+                ),
+            )
+
+        # 🔒 Tenant enforcement
+        if user_type == "employee":
+            if db_employee.tenant_id != token_tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="You cannot update employees outside your tenant",
+                        error_code="TENANT_FORBIDDEN",
+                    ),
+                )
+        elif user_type == "admin":
+            if not db_employee.tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Employee tenant is missing in DB",
+                        error_code="TENANT_MISSING",
+                    ),
+                )
+            tenant = tenant_crud.get_by_id(db, tenant_id=db_employee.tenant_id)
+            if not tenant:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message=f"Tenant {db_employee.tenant_id} not found",
+                        error_code="TENANT_NOT_FOUND",
+                    ),
+                )
+
+        # Apply updates
+        update_data = employee_update.dict(exclude_unset=True)
+
+        if "password" in update_data:
+            update_data["password"] = hash_password(update_data["password"])
+
+        # 🚦 Team validation if updating team_id
+        if "team_id" in update_data and update_data["team_id"] is not None:
+            if not team_crud.is_team_in_tenant(
+                db, team_id=update_data["team_id"], tenant_id=db_employee.tenant_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message=f"Team {update_data['team_id']} does not belong to tenant {db_employee.tenant_id}",
+                        error_code="TEAM_TENANT_MISMATCH",
+                    ),
+                )
+
+        for key, value in update_data.items():
+            setattr(db_employee, key, value)
+
+        db.commit()
+        db.refresh(db_employee)
+
+        logger.info(
+            f"Employee updated successfully: employee_id={employee_id}, tenant_id={db_employee.tenant_id}"
         )
+
+        return ResponseWrapper.success(
+            data={"employee": EmployeeResponse.model_validate(db_employee, from_attributes=True)},
+            message="Employee updated successfully",
+        )
+
+    except SQLAlchemyError as e:
+        raise handle_db_error(e)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error while updating employee {employee_id}: {str(e)}")
+        raise handle_http_error(e)
+
+
+# @router.delete("/{employee_id}", status_code=status.HTTP_204_NO_CONTENT)
+# def delete_employee(
+#     employee_id: int, 
+#     db: Session = Depends(get_db),
+#     user_data=Depends(PermissionChecker(["employee.delete"], check_tenant=True))
+# ):
+#     db_employee = db.query(Employee).filter(Employee.employee_id == employee_id).first()
+#     if not db_employee:
+#         raise HTTPException(
+#             status_code=status.HTTP_404_NOT_FOUND,
+#             detail=f"Employee with ID {employee_id} not found"
+#         )
     
-    db.delete(db_employee)
-    db.commit()
-    return None
+#     db.delete(db_employee)
+#     db.commit()
+#     return None

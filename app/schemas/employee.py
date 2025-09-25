@@ -31,6 +31,11 @@ class BaseValidatorsMixin:
         if not re.match(PHONE_REGEX, v):
             raise ValueError("Phone must be in E.164 format (e.g., +1234567890)")
         return v
+    @field_validator("address")
+    def validate_address(cls, v: Optional[str]):
+        if v and not re.match(r'^[a-zA-Z0-9\s.,#-]{1,250}$', v):
+            raise ValueError("Address must be 250 characters or less")
+        return v
 
     @field_validator("alternate_phone")
     def validate_alternate_phone(cls, v: Optional[str]):
@@ -97,7 +102,7 @@ class EmployeeBase(BaseModel):
     team_id: int
     tenant_id: Optional[str] = None
     alternate_phone: Optional[str] = None
-    special_needs: Optional[SpecialNeedsEnum] = None
+    special_needs: Optional[str] = None
     special_needs_start_date: Optional[date] = None
     special_needs_end_date: Optional[date] = None
     address: Optional[str] = None
@@ -177,7 +182,7 @@ class EmployeeUpdate(BaseModel, BaseValidatorsMixin):
     employee_code: Optional[str] = None
     team_id: Optional[int] = None
     alternate_phone: Optional[str] = None
-    special_needs: Optional[str] = None
+    special_needs: Optional[SpecialNeedsEnum] = None
     special_needs_start_date: Optional[date] = None
     special_needs_end_date: Optional[date] = None
     address: Optional[str] = None
