@@ -5,13 +5,15 @@ from datetime import datetime
 class TeamBase(BaseModel):
     name: str
     description: Optional[str] = None
+    is_active: bool = True
 
 class TeamCreate(TeamBase):
-    tenant_id: str
+    tenant_id: Optional[str] = None
 
 class TeamUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    is_active: Optional[bool] = None
 
 class TeamResponse(TeamBase):
     team_id: int

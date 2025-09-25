@@ -27,6 +27,9 @@ class CRUDTenant(CRUDBase[Tenant, TenantCreate, TenantUpdate]):
         db_obj = Tenant(
             tenant_id=obj_in.tenant_id,
             name=obj_in.name,
+            address=obj_in.address,
+            longitude=obj_in.longitude,
+            latitude=obj_in.latitude,
             is_active=obj_in.is_active,
         )
         db.add(db_obj)

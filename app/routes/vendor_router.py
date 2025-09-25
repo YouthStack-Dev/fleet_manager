@@ -1,5 +1,7 @@
+import json
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 from typing import Optional
 from app.database.session import get_db
 from app.models.iam.role import Role
@@ -7,7 +9,7 @@ from app.models.vendor import Vendor
 from app.models.vendor_user import VendorUser
 from app.schemas.vendor import VendorCreate, VendorUpdate, VendorResponse, VendorPaginationResponse
 from app.utils.pagination import paginate_query
-from app.utils.response_utils import ResponseWrapper, handle_db_error
+from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
 from app.crud.tenant import tenant_crud
@@ -22,9 +24,39 @@ def create_vendor(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.create"], check_tenant=False)),
 ):
+    """
+    Create a new vendor.
+
+    Only Admin and Employee users can create vendors.
+    The vendor object must include a tenant_id, which will be used to scope the vendor to a specific tenant.
+    The vendor object may also include an admin_email and admin_phone, which will be used to create a default VendorAdmin user for the vendor.
+    The vendor object may also include an admin_password, which will be used to set the password for the defaultVendorAdmin user. If not provided, the password will be set to "default@123".
+    The API will return a response containing the created vendor object and the created defaultVendorAdmin user object.
+
+    Raises:
+        HTTPException: If the user is not authorized to create vendors, or if the user does not have a valid tenant_id.
+        HTTPException: If the tenant_id is invalid or inactive.
+        HTTPException: If the vendor object is missing required fields such as tenant_id, admin_email, admin_phone.
+        HTTPException: If the vendor object is invalid, such as duplicate vendor_code or invalid email/phone.
+        HTTPException: If an unexpected error occurs while creating the vendor.
+    """
     try:
         logger.info(f"Create vendor request: {vendor.dict()}")
         logger.debug(f"User data from token: {user_data}")
+
+        # --- Restrict by user_type ---
+        if user_data.get("user_type") not in ["admin", "employee"]:
+            logger.warning(
+                f"Unauthorized vendor creation attempt by user_type={user_data.get('user_type')}, "
+                f"user_id={user_data.get('user_id')}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Only Admin and Employee users can create vendors",
+                    error_code="UNAUTHORIZED_USER_TYPE",
+                ),
+            )
 
         # --- Override tenant_id from token if present ---
         if user_data.get("tenant_id"):
@@ -88,6 +120,7 @@ def create_vendor(
         # --- Create Default VendorAdmin User ---
         default_password = vendor.admin_password or "default@123"
         vendor_user_in = VendorUser(
+            tenant_id=vendor.tenant_id,   # ✅ always set
             vendor_id=db_vendor.vendor_id,
             name=vendor.admin_name or f"Admin_{db_vendor.vendor_id}",
             email=vendor.admin_email,
@@ -128,24 +161,6 @@ def create_vendor(
         raise handle_db_error(e)
     except Exception as e:
         db.rollback()
-        logger.error(f"Unexpected error while creating vendor: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=ResponseWrapper.error(
-                message="Unexpected error while creating vendor",
-                error_code="VENDOR_CREATION_FAILED",
-            ),
-        )
-
-
-    except HTTPException:
-        db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        raise handle_db_error(e)
-    except Exception as e:
-        db.rollback()
         logger.exception(f"Unexpected error while creating vendor: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -165,32 +180,95 @@ def read_vendors(
     name: Optional[str] = Query(None, description="Filter vendors by name"),
     code: Optional[str] = Query(None, description="Filter vendors by vendor_code"),
     is_active: Optional[bool] = Query(None, description="Filter vendors by active status"),
+    tenant: Optional[str] = Query(None, description="Filter by tenant_id (SuperAdmin only)"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vendor.read"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["vendor.read"], check_tenant=True)),
 ):
 
+    
     """
-    Fetch paginated list of vendors with optional filters.
+    Fetch a list of vendors with optional filters.
+
+    Rules:
+    - user_type == vendor/driver or missing → Forbidden
+    - user_type == employee → can fetch only their tenant
+    - other (admin) → can apply filters and fetch multiple vendors
 
     Args:
-        skip (int): number of records to skip.
-        limit (int): max number of records to fetch.
-        name (Optional[str]): filter vendors by name.
-        code (Optional[str]): filter vendors by vendor_code.
-        is_active (Optional[bool]): filter vendors by active status.
+        skip (int): number of records to skip
+        limit (int): max number of records to fetch
+        name (Optional[str]): filter vendors by name
+        code (Optional[str]): filter vendors by vendor_code
+        is_active (Optional[bool]): filter vendors by active status
+        tenant (Optional[str]): filter by tenant_id (Admin only)
 
     Returns:
-        ResponseWrapper: a successful response with the fetched vendor data.
+        ResponseWrapper: a successful response with the list of vendors
     """
     try:
-        query = db.query(Vendor)
-
-        # Apply tenant scoping if present in JWT
+        user_type = user_data.get("user_type")
         tenant_id = user_data.get("tenant_id")
-        if tenant_id:
+        vendor_id = user_data.get("vendor_id")
+
+        # --- Restrict by user_type ---
+        if user_type == "driver":
+            logger.warning(f"Driver tried to access vendor list: user_id={user_data.get('user_id')}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Drivers are not allowed to fetch vendors",
+                    error_code="FORBIDDEN_USER_TYPE",
+                ),
+            )
+
+        # Vendor user → only their own vendor
+        if user_type == "vendor":
+            if not vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Vendor ID missing in token for vendor",
+                        error_code="VENDOR_ID_REQUIRED",
+                    ),
+                )
+            vendor = db.query(Vendor).filter(Vendor.vendor_id == int(vendor_id)).first()
+            if not vendor:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message=f"Vendor not found for vendor_id={vendor_id}",
+                        error_code="VENDOR_NOT_FOUND",
+                    ),
+                )
+            vendor_response = VendorResponse.model_validate(vendor, from_attributes=True)
+            logger.info(f"Fetched vendor details for vendor_id={vendor_id}, user_type=vendor")
+
+            # ✅ Return in pagination format for schema consistency
+            return ResponseWrapper.success(
+                data=VendorPaginationResponse(total=1, items=[vendor_response]),
+                message="Vendor details fetched successfully",
+            )
+
+        # Employee → scoped by tenant
+        query = db.query(Vendor)
+        if user_type == "employee":
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
             query = query.filter(Vendor.tenant_id == tenant_id)
 
-        # Apply filters
+        # Admin → unrestricted
+        elif user_type == "admin":
+            logger.info("teant filter ignored for admin users")
+            if tenant:
+                query = query.filter(Vendor.tenant_id == tenant)
+
+        # --- Apply other optional filters ---
         if name:
             query = query.filter(Vendor.name.ilike(f"%{name}%"))
         if code:
@@ -203,27 +281,23 @@ def read_vendors(
 
         logger.info(
             f"Fetched {len(vendors)} vendors "
-            f"(total={total}, tenant={tenant_id or 'ALL'}, skip={skip}, limit={limit})"
+            f"(total={total}, user_type={user_type}, tenant={tenant_id or tenant or 'ALL'}, vendor={vendor_id or 'ALL'}, skip={skip}, limit={limit})"
         )
-
         return ResponseWrapper.success(
             data=VendorPaginationResponse(total=total, items=vendors),
-            message="Vendors fetched successfully"
+            message="Vendors fetched successfully",
         )
+
+    except SQLAlchemyError as e:
+        # Handle DB errors in a structured way
+        raise handle_db_error(e)
     except HTTPException:
+        # Propagate known HTTPExceptions
         raise
     except Exception as e:
-        raise handle_db_error(e)
-    except Exception as e:
-        logger.exception(f"Unexpected error while fetching vendors: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=ResponseWrapper.error(
-                message="Unexpected error while fetching vendors",
-                error_code="DATABASE_ERROR",
-                details={"error": str(e)},
-            ),
-        )
+        # Catch-all for unexpected errors
+        logger.exception(f"Unexpected error while fetching vendors: {str(e)}")
+        raise handle_http_error(e)
 
 
 
@@ -233,61 +307,87 @@ def read_vendor(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.read"], check_tenant=True))
 ):
-
+    
+    
+    
     """
     Fetch a vendor by ID.
-    If user has a tenant_id in token, vendor must belong to that tenant.
-    Otherwise, allow fetching across all tenants.
-    If vendor is not found, raise 404.
-    If tenant_id is not found, raise 404.
+
+    Rules:
+    - user_type == vendor/driver or missing → Forbidden
+    - user_type == employee → can fetch only vendors in their tenant
+    - other (admin) → can fetch any vendor
+
+    Args:
+        vendor_id (int): the ID of the vendor to fetch
+        db (Session): the DB session
+        user_data (dict): the user data from the token
+
+    Returns:
+        ResponseWrapper: a successful response with the vendor data
     """
     try:
-        query = db.query(Vendor).filter(Vendor.vendor_id == vendor_id)
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+        token_vendor_id = user_data.get("vendor_id")
 
-        # Apply tenant scoping if tenant_id is present
-        tenant_id = user_data.get("tenant_id")
-        if tenant_id:
-            query = query.filter(Vendor.tenant_id == tenant_id)
+        query = db.query(Vendor)
+
+        # Vendor user → only their own vendor
+        if user_type == "vendor":
+            if not token_vendor_id or int(token_vendor_id) != vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Vendors can only access their own record",
+                        error_code="FORBIDDEN_VENDOR_ACCESS"
+                    )
+                )
+            query = query.filter(Vendor.vendor_id == vendor_id)
+
+        # Employee → only vendors in their tenant
+        elif user_type == "employee":
+            if not token_tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED"
+                    )
+                )
+            query = query.filter(Vendor.vendor_id == vendor_id, Vendor.tenant_id == token_tenant_id)
+
+        # Admin → unrestricted
+        else:
+            query = query.filter(Vendor.vendor_id == vendor_id)
 
         db_vendor = query.first()
 
         if not db_vendor:
-            logger.warning(
-                f"Vendor fetch failed - not found or not in tenant scope: "
-                f"vendor_id={vendor_id}, tenant={tenant_id or 'ALL'}"
-            )
+            scope = token_tenant_id if token_tenant_id else "ALL"
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error(
-                    message=f"Vendor with ID '{vendor_id}' not found"
-                            f"{' in tenant ' + tenant_id if tenant_id else ''}",
-                    error_code="VENDOR_NOT_FOUND",
-                ),
+                    message=f"Vendor with ID '{vendor_id}' not found in tenant '{scope}'",
+                    error_code="VENDOR_NOT_FOUND"
+                )
             )
 
-        logger.info(
-            f"Vendor fetched successfully: vendor_id={vendor_id}, tenant={tenant_id or 'ALL'}"
-        )
+        logger.info(f"Vendor fetched successfully: vendor_id={vendor_id}, scope={token_tenant_id or 'ALL'}")
 
         return ResponseWrapper.success(
             data=VendorResponse.model_validate(db_vendor, from_attributes=True),
             message="Vendor fetched successfully"
         )
 
+    except SQLAlchemyError as e:
+        raise handle_db_error(e)
     except HTTPException:
         raise
     except Exception as e:
-        raise handle_db_error(e)
-    except Exception as e:
         logger.exception(f"Unexpected error while fetching vendor {vendor_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=ResponseWrapper.error(
-                message=f"Unexpected error while fetching vendor '{vendor_id}'",
-                error_code="DATABASE_ERROR",
-                details={"error": str(e)},
-            ),
-        )
+        raise handle_http_error(e)
+
 
 
 @router.put("/{vendor_id}", status_code=status.HTTP_200_OK)
@@ -300,12 +400,18 @@ def update_vendor(
 
     """
     Update a vendor by ID.
-    If user has a tenant_id in token, vendor must belong to that tenant.
-    Otherwise, allow updating across all tenants.
-    If tenant_id is not provided in payload, overwrite with tenant_id from token if present.
-    If vendor is not found, raise 404.
-    If tenant_id is not found, raise 404.
-    If no valid fields are provided for update, raise 400.
+
+    Only Admin and Employee users can update vendors.
+    The vendor object must include a tenant_id, which will be used to scope the vendor to a specific tenant.
+    The vendor object may also include an admin_email and admin_phone, which will be used to create a default VendorAdmin user for the vendor.
+    The vendor object may also include an admin_password, which will be used to set the password for the defaultVendorAdmin user. If not provided, the password will be set to "default@123".
+    The API will return a response containing the updated vendor object and the created defaultVendorAdmin user object.
+
+    Raises:
+        HTTPException: If the user is not authorized to update vendors, or if the user does not have a valid tenant_id.
+        HTTPException: If the vendor object is missing required fields such as tenant_id, admin_email, admin_phone.
+        HTTPException: If the vendor object is invalid, such as duplicate vendor_code or invalid email/phone.
+        HTTPException: If an unexpected error occurs while updating the vendor.
     """
     try:
         # First take from payload
@@ -386,62 +492,84 @@ def update_vendor(
 @router.patch("/{vendor_id}/toggle-status", status_code=status.HTTP_200_OK)
 def toggle_vendor_status(
     vendor_id: int,
-    tenant_id: Optional[int] = None,
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (Admin only)"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.update"], check_tenant=True))
 ):
-
     """
     Toggle a vendor's active status.
 
-    - SuperAdmin: can toggle active status of vendors across all tenants.
-    - Tenant admin: can only toggle active status of vendors within their tenant scope.
+    - Admin: can toggle status for any tenant by passing tenant_id.
+    - Employee: can only toggle status within their tenant (tenant_id from token).
+    - Other user types are forbidden.
 
     Args:
         vendor_id (int): the ID of the vendor to toggle.
-        tenant_id (Optional[int], optional): for superadmin the ID of the tenant to scope the vendor to.
+        tenant_id (Optional[int]): tenant ID (required only if Admin toggles outside their tenant).
 
     Returns:
         ResponseWrapper: a successful response with the updated vendor data.
     """
     try:
-        tenant_id = tenant_id or user_data.get("tenant_id")
-        if user_data.get("tenant_id") and tenant_id != user_data.get("tenant_id"):
+        user_type = user_data.get("user_type")
+        user_tenant_id = user_data.get("tenant_id")
+
+        # Only Admin or Employee allowed
+        if user_type not in ["admin", "employee"]:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
-                    message="Cannot toggle vendor status outside your tenant scope",
-                    error_code="FORBIDDEN_TENANT_SCOPE"
+                    message="Only Admin or Employee can toggle vendor status",
+                    error_code="FORBIDDEN_USER_TYPE"
                 )
             )
 
-        # Fetch vendor with tenant scoping
-        if tenant_id:
-            db_vendor = db.query(Vendor).filter(
-                Vendor.vendor_id == vendor_id,
-                Vendor.tenant_id == tenant_id
-            ).first()
-        else:
-            db_vendor = vendor_crud.get_by_id(db, vendor_id=vendor_id)
+        # Determine effective tenant_id
+        if user_type == "employee":
+            tenant_id = user_tenant_id
+        elif user_type == "admin":
+            if tenant_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Admin must provide tenant_id to toggle status",
+                        error_code="TENANT_ID_REQUIRED"
+                    )
+                )
+
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Tenant ID cannot be determined",
+                    error_code="TENANT_ID_REQUIRED"
+                )
+            )
+
+        # Fetch vendor within tenant
+        db_vendor = db.query(Vendor).filter(
+            Vendor.vendor_id == vendor_id,
+            Vendor.tenant_id == tenant_id
+        ).first()
 
         if not db_vendor:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error(
-                    message=f"Vendor with ID '{vendor_id}' not found"
-                            f"{' in tenant ' + tenant_id if tenant_id else ''}",
+                    message=f"Vendor with ID '{vendor_id}' not found in tenant '{tenant_id}'",
                     error_code="VENDOR_NOT_FOUND"
                 )
             )
 
-        # Toggle status using CRUD method
+        # Toggle status
         db_vendor = vendor_crud.toggle_active(db, vendor_id=vendor_id)
         db.commit()
         db.refresh(db_vendor)
 
         logger.info(
             f"Toggled vendor {vendor_id} status to "
-            f"{'active' if db_vendor.is_active else 'inactive'}"
+            f"{'active' if db_vendor.is_active else 'inactive'} "
+            f"by user_type={user_type}, tenant_id={tenant_id}"
         )
 
         return ResponseWrapper.success(
@@ -451,18 +579,13 @@ def toggle_vendor_status(
 
     except HTTPException:
         raise
+    except SQLAlchemyError as e:
+        db.rollback()
+        raise handle_db_error(e)
     except Exception as e:
         db.rollback()
         logger.exception(f"Unexpected error while toggling vendor {vendor_id} status: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=ResponseWrapper.error(
-                message=f"Unexpected error while toggling vendor '{vendor_id}' status",
-                error_code="DATABASE_ERROR",
-                details={"error": str(e)},
-            ),
-        )
-
+        raise handle_http_error(e)
 
 # @router.delete("/{vendor_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_vendor(

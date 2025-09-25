@@ -1,3 +1,4 @@
+from common_utils.auth.utils import hash_password
 import pytest
 from sqlalchemy.orm import Session
 from datetime import datetime, date, time, timedelta
@@ -100,7 +101,7 @@ def employee_data(create_team):
 def create_employee(db: Session, employee_data):
     employee = Employee(
         **{k: v for k, v in employee_data.items() if k != 'password'},
-        password=get_password_hash(employee_data["password"])
+        password=hash_password(employee_data["password"])
     )
     db.add(employee)
     db.commit()

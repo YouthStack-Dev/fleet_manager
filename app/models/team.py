@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, func, UniqueConstraint
+from sqlalchemy import Boolean, Column, Integer, String, DateTime, Text, ForeignKey, func, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.database.session import Base
 
@@ -10,6 +10,7 @@ class Team(Base):
     tenant_id = Column(String(50), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
     name = Column(String(150), nullable=False)
     description = Column(Text)
+    is_active = Column(Boolean, default=1, nullable=False)  # 1 for active, 0 for inactive
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 

@@ -18,11 +18,12 @@ class RefreshTokenRequest(BaseModel):
     """Schema for refresh token request"""
     refresh_token: str
 
-class EmployeeLoginRequest(BaseModel):
+class LoginRequest(BaseModel):
     """Schema for employee login"""
     tenant_id: str = Field(..., description="Tenant code")
     username: EmailStr = Field(..., description="Employee email address")
     password: str = Field(..., min_length=8)
+
 
 class AdminLoginRequest(BaseModel):
     """Schema for admin login"""

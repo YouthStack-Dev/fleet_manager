@@ -24,7 +24,7 @@ def seed_admins(db: Session):
             "name": f"{role.name} User",
             "email": f"{role.name.lower()}@example.com",
             "phone": f"9000{role.role_id:05d}",
-            "password": "hashed_password_123",  # replace with real hash
+            "password": "e86f78a8a3caf0b60d8e74e5942aa6d86dc150cd3c03338aef25b7d2d7e3acc7",  # Admin@123
             "role_id": role.role_id,
             "is_active": True
         }
@@ -294,7 +294,7 @@ def seed_employees(db: Session):
                 "employee_code": f"{tenant.tenant_id}-EMP1",
                 "name": f"{tenant.name} Employee One",
                 "email": f"{tenant.tenant_id.lower()}_emp1@example.com",
-                "password": "hashed_password_123",
+                "password": "b4bd29480ab196faa782e0d4ecd10c2f4212814105227e5f7992f5bf4b212a64", #Employee@123
                 "team_id": teams[0].team_id,
                 "role_id": superadmin_role_id,  # guaranteed to exist
                 "phone": f"9000{random.randint(100000,999999)}",
@@ -306,7 +306,7 @@ def seed_employees(db: Session):
                 "employee_code": f"{tenant.tenant_id}-EMP2",
                 "name": f"{tenant.name} Employee Two",
                 "email": f"{tenant.tenant_id.lower()}_emp2@example.com",
-                "password": "hashed_password_123",
+                "password": "b4bd29480ab196faa782e0d4ecd10c2f4212814105227e5f7992f5bf4b212a64", #Employee@123
                 "team_id": teams[-1].team_id,
                 "role_id": admin_role_id,  # guaranteed to exist
                 "phone": f"8000{random.randint(100000,999999)}",
@@ -514,20 +514,22 @@ def seed_vendor_users(db: Session):
             # Default users to seed for each vendor
             users_data = [
                 {
+                    "tenant_id": tenant.tenant_id,
                     "vendor_id": vendor.vendor_id,
                     "name": f"{vendor.name} Admin",
                     "email": f"{vendor.vendor_code.lower()}_admin@example.com",
                     "phone": f"9000{random.randint(100000,999999)}",
-                    "password": "hashed_password_123",  # Replace with real hash in production
+                    "password": "b4bd29480ab196faa782e0d4ecd10c2f4212814105227e5f7992f5bf4b212a64",  # Employee@123
                     "role_id": admin_role_id,
                     "is_active": True
                 },
                 {
+                    "tenant_id": tenant.tenant_id,
                     "vendor_id": vendor.vendor_id,
                     "name": f"{vendor.name} Dispatcher",
                     "email": f"{vendor.vendor_code.lower()}_dispatcher@example.com",
                     "phone": f"8000{random.randint(100000,999999)}",
-                    "password": "hashed_password_123",
+                    "password": "b4bd29480ab196faa782e0d4ecd10c2f4212814105227e5f7992f5bf4b212a64", # Employee@123
                     "role_id": superadmin_role_id,
                     "is_active": True
                 }
@@ -577,7 +579,7 @@ def seed_drivers(db: Session):
                 "email": f"{vendor.vendor_code.lower()}_drv1@example.com",
                 "phone": f"9000{random.randint(100000,999999)}",
                 "gender": "Male",
-                "password": "hashed_password_123",  # replace with actual hash
+                "password": "b4bd29480ab196faa782e0d4ecd10c2f4212814105227e5f7992f5bf4b212a64",  # Employee@123
                 "date_of_birth": date(1990, 1, 1),
                 "date_of_joining": date(2023, 1, 1),
                 "permanent_address": "123 Main Street, Bangalore",
@@ -600,7 +602,7 @@ def seed_drivers(db: Session):
                 "email": f"{vendor.vendor_code.lower()}_drv2@example.com",
                 "phone": f"8000{random.randint(100000,999999)}",
                 "gender": "Female",
-                "password": "hashed_password_123",
+                "password": "b4bd29480ab196faa782e0d4ecd10c2f4212814105227e5f7992f5bf4b212a64",  # Employee@123
                 "date_of_birth": date(1992, 6, 15),
                 "date_of_joining": date(2023, 6, 1),
                 "permanent_address": "456 Market Road, Bangalore",

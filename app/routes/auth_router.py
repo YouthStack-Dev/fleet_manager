@@ -3,6 +3,7 @@ import secrets
 import time
 import logging
 import sys
+from app.crud.vendor_user import vendor_user_crud
 from app.models.admin import Admin
 from app.models.tenant import Tenant
 from fastapi import APIRouter, Depends, HTTPException, Header, status, Body, Query
@@ -13,10 +14,12 @@ from typing import Optional
 
 from app.database.session import get_db
 from app.models import Employee
+from app.models.vendor import Vendor
+from app.models.vendor_user import VendorUser
 from app.schemas.auth import (
-    AdminLoginRequest, AdminLoginResponse, TokenResponse, RefreshTokenRequest, LoginResponse, 
-    EmployeeLoginRequest, PasswordResetRequest
+    AdminLoginRequest, AdminLoginResponse, LoginRequest, TokenResponse, RefreshTokenRequest, LoginResponse, PasswordResetRequest
 )
+from app.schemas.vendor_user import VendorUserResponse
 from common_utils.auth.utils import (
     create_access_token, create_refresh_token, 
     verify_token, hash_password, verify_password
@@ -26,7 +29,7 @@ from app.schemas.employee import EmployeeResponse
 from app.crud.employee import employee_crud
 from app.crud.admin import admin_crud
 from app.core.logging_config import get_logger
-from app.utils.response_utils import ResponseWrapper
+from app.utils.response_utils import ResponseWrapper, handle_db_error
 
 from app.config import settings
 
@@ -84,9 +87,9 @@ def introspect_token_direct(token: str) -> dict:
     try:
         user_id = payload.get("user_id")
         tenant_id = payload.get("tenant_id")
-        user_type = payload.get("user_type")  # Get token context from JWT
+        user_type = payload.get("user_type")  # Get token user_type from JWT
         
-        logger.debug(f"Fetching roles and permissions for introspection - user: {user_id}, tenant: {tenant_id}, context: {user_type}")
+        logger.debug(f"Fetching roles and permissions for introspection - user: {user_id}, tenant: {tenant_id}, user_type: {user_type}")
         
         if user_type == "admin":
             admin = db.query(Admin).filter(Admin.admin_id == int(user_id)).first()
@@ -116,7 +119,7 @@ def introspect_token_direct(token: str) -> dict:
                 )
         else:
             if not tenant_id:
-                logger.warning(f"Introspection failed - Missing tenant_id for employee context: {user_id}")
+                logger.warning(f"Introspection failed - Missing tenant_id for employee user_type: {user_id}")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid token - missing tenant information"
@@ -152,7 +155,7 @@ def introspect_token_direct(token: str) -> dict:
                     detail="Failed to fetch user roles"
                 )
         
-        logger.info(f"Token introspection successful for user: {user_id}, context: {user_type}, roles: {roles}, permissions: {len(all_permissions)} modules")
+        logger.info(f"Token introspection successful for user: {user_id}, user_type: {user_type}, roles: {roles}, permissions: {len(all_permissions)} modules")
         
         current_time = int(time.time())
         expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
@@ -189,14 +192,14 @@ def introspect_token_direct(token: str) -> dict:
 
 @router.post("/employee/login")
 async def employee_login(
-    form_data: EmployeeLoginRequest = Body(...),
+    form_data: LoginRequest = Body(...),
     db: Session = Depends(get_db)
 ):
     """
-    Authenticate employee in a tenant and return access/refresh tokens
+    Authenticate an employee and return tokens + roles + permissions
     """
-    logger.info(f"Login attempt for user: {form_data.username} in tenant: {form_data.tenant_id}")
-    
+    logger.info(f"Employee login attempt for user: {form_data.username} in tenant: {form_data.tenant_id}")
+
     try:
         employee = (
             db.query(Employee)
@@ -209,39 +212,36 @@ async def employee_login(
         )
 
         if not employee:
-            logger.warning(
-                f"Login failed - Employee not found or invalid tenant: "
-                f"{form_data.username} in tenant_id {form_data.tenant_id}"
-            )
+            logger.warning(f"Employee login failed - not found: {form_data.username} in tenant {form_data.tenant_id}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=ResponseWrapper.error(
                     message="Incorrect tenant, email, or password",
-                    error_code=status.HTTP_401_UNAUTHORIZED
-                )
+                    error_code=status.HTTP_401_UNAUTHORIZED,
+                ),
             )
 
         tenant = employee.tenant
         logger.debug(f"Tenant validation successful - ID: {tenant.tenant_id}")
 
-        if not verify_password(form_data.password, employee.password):
+        if not verify_password(hash_password(form_data.password), employee.password):
             logger.warning(f"🔒 Login failed - Invalid password for employee: {employee.employee_id} ({form_data.username})")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=ResponseWrapper.error(
                     message="Incorrect email or password",
-                    error_code=status.HTTP_401_UNAUTHORIZED
-                )
+                    error_code=status.HTTP_401_UNAUTHORIZED,
+                ),
             )
 
-        if not employee.is_active or not tenant.is_active:
+        if not employee.is_active or not tenant.is_active or employee_crud.is_employee_team_inactive(db, employee.employee_id):
             logger.warning(f"🚫 Login failed - Inactive account for employee: {employee.employee_id} ({form_data.username})")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
                     message="User account is inactive",
-                    error_code="ACCOUNT_INACTIVE"
-                )
+                    error_code="ACCOUNT_INACTIVE",
+                ),
             )
 
         logger.debug(f"Fetching roles and permissions for employee: {employee.employee_id} in tenant: {tenant.tenant_id}")
@@ -267,11 +267,11 @@ async def employee_login(
 
         token_payload = {
             "user_id": str(employee.employee_id),
-            "tenant_id": str(tenant.tenant_id),
+            "tenant_id": str(employee.tenant_id),
             "opaque_token": opaque_token,
             "roles": roles,
             "permissions": all_permissions,
-            "user_type": "employee",  # Add token context
+            "user_type": "employee",
             "iat": current_time,
             "exp": expiry_time,
         }
@@ -284,21 +284,19 @@ async def employee_login(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=ResponseWrapper.error(
                     message="Failed to store authentication token",
-                    error_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
+                    error_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                ),
             )
-        
-        logger.debug(f"💾 Opaque token stored in Redis with TTL: {ttl} seconds")
 
         access_token = create_access_token(
             user_id=str(employee.employee_id),
-            tenant_id=str(tenant.tenant_id),
+            tenant_id=str(employee.tenant_id),
             opaque_token=opaque_token,
-            user_type="employee" 
+            user_type="employee",
         )
         refresh_token = create_refresh_token(
             user_id=str(employee.employee_id),
-            user_type="employee"
+            user_type="employee",
         )
 
         logger.info(f"🚀 Login successful for employee: {employee.employee_id} ({employee.email}) in tenant: {tenant.tenant_id}")
@@ -307,18 +305,184 @@ async def employee_login(
             "access_token": access_token,
             "refresh_token": refresh_token,
             "token_type": "bearer",
-            "user": employee_to_schema(employee)
+            "user": {"employee": employee_to_schema(employee),
+                     "roles": roles,
+                     "permissions": all_permissions
+            }
+        }
+
+        return ResponseWrapper.success(data=response_data, message="Employee login successful")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Employee login failed with unexpected error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message="Login failed due to server error",
+                error_code="SERVER_ERROR",
+                details={"error": str(e)},
+            ),
+        )
+
+@router.post("/vendor/login")
+async def vendor_user_login(
+    form_data: LoginRequest = Body(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Authenticate a vendor user in a tenant and return access/refresh tokens
+    """
+    logger.info(f"Vendor login attempt for user: {form_data.username} in tenant: {form_data.tenant_id}")
+
+    try:
+        vendor_user = (
+            db.query(VendorUser)
+            .join(Vendor, Vendor.vendor_id == VendorUser.vendor_id)
+            .filter(
+                VendorUser.email == form_data.username,
+                Vendor.tenant_id == form_data.tenant_id
+            )
+            .first()
+        )
+
+        if not vendor_user:
+            logger.warning(
+                f"Login failed - Vendor user not found or invalid tenant: "
+                f"{form_data.username} in tenant_id {form_data.tenant_id}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error(
+                    message="Incorrect tenant, email, or password",
+                    error_code=status.HTTP_401_UNAUTHORIZED
+                )
+            )
+
+        vendor = vendor_user.vendor
+        tenant = vendor.tenant
+        logger.debug(f"Tenant validation successful - ID: {tenant.tenant_id}")
+
+        if not verify_password(hash_password(form_data.password), vendor_user.password):
+            logger.warning(
+                f"🔒 Login failed - Invalid password for vendor_user: "
+                f"{vendor_user.vendor_user_id} ({form_data.username})"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error(
+                    message="Incorrect email or password",
+                    error_code=status.HTTP_401_UNAUTHORIZED
+                )
+            )
+
+        if not vendor_user.is_active or not vendor.is_active or not tenant.is_active:
+            logger.warning(
+                f"🚫 Login failed - Inactive account for vendor_user: "
+                f"{vendor_user.vendor_user_id} ({form_data.username})"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="User account is inactive",
+                    error_code="ACCOUNT_INACTIVE"
+                )
+            )
+
+        logger.debug(
+            f"Fetching roles and permissions for vendor_user: "
+            f"{vendor_user.vendor_user_id} in tenant: {tenant.tenant_id}"
+        )
+        vendor_user_with_roles, roles, all_permissions = vendor_user_crud.get_roles_and_permissions(
+            db, vendor_user_id=vendor_user.vendor_user_id, vendor_id=vendor.vendor_id
+        )
+
+        if not vendor_user_with_roles:
+            logger.error(f"Failed to fetch vendor_user roles for user: {vendor_user.vendor_user_id}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error(
+                    message="Failed to fetch user roles",
+                    error_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            )
+
+        logger.info(
+            f"🎯 Permissions collected for vendor_user {vendor_user.vendor_user_id}: "
+            f"{len(all_permissions)} modules, roles: {roles}"
+        )
+
+        current_time = int(time.time())
+        expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
+        opaque_token = secrets.token_hex(16)
+
+        token_payload = {
+            "user_id": str(vendor_user.vendor_user_id),
+            "tenant_id": str(tenant.tenant_id),  # 👈 tenant_id instead of vendor_id
+            "vendor_id": str(vendor.vendor_id),
+            "opaque_token": opaque_token,
+            "roles": roles,
+            "permissions": all_permissions,
+            "user_type": "vendor",
+            "iat": current_time,
+            "exp": expiry_time,
+        }
+
+        oauth_accessor = Oauth2AsAccessor()
+        ttl = expiry_time - current_time
+        if not oauth_accessor.store_opaque_token(opaque_token, token_payload, 1800):
+            logger.error(
+                f"💥 Failed to store opaque token in Redis for vendor_user: {vendor_user.vendor_user_id}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error(
+                    message="Failed to store authentication token",
+                    error_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            )
+
+        logger.debug(f"💾 Opaque token stored in Redis with TTL: {ttl} seconds")
+
+        access_token = create_access_token(
+            user_id=str(vendor_user.vendor_user_id),
+            tenant_id=str(tenant.tenant_id),  # 👈 use tenant_id
+            vendor_id=str(vendor.vendor_id),  # 👈 include vendor_id
+            opaque_token=opaque_token,
+            user_type="vendor"
+        )
+        refresh_token = create_refresh_token(
+            user_id=str(vendor_user.vendor_user_id),
+            user_type="vendor"
+        )
+
+        logger.info(
+            f"🚀 Login successful for vendor_user: {vendor_user.vendor_user_id} "
+            f"({vendor_user.email}) in tenant: {tenant.tenant_id}"
+        )
+
+        response_data = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "user": {"vendor_user": VendorUserResponse.model_validate(vendor_user),
+                     "roles": roles,
+                     "permissions": all_permissions
+                     },
         }
 
         return ResponseWrapper.success(
             data=response_data,
-            message="Employee login successful"
+            message="Vendor user login successful"
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Employee login failed with unexpected error: {str(e)}")
+        raise handle_db_error(e)
+    except Exception as e:
+        logger.error(f"Vendor user login failed with unexpected error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=ResponseWrapper.error(
@@ -348,7 +512,7 @@ async def admin_login(
                 )
             )
         
-        if not verify_password(form_data.password, admin.password):
+        if not verify_password(hash_password(form_data.password), admin.password):   
             logger.warning(f"Admin login failed - Invalid password for admin: {admin.admin_id} ({form_data.username})")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -396,7 +560,6 @@ async def admin_login(
         token_payload = {
             "user_id": str(admin.admin_id),
             "user_type": "admin",
-            "user_type": "admin",  # Add token context
             "roles": roles,
             "permissions": all_permissions,
             "opaque_token": opaque_token,
@@ -449,6 +612,8 @@ async def admin_login(
         
     except HTTPException:
         raise
+    except Exception as e:
+        raise handle_db_error(e)
     except Exception as e:
         logger.error(f"Admin login failed with unexpected error: {str(e)}")
         raise HTTPException(
@@ -601,35 +766,128 @@ async def reset_password(
     
     return {"message": "If your email is registered, you will receive a password reset link."}
 
-@router.get("/me", response_model=EmployeeResponse)
+@router.get("/me", response_model=dict, status_code=status.HTTP_200_OK)
 async def get_current_user_profile(
     db: Session = Depends(get_db),
     token_data: dict = Depends(validate_bearer_token())
 ):
     """
-    Get the current authenticated user's profile
+    Get the current authenticated user's profile (admin, employee, or vendor)
+    with roles and permissions.
     """
     user_id = token_data.get("user_id")
-    logger.debug(f"Profile request for user: {user_id}")
-    
-    if not user_id:
-        logger.warning("Profile request failed - Missing user_id in token")
+    user_type = token_data.get("user_type")
+
+    logger.debug(f"Profile request for user: {user_id} ({user_type})")
+
+    if not user_id or not user_type:
+        logger.warning("Profile request failed - Missing user_id or user_type in token")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
+            detail=ResponseWrapper.error(
+                message="Could not validate credentials",
+                error_code=status.HTTP_401_UNAUTHORIZED,
+            ),
         )
-    
-    employee = employee_crud.get(db, id=int(user_id))
-    
-    if not employee:
-        logger.warning(f"Profile request failed - Employee not found: {user_id}")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
-    
-    logger.debug(f"Profile retrieved successfully for employee: {employee.employee_id}")
-    
-    return employee_to_schema(employee)
 
+    try:
+        if user_type == "employee":
+            employee = employee_crud.get(db, id=int(user_id))
+            if not employee:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message="Employee not found",
+                        error_code=status.HTTP_404_NOT_FOUND,
+                    ),
+                )
+
+            _, roles, permissions = employee_crud.get_employee_roles_and_permissions(
+                db, employee_id=employee.employee_id, tenant_id=employee.tenant_id
+            )
+
+            response_data = {
+                "user_type": "employee",
+                "user": employee_to_schema(employee),
+                "roles": roles,
+                "permissions": permissions,
+            }
+
+        elif user_type == "vendor":
+            vendor_user = db.query(VendorUser).filter(
+                VendorUser.vendor_user_id == int(user_id)
+            ).first()
+            if not vendor_user:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message="Vendor user not found",
+                        error_code=status.HTTP_404_NOT_FOUND,
+                    ),
+                )
+
+            _, roles, permissions = vendor_user_crud.get_roles_and_permissions(
+                db, vendor_user_id=vendor_user.vendor_user_id, vendor_id=vendor_user.vendor_id
+            )
+
+            response_data = {
+                "user_type": "vendor",
+                "user": VendorUserResponse.model_validate(vendor_user),
+                "roles": roles,
+                "permissions": permissions,
+            }
+
+        elif user_type == "admin":
+            admin = db.query(Admin).filter(Admin.admin_id == int(user_id)).first()
+            if not admin:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message="Admin not found",
+                        error_code=status.HTTP_404_NOT_FOUND,
+                    ),
+                )
+
+            _, roles, permissions = admin_crud.get_admin_roles_and_permissions(
+                db, admin_id=admin.admin_id
+            )
+
+            response_data = {
+                "user_type": "admin",
+                "user": {
+                    "admin_id": admin.admin_id,
+                    "email": admin.email,
+                },
+                "roles": roles,
+                "permissions": permissions,
+            }
+
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message=f"Unsupported user_type: {user_type}",
+                    error_code="INVALID_USER_TYPE",
+                ),
+            )
+
+        logger.info(f"✅ /me resolved for {user_type} {user_id}")
+
+        return ResponseWrapper.success(
+            data=response_data,
+            message="Profile retrieved successfully"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"💥 Failed to load /me profile: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message="Failed to fetch profile",
+                error_code="SERVER_ERROR",
+                details={"error": str(e)},
+            ),
+        )
 
