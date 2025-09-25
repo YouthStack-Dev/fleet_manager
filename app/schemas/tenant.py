@@ -1,7 +1,7 @@
 from datetime import datetime
 import re
 from typing import Optional, List, Literal
-from pydantic import BaseModel, EmailStr, Field, validator, ConfigDict
+from pydantic import BaseModel, EmailStr, Field, field_validator, validator, ConfigDict
 
 # Regex patterns
 PHONE_REGEX = r'^\+?[1-9]\d{1,14}$'  # E.164 format
@@ -24,6 +24,16 @@ class TenantBase(BaseModel):
     latitude: Optional[float] = Field(None, ge=-90, le=90, description="Latitude coordinate")
     is_active: bool = Field(default=True, description="Is tenant active?")
 
+    @field_validator("tenant_id")
+    def validate_tenant_id(cls, v: str):
+        if not re.match(USERNAME_REGEX, v):
+            raise ValueError("Tenant ID must be 3–50 chars (letters, numbers, underscores)")
+        return v
+    @field_validator("name")
+    def validate_name(cls, v: str):
+        if not re.match(NAME_REGEX, v):
+            raise ValueError("Name must be 2–50 chars, letters/spaces/hyphens/apostrophes only")
+        return v
     model_config = ConfigDict(
         json_schema_extra={
             "example": {

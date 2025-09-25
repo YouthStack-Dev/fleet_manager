@@ -47,20 +47,56 @@ services:
     ports:
       - "8000:8000"
     environment:
+      # Database settings
       - POSTGRES_HOST=fleet_postgres
       - POSTGRES_USER=fleetadmin
       - POSTGRES_PASSWORD=fleetpass
       - POSTGRES_DB=fleet_db
       - PORT=5432
       - DATABASE_URL=postgresql://fleetadmin:fleetpass@fleet_postgres:5432/fleet_db
+      
+      # Auth settings
       - OAUTH2_URL=http://localhost:8000/api/v1/auth/introspect
+      - TOKEN_EXPIRY_HOURS=1
+      - X_INTROSPECT_SECRET=Kjs#idjXw
+      - SECRET_KEY=supersecretkey
+      - OAUTH2_ENV=dev
+      
+      # Redis settings
       - REDIS_HOST=redis_server
       - REDIS_PORT=6379
       - REDIS_DB=0
       - REDIS_PASSWORD=redispassword
       - USE_REDIS=1
-      - TOKEN_EXPIRY_HOURS=1
-      - X_INTROSPECT_SECRET=Kjs#idjXw
+      
+      # Email configuration - Single Global Admin Email
+      - EMAIL_ENABLED=true
+      - SMTP_SERVER=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USERNAME=dheerajkumarp777@gmail.com
+      - SMTP_PASSWORD=orls draa fbxo neox
+      - SMTP_USE_TLS=true
+      - SMTP_USE_SSL=false
+      
+      # Global Admin Email Settings (single sender for all emails)
+      - SENDER_EMAIL=dheerajkumarp777@gmail.com
+      - SENDER_NAME=Fleet Manager Admin
+      - SUPPORT_EMAIL=dheerajkumarp777@gmail.com
+      
+      # Email delivery settings
+      - EMAIL_RETRY_ATTEMPTS=3
+      - EMAIL_RETRY_DELAY=5
+      - EMAIL_QUEUE_ENABLED=false
+      
+      # Frontend URL for email links
+      - FRONTEND_URL=http://localhost:3000
+      
+      # Logging
+      - LOG_LEVEL=DEBUG
+      - PYTHONUNBUFFERED=1
+      - PYTHONIOENCODING=utf-8
+      - FORCE_COLOR=1
+      
     volumes:
       # - ./firebase_key.json:/app/secrets/firebase_key.json
       - /var/lib/fleet/uploads:/app/uploaded_files
