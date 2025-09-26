@@ -200,7 +200,6 @@ def create_tenant(
 
             employee_in = EmployeeCreate(
                 tenant_id=new_tenant.tenant_id,
-                role_id=admin_role.role_id,
                 team_id=default_team.team_id,
                 name=employee_name,
                 employee_code=tenant.employee_code or f"EMP{new_tenant.tenant_id}001",
@@ -215,7 +214,7 @@ def create_tenant(
             )
 
             new_employee = employee_crud.create_with_tenant(
-                db, obj_in=employee_in, tenant_id=new_tenant.tenant_id
+                db, obj_in=employee_in, role_id=admin_role.role_id, tenant_id=new_tenant.tenant_id
             )
             logger.info(
                 f"Employee created for tenant {new_tenant.tenant_id}: "
