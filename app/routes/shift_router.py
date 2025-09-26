@@ -130,15 +130,78 @@ def read_shifts(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     is_active: Optional[bool] = Query(None),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (required for admin/superadmin)"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["shift.read"]))
+    user_data=Depends(PermissionChecker(["shift.read"], check_tenant=True)),
 ):
     """
     Fetch shifts with optional filters for the tenant.
+
+    Rules:
+    - vendor/driver -> forbidden
+    - employee -> tenant_id taken from token
+    - admin/superadmin -> tenant_id must be provided as query param
     """
     try:
-        tenant_id = user_data.get("tenant_id")
-        query = db.query(Shift).filter(Shift.tenant_id == tenant_id)
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        # ---- Basic role guards ----
+        if user_type in {"vendor", "driver"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to read shifts",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # ---- Determine tenant_id to use ----
+        if user_type == "employee":
+            resolved_tenant_id = token_tenant_id
+            if not resolved_tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+        elif user_type in {"admin", "superadmin"}:
+            resolved_tenant_id = tenant_id
+            if not resolved_tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="tenant_id query param is required for admin users",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+        else:
+            # conservative fallback
+            resolved_tenant_id = token_tenant_id
+            if not resolved_tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Tenant context not available",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+
+        # ---- Validate tenant exists ----
+        tenant = tenant_crud.get_by_id(db=db, tenant_id=resolved_tenant_id)
+        if not tenant:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Tenant {resolved_tenant_id} not found",
+                    error_code="TENANT_NOT_FOUND",
+                ),
+            )
+
+        # ---- Build query ----
+        query = db.query(Shift).filter(Shift.tenant_id == resolved_tenant_id)
 
         if is_active is not None:
             query = query.filter(Shift.is_active == is_active)
@@ -146,13 +209,20 @@ def read_shifts(
         total, items = paginate_query(query, skip, limit)
         shifts = [ShiftResponse.model_validate(s, from_attributes=True) for s in items]
 
-        logger.info(f"Fetched {len(shifts)} shifts for tenant {tenant_id}")
+        logger.info(
+            f"Fetched {len(shifts)} shifts for tenant {resolved_tenant_id} "
+            f"by user {user_data.get('user_id')} ({user_type})"
+        )
 
         return ResponseWrapper.success(
             data=ShiftPaginationResponse(total=total, items=shifts),
             message="Shifts fetched successfully"
         )
+
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.exception(f"Unexpected error while reading shifts: {e}")
         raise handle_http_error(e)
 
 
