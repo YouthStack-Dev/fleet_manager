@@ -300,28 +300,76 @@ def update_shift(
     shift_id: int,
     shift_update: ShiftUpdate,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["shift.update"]))
+    user_data=Depends(PermissionChecker(["shift.update"], check_tenant=True)),
 ):
     """
     Update a shift by ID.
+
+    Rules:
+    - vendor/driver -> forbidden
+    - employee -> tenant_id taken from token; must match shift's tenant
+    - admin/superadmin -> no tenant_id needed; can update any shift by ID
     """
     try:
-        tenant_id = user_data.get("tenant_id")
-        db_shift = shift_crud.update_with_tenant(
-            db, shift_id=shift_id, tenant_id=tenant_id, obj_in=shift_update
-        )
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        # ---- Role guards ----
+        if user_type in {"vendor", "driver"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to update shifts",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # ---- Fetch shift ----
+        db_shift = db.query(Shift).filter(Shift.shift_id == shift_id).first()
         if not db_shift:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=ResponseWrapper.error(f"Shift {shift_id} not found", "NOT_FOUND")
+                detail=ResponseWrapper.error(
+                    message=f"Shift {shift_id} not found",
+                    error_code="NOT_FOUND",
+                ),
             )
 
-        logger.info(f"Shift {shift_id} updated successfully for tenant {tenant_id}")
+        # ---- Employee must match their tenant ----
+        if user_type == "employee":
+            if not token_tenant_id or db_shift.tenant_id != token_tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="You don't have access to update this shift",
+                        error_code="TENANT_MISMATCH",
+                    ),
+                )
+
+        # ---- Admin/Superadmin -> allowed ----
+        # No tenant check needed, they can update any shift
+
+        # ---- Perform update ----
+        db_shift = shift_crud.update(db, db_obj=db_shift, obj_in=shift_update)
+
+        db.commit()
+        db.refresh(db_shift)
+
+        logger.info(
+            f"Shift {shift_id} updated by user {user_data.get('user_id')} ({user_type}), "
+            f"tenant {db_shift.tenant_id}"
+        )
+
         return ResponseWrapper.success(
             data=ShiftResponse.model_validate(db_shift, from_attributes=True),
             message="Shift updated successfully"
         )
+    except SQLAlchemyError as e:
+        raise handle_db_error(e)
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.exception(f"Unexpected error while updating shift {shift_id}: {e}")
         raise handle_http_error(e)
 
 

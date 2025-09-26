@@ -47,12 +47,19 @@ class ShiftCreate(BaseModel):
 class ShiftUpdate(BaseModel):
     shift_code: Optional[str] = None
     log_type: Optional[ShiftLogTypeEnum] = None
-    shift_time: Optional[time] = None
+    shift_time: Optional[str] = None
     pickup_type: Optional[PickupTypeEnum] = None
     gender: Optional[GenderEnum] = None
     waiting_time_minutes: Optional[int] = None
     is_active: Optional[bool] = None
 
+    @field_validator("shift_time")
+    def validate_shift_time(cls, v):
+        try:
+            return datetime.strptime(v, "%H:%M").time()
+        except ValueError:
+            raise ValueError("shift_time must be in HH:MM format")
+        
 class ShiftResponse(ShiftBase):
     shift_id: int
     created_at: datetime
