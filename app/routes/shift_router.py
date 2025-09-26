@@ -373,57 +373,98 @@ def update_shift(
         raise handle_http_error(e)
 
 
-@router.patch("/{shift_id}/toggle-status", response_model=dict, status_code=status.HTTP_200_OK)
+@router.patch("/{shift_id}/toggle-status", status_code=status.HTTP_200_OK)
 def toggle_shift_status(
     shift_id: int,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["shift.update"]))
+    user_data=Depends(PermissionChecker(["shift.update"], check_tenant=True)),
 ):
     """
     Toggle a shift's active/inactive status.
+
+    Rules:
+    - vendor/driver -> forbidden
+    - employee -> can only toggle shifts within their tenant
+    - admin/superadmin -> can toggle any shift
     """
     try:
-        tenant_id = user_data.get("tenant_id")
-        db_shift = shift_crud.get_by_tenant_and_id(db, tenant_id=tenant_id, shift_id=shift_id)
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        # ---- Role guards ----
+        if user_type in {"vendor", "driver"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to toggle shifts",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # ---- Fetch shift by ID ----
+        db_shift = db.query(Shift).filter(Shift.shift_id == shift_id).first()
         if not db_shift:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=ResponseWrapper.error(f"Shift {shift_id} not found", "NOT_FOUND")
+                detail=ResponseWrapper.error(
+                    message=f"Shift {shift_id} not found",
+                    error_code="NOT_FOUND",
+                ),
             )
 
+        # ---- Employee tenant check ----
+        if user_type == "employee" and db_shift.tenant_id != token_tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have access to toggle this shift",
+                    error_code="TENANT_MISMATCH",
+                ),
+            )
+
+        # ---- Toggle status ----
         db_shift.is_active = not db_shift.is_active
         db.commit()
         db.refresh(db_shift)
 
-        logger.info(f"Toggled shift {shift_id} to {'active' if db_shift.is_active else 'inactive'}")
+        logger.info(
+            f"Shift {shift_id} toggled to {'active' if db_shift.is_active else 'inactive'} "
+            f"by user {user_data.get('user_id')} ({user_type}), tenant {db_shift.tenant_id}"
+        )
 
         return ResponseWrapper.success(
             data=ShiftResponse.model_validate(db_shift, from_attributes=True),
             message=f"Shift {shift_id} is now {'active' if db_shift.is_active else 'inactive'}"
         )
+
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        raise handle_db_error(e)
     except Exception as e:
+        logger.exception(f"Unexpected error while toggling shift {shift_id}: {e}")
         raise handle_http_error(e)
 
 
-@router.delete("/{shift_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_shift(
-    shift_id: int,
-    db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["shift.delete"]))
-):
-    """
-    Delete a shift (hard delete).
-    """
-    try:
-        tenant_id = user_data.get("tenant_id")
-        success = shift_crud.remove_with_tenant(db, tenant_id=tenant_id, shift_id=shift_id)
-        if not success:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=ResponseWrapper.error(f"Shift {shift_id} not found", "NOT_FOUND")
-            )
+# @router.delete("/{shift_id}", status_code=status.HTTP_204_NO_CONTENT)
+# def delete_shift(
+#     shift_id: int,
+#     db: Session = Depends(get_db),
+#     user_data=Depends(PermissionChecker(["shift.delete"]))
+# ):
+#     """
+#     Delete a shift (hard delete).
+#     """
+#     try:
+#         tenant_id = user_data.get("tenant_id")
+#         success = shift_crud.remove_with_tenant(db, tenant_id=tenant_id, shift_id=shift_id)
+#         if not success:
+#             raise HTTPException(
+#                 status_code=status.HTTP_404_NOT_FOUND,
+#                 detail=ResponseWrapper.error(f"Shift {shift_id} not found", "NOT_FOUND")
+#             )
 
-        logger.info(f"Shift {shift_id} deleted for tenant {tenant_id}")
-        return None
-    except Exception as e:
-        raise handle_http_error(e)
+#         logger.info(f"Shift {shift_id} deleted for tenant {tenant_id}")
+#         return None
+#     except Exception as e:
+#         raise handle_http_error(e)
