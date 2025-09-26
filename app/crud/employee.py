@@ -20,12 +20,15 @@ class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
             Employee.tenant_id == tenant_id
         ).first()
     
-    def create_with_tenant(self, db: Session, *, obj_in: EmployeeCreate, tenant_id: str) -> Employee:
+    def create_with_tenant(self, db: Session, *, obj_in: EmployeeCreate, role_id: Optional[int] = None, tenant_id: str) -> Employee:
         """Create employee for a specific tenant"""
+        role_id = role_id or self.get_system_role_id(db, role_name="Employee")
+        if role_id is None:
+            raise ValueError("System role 'Employee' not found in DB")
         db_obj = Employee(
             tenant_id=tenant_id,
             name=obj_in.name,
-            role_id=employee_crud.get_system_role_id(db, role_name="Employee"),
+            role_id=role_id,
             employee_code=obj_in.employee_code,
             email=obj_in.email,
             password=hash_password(obj_in.password),
