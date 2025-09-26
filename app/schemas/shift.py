@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel ,field_validator
 from typing import Optional, List
 from datetime import datetime, time
 from enum import Enum
@@ -17,6 +17,7 @@ class GenderEnum(str, Enum):
     OTHER = "Other"
 
 class ShiftBase(BaseModel):
+    tenant_id: Optional[str] = None
     shift_code: str
     log_type: ShiftLogTypeEnum
     shift_time: time
@@ -25,8 +26,23 @@ class ShiftBase(BaseModel):
     waiting_time_minutes: int = 0
     is_active: bool = True
 
-class ShiftCreate(ShiftBase):
-    pass
+class ShiftCreate(BaseModel):
+    tenant_id: Optional[str] = None
+    shift_code: str
+    log_type: ShiftLogTypeEnum
+    shift_time: str
+    pickup_type: PickupTypeEnum
+    gender: Optional[GenderEnum] = None
+    waiting_time_minutes: int = 0
+    is_active: bool = True
+
+
+    @field_validator("shift_time")
+    def validate_shift_time(cls, v):
+        try:
+            return datetime.strptime(v, "%H:%M").time()
+        except ValueError:
+            raise ValueError("shift_time must be in HH:MM format")
 
 class ShiftUpdate(BaseModel):
     shift_code: Optional[str] = None
