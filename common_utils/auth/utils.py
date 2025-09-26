@@ -83,4 +83,6 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain_password: str, hashed_password: str):
     # Replace with actual password hashing in production
-    return plain_password == hashed_password
+    result = plain_password == hashed_password
+    print(f"Verifying password: {plain_password} against hash: {hashed_password} => {result}")
+    return result

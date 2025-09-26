@@ -2,6 +2,7 @@ from typing import List, Dict, Any, Optional, Union
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, and_
 from app.models import Employee
+from app.models.iam.role import Role
 from app.models.team import Team
 from app.schemas.employee import EmployeeCreate, EmployeeUpdate
 from app.crud.base import CRUDBase
@@ -24,7 +25,7 @@ class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
         db_obj = Employee(
             tenant_id=tenant_id,
             name=obj_in.name,
-            role_id=obj_in.role_id,
+            role_id=employee_crud.get_system_role_id(db, role_name="Employee"),
             employee_code=obj_in.employee_code,
             email=obj_in.email,
             password=hash_password(obj_in.password),
@@ -147,4 +148,15 @@ class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
             .first()
         )
         return inactive_team_exists is not None
+    def get_system_role_id(self, db: Session, *, role_name: str) -> Optional[int]:
+        """
+        Fetch the role_id of a system role by its name.
+        Returns None if role not found.
+        """
+        role = db.query(Role).filter(
+            Role.name == role_name,
+            Role.is_system_role == True
+        ).first()
+        return role.role_id if role else None
+
 employee_crud = CRUDEmployee(Employee)

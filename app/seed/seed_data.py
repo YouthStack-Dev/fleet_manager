@@ -183,7 +183,13 @@ def seed_iam(db: Session):
             p for p in policies_map.keys()
             if p not in ["PermissionsPolicy", "PolicyPolicy", "RolePolicy"]
         ],
-        "Employee": ["EmployeePolicy", "ShiftPolicy", "BookingPolicy"],
+        "Employee": [
+            "BookingPolicy",
+            "RoutebookingPolicy",
+            "RoutePolicy",
+            "ShiftPolicy",
+            "WeekoffconfigPolicy"
+        ],
         "Driver": ["DriverPolicy", "ShiftPolicy", "BookingPolicy"],
         "VendorAdmin": [
             "DriverPolicy",
