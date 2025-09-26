@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
-from typing import Optional
+from typing import Literal, Optional
 
 from app.database.session import get_db
 from app.models.shift import Shift
@@ -130,6 +130,9 @@ def read_shifts(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     is_active: Optional[bool] = Query(None),
+    log_type: Optional[Literal["IN", "OUT"]] = Query(
+        None, description="Filter by log_type: 'IN' or 'OUT'"
+    ),
     tenant_id: Optional[str] = Query(None, description="Tenant ID (required for admin/superadmin)"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["shift.read"], check_tenant=True)),
@@ -140,7 +143,7 @@ def read_shifts(
     Rules:
     - vendor/driver -> forbidden
     - employee -> tenant_id taken from token
-    - admin/superadmin -> tenant_id must be provided as query param
+    - admin/superadmin -> tenant_id optional
     """
     try:
         user_type = user_data.get("user_type")
@@ -167,24 +170,13 @@ def read_shifts(
                         error_code="TENANT_ID_REQUIRED",
                     ),
                 )
-        elif user_type in {"admin", "superadmin"}:
-            resolved_tenant_id = tenant_id
+        else:  # admin/superadmin
+            resolved_tenant_id = tenant_id or token_tenant_id
             if not resolved_tenant_id:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ResponseWrapper.error(
-                        message="tenant_id query param is required for admin users",
-                        error_code="TENANT_ID_REQUIRED",
-                    ),
-                )
-        else:
-            # conservative fallback
-            resolved_tenant_id = token_tenant_id
-            if not resolved_tenant_id:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=ResponseWrapper.error(
-                        message="Tenant context not available",
+                        message="Tenant ID is required",
                         error_code="TENANT_ID_REQUIRED",
                     ),
                 )
@@ -206,12 +198,15 @@ def read_shifts(
         if is_active is not None:
             query = query.filter(Shift.is_active == is_active)
 
+        if log_type:
+            query = query.filter(Shift.log_type == log_type)
+
         total, items = paginate_query(query, skip, limit)
         shifts = [ShiftResponse.model_validate(s, from_attributes=True) for s in items]
 
         logger.info(
-            f"Fetched {len(shifts)} shifts for tenant {resolved_tenant_id} "
-            f"by user {user_data.get('user_id')} ({user_type})"
+            f"Fetched {len(shifts)} shifts for tenant {resolved_tenant_id}, "
+            f"log_type={log_type}, by user {user_data.get('user_id')} ({user_type})"
         )
 
         return ResponseWrapper.success(
