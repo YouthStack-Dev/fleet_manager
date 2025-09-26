@@ -225,30 +225,73 @@ def read_shifts(
         logger.exception(f"Unexpected error while reading shifts: {e}")
         raise handle_http_error(e)
 
-
 @router.get("/{shift_id}", response_model=dict, status_code=status.HTTP_200_OK)
 def read_shift(
     shift_id: int,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["shift.read"]))
+    user_data=Depends(PermissionChecker(["shift.read"], check_tenant=True)),
 ):
     """
-    Fetch a shift by ID (restricted to tenant scope).
+    Fetch a shift by ID.
+
+    Rules:
+    - vendor/driver -> forbidden
+    - employee -> tenant_id taken from token; must match shift's tenant
+    - admin/superadmin -> no tenant_id needed; can fetch any shift by ID
     """
     try:
-        tenant_id = user_data.get("tenant_id")
-        db_shift = shift_crud.get_by_tenant_and_id(db, tenant_id=tenant_id, shift_id=shift_id)
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        # ---- Role guards ----
+        if user_type in {"vendor", "driver"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to read shifts",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # ---- Fetch shift by ID (tenant scope applied later if needed) ----
+        db_shift = db.query(Shift).filter(Shift.shift_id == shift_id).first()
         if not db_shift:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=ResponseWrapper.error(f"Shift {shift_id} not found", "NOT_FOUND")
+                detail=ResponseWrapper.error(
+                    message=f"Shift {shift_id} not found",
+                    error_code="NOT_FOUND",
+                ),
             )
+
+        # ---- Employee must match their tenant ----
+        if user_type == "employee":
+            if not token_tenant_id or db_shift.tenant_id != token_tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="You don't have access to this shift",
+                        error_code="TENANT_MISMATCH",
+                    ),
+                )
+
+        # ---- Admin/Superadmin -> allowed, no tenant check ----
+        # (we already fetched by ID, so they get the record regardless of tenant)
+
+        logger.info(
+            f"Shift {shift_id} fetched by user {user_data.get('user_id')} ({user_type}), "
+            f"tenant {db_shift.tenant_id}"
+        )
 
         return ResponseWrapper.success(
             data=ShiftResponse.model_validate(db_shift, from_attributes=True),
             message="Shift fetched successfully"
         )
+
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.exception(f"Unexpected error while reading shift {shift_id}: {e}")
         raise handle_http_error(e)
 
 
