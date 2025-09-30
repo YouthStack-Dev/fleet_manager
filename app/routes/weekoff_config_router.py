@@ -348,6 +348,7 @@ def update_weekoff_by_team(
 ):
     """
     Bulk update weekoff configs for a team.
+    All employees under the team will have their weekoff config updated.
     """
     try:
         tenant_id = user_data.get("tenant_id")
@@ -355,10 +356,13 @@ def update_weekoff_by_team(
 
         db_objs = weekoff_crud.update_by_team(db, team_id=team_id, obj_in=update_in)
 
+        # filter if employee role
         if user_type == "employee":
             db_objs = [obj for obj in db_objs if obj.employee.tenant_id == tenant_id]
 
         db.commit()
+        db.refresh_all(db_objs)
+
         return [
             WeekoffConfigResponse.model_validate(obj, from_attributes=True)
             for obj in db_objs

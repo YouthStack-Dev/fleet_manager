@@ -107,6 +107,35 @@ class CRUDWeekoff(CRUDBase[WeekoffConfig, WeekoffConfigCreate, WeekoffConfigUpda
             .filter(Employee.tenant_id == tenant_id)
             .all()
         )
+    def update_by_team(self, db: Session, team_id: int, obj_in: WeekoffConfigUpdate) -> List[WeekoffConfig]:
+        """
+        Bulk update weekoff configs for all employees in a team.
+        Ensures missing configs are auto-created.
+        """
+        employees = db.query(Employee).filter(Employee.team_id == team_id).all()
+        if not employees:
+            return []
 
+        updated_configs = []
+
+        for emp in employees:
+            # ensure config exists
+            config = (
+                db.query(WeekoffConfig)
+                .filter(WeekoffConfig.employee_id == emp.employee_id)
+                .first()
+            )
+            if not config:
+                config = WeekoffConfig(employee_id=emp.employee_id)
+                db.add(config)
+                db.flush()
+
+            # apply updates
+            for field, value in obj_in.dict(exclude_unset=True).items():
+                setattr(config, field, value)
+
+            updated_configs.append(config)
+
+        return updated_configs
 
 weekoff_crud = CRUDWeekoff(WeekoffConfig)
