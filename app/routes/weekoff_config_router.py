@@ -65,7 +65,7 @@ def get_weekoffs_by_team(
     limit: int = 100,
     is_active: Optional[bool] = None,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["weekoff-config.read"], check_tenant=True)),
+    user_data=Depends(PermissionChecker(["weekoff-config.read"])),
 ):
     """
     Fetch weekoff configs for all employees in a team.
@@ -150,7 +150,7 @@ def get_weekoffs_by_tenant(
     limit: int = 100,
     is_active: Optional[bool] = None,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["weekoff-config.read"], check_tenant=True)),
+    user_data=Depends(PermissionChecker(["weekoff-config.read"])),
 ):
     """
     Fetch weekoff configs for all employees in a tenant.
@@ -259,7 +259,7 @@ def update_weekoff_by_employee(
     employee_id: int,
     update_in: WeekoffConfigUpdate,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["weekoff-config.update"], check_tenant=True)),
+    user_data=Depends(PermissionChecker(["weekoff-config.update"])),
 ):
     """
     Update weekoff config for an employee.
@@ -344,7 +344,7 @@ def update_weekoff_by_team(
     team_id: int,
     update_in: WeekoffConfigUpdate,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["weekoff-config.update"], check_tenant=True)),
+    user_data=Depends(PermissionChecker(["weekoff-config.update"])),
 ):
     """
     Bulk update weekoff configs for all employees under a team.
@@ -428,39 +428,82 @@ def update_weekoff_by_team(
 
 
 
-@router.put("/tenant/{tenant_id}", response_model=List[WeekoffConfigResponse])
+@router.put("/tenant/{tenant_id}", response_model=dict, status_code=status.HTTP_200_OK)
 def update_weekoff_by_tenant(
-    tenant_id: str,
+    tenant_id: Optional[str],
     update_in: WeekoffConfigUpdate,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["weekoff-config.update"], check_tenant=True)),
+    user_data=Depends(PermissionChecker(["weekoff-config.update"])),
 ):
     """
-    Bulk update weekoff configs for a tenant.
+    Bulk update weekoff configs for all employees under a tenant.
+    - employee → only within their tenant
+    - admin → can update across tenants
+    Includes validation, tenant enforcement, and detailed logs.
     """
     try:
+        logger.info(f"Starting bulk weekoff update for tenant_id={tenant_id}")
+        logger.debug(f"Payload received: {update_in.dict(exclude_unset=True)}")
+
         user_type = user_data.get("user_type")
         token_tenant_id = user_data.get("tenant_id")
+        logger.info(f"Requester user_type={user_type}, token_tenant_id={token_tenant_id}")
 
-        if user_type == "employee" and tenant_id != token_tenant_id:
+        # 🚫 Vendors/Drivers forbidden
+        if user_type in {"vendor", "driver"}:
+            logger.warning("Vendor/Driver attempted to update weekoff configs")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
-                    message="You cannot update weekoff config outside your tenant",
-                    error_code="TENANT_FORBIDDEN",
+                    message="You don't have permission to update weekoff configs",
+                    error_code="FORBIDDEN",
                 ),
             )
 
-        db_objs = weekoff_crud.update_by_tenant(db, tenant_id=tenant_id, obj_in=update_in)
-        db.commit()
+        # 🔒 Tenant enforcement for employee role
+        if user_type == "employee" and tenant_id != token_tenant_id:
+            logger.warning(
+                f"Employee user teanant_id enforced from token, ignoring path param "
+                f"(tenant_id={tenant_id}, token_tenant_id={token_tenant_id})"
+            )
+            tenant_id = token_tenant_id
+        # ✅ Ensure tenant exists
+        tenant = tenant_crud.get_by_id(db, tenant_id=tenant_id)
+        if not tenant:
+            logger.warning(f"Tenant {tenant_id} not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Tenant {tenant_id} not found",
+                    error_code="TENANT_NOT_FOUND",
+                ),
+            )
+        logger.info(f"Tenant {tenant_id} found")
 
-        return [
-            WeekoffConfigResponse.model_validate(obj, from_attributes=True)
-            for obj in db_objs
-        ]
+        # ✅ Bulk update via CRUD
+        db_objs = weekoff_crud.update_by_tenant(db, tenant_id=tenant_id, obj_in=update_in)
+        logger.info(f"Weekoff configs updated for {len(db_objs)} employees in tenant {tenant_id}")
+
+        db.commit()
+        for obj in db_objs:
+            db.refresh(obj)
+        logger.info(f"Committed bulk weekoff update for tenant {tenant_id}")
+
+        return ResponseWrapper.success(
+            data={
+                "weekoff_configs": [
+                    WeekoffConfigResponse.model_validate(obj, from_attributes=True)
+                    for obj in db_objs
+                ]
+            },
+            message=f"Weekoff configs updated successfully for tenant {tenant_id} ({len(db_objs)} employees)",
+        )
 
     except SQLAlchemyError as e:
+        logger.exception(f"DB error while updating weekoff configs for tenant {tenant_id}: {e}")
         raise handle_db_error(e)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(f"Unexpected error updating weekoff config for tenant {tenant_id}: {e}")
         raise handle_http_error(e)
