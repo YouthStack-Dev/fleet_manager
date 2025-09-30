@@ -47,10 +47,9 @@ class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
         )
         db.add(db_obj)
         db.flush()
-        weekoff_crud.create_or_update(
+        weekoff_crud.ensure_weekoff_config(
             db,
             employee_id=db_obj.employee_id,
-            obj_in={"sunday": True}  # 👈 only Sunday off
         )
         return db_obj
     

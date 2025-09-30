@@ -1,114 +1,232 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import Optional
-from app.database.session import get_db
-from app.models.weekoff_config import WeekoffConfig
-from app.schemas.weekoff_config import WeekoffConfigCreate, WeekoffConfigUpdate, WeekoffConfigResponse, WeekoffConfigPaginationResponse
-from app.utils.pagination import paginate_query
-from common_utils.auth.permission_checker import PermissionChecker
+from typing import List
 
+from app.database.session import get_db
+from app.crud.weekoff import weekoff_crud
+from app.schemas.weekoff_config import WeekoffConfigUpdate, WeekoffConfigResponse
+from common_utils.auth.permission_checker import PermissionChecker
+from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
+from sqlalchemy.exc import SQLAlchemyError
+from app.core.logging_config import get_logger
+
+logger = get_logger(__name__)
 router = APIRouter(prefix="/weekoff-configs", tags=["weekoff configs"])
 
-@router.post("/", response_model=WeekoffConfigResponse, status_code=status.HTTP_201_CREATED)
-def create_weekoff_config(
-    weekoff_config: WeekoffConfigCreate, 
+
+@router.get("/{employee_id}")
+def get_weekoff_by_employee(
+    employee_id: int,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["weekoff-config.create"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["weekoff-config.read"], check_tenant=True)),
 ):
-    # Check if config already exists for this employee
-    existing_config = db.query(WeekoffConfig).filter(WeekoffConfig.employee_id == weekoff_config.employee_id).first()
-    if existing_config:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Weekoff config already exists for employee ID {weekoff_config.employee_id}"
+    """
+    Fetch weekoff config for an employee.
+    - employee → only within their tenant
+    - admin → can access any tenant
+    """
+    try:
+        tenant_id = user_data.get("tenant_id")
+        user_type = user_data.get("user_type")
+
+        db_obj = weekoff_crud.ensure_weekoff_config(db, employee_id=employee_id)
+
+        if user_type == "employee" and db_obj.employee.tenant_id != tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You cannot view weekoff config outside your tenant",
+                    error_code="TENANT_FORBIDDEN",
+                ),
+            )
+
+        return ResponseWrapper.success(
+            data={"weekoff_config": WeekoffConfigResponse.model_validate(db_obj, from_attributes=True)},
+            message="Weekoff config fetched successfully"
         )
 
-    db_weekoff_config = WeekoffConfig(**weekoff_config.dict())
-    db.add(db_weekoff_config)
-    db.commit()
-    db.refresh(db_weekoff_config)
-    return db_weekoff_config
+    except SQLAlchemyError as e:
+        raise handle_db_error(e)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error fetching weekoff config for employee {employee_id}: {e}")
+        raise handle_http_error(e)
 
-@router.get("/", response_model=WeekoffConfigPaginationResponse)
-def read_weekoff_configs(
-    skip: int = 0,
-    limit: int = 100,
-    employee_id: Optional[int] = None,
-    db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["weekoff-config.read"], check_tenant=True))
-):
-    query = db.query(WeekoffConfig)
-    
-    # Apply filters
-    if employee_id:
-        query = query.filter(WeekoffConfig.employee_id == employee_id)
-    
-    total, items = paginate_query(query, skip, limit)
-    return {"total": total, "items": items}
 
-@router.get("/{weekoff_id}", response_model=WeekoffConfigResponse)
-def read_weekoff_config(
-    weekoff_id: int, 
+@router.put("/{employee_id}", response_model=WeekoffConfigResponse)
+def update_weekoff_by_employee(
+    employee_id: int,
+    update_in: WeekoffConfigUpdate,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["weekoff-config.read"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["weekoff-config.update"], check_tenant=True)),
 ):
-    db_weekoff_config = db.query(WeekoffConfig).filter(WeekoffConfig.weekoff_id == weekoff_id).first()
-    if not db_weekoff_config:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Weekoff Config with ID {weekoff_id} not found"
+    """
+    Update weekoff config for an employee.
+    """
+    try:
+        tenant_id = user_data.get("tenant_id")
+        user_type = user_data.get("user_type")
+
+        db_obj = weekoff_crud.ensure_weekoff_config(db, employee_id=employee_id)
+
+        if user_type == "employee" and db_obj.employee.tenant_id != tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You cannot update weekoff config outside your tenant",
+                    error_code="TENANT_FORBIDDEN",
+                ),
+            )
+
+        db_obj = weekoff_crud.update_by_employee(db, employee_id=employee_id, obj_in=update_in)
+        db.commit()
+        db.refresh(db_obj)
+
+        return ResponseWrapper.success(
+            data={"weekoff_config": WeekoffConfigResponse.model_validate(db_obj, from_attributes=True)},
+            message="Weekoff config updated successfully"
         )
-    return db_weekoff_config
 
-@router.get("/employee/{employee_id}", response_model=WeekoffConfigResponse)
-def read_weekoff_config_by_employee(
-    employee_id: int, 
-    db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["weekoff-config.read"], check_tenant=True))
-):
-    db_weekoff_config = db.query(WeekoffConfig).filter(WeekoffConfig.employee_id == employee_id).first()
-    if not db_weekoff_config:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Weekoff Config for employee ID {employee_id} not found"
-        )
-    return db_weekoff_config
+    except SQLAlchemyError as e:
+        raise handle_db_error(e)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error updating weekoff config for employee {employee_id}: {e}")
+        raise handle_http_error(e)
 
-@router.put("/{weekoff_id}", response_model=WeekoffConfigResponse)
-def update_weekoff_config(
-    weekoff_id: int, 
-    weekoff_config_update: WeekoffConfigUpdate, 
-    db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["weekoff-config.update"], check_tenant=True))
-):
-    db_weekoff_config = db.query(WeekoffConfig).filter(WeekoffConfig.weekoff_id == weekoff_id).first()
-    if not db_weekoff_config:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Weekoff Config with ID {weekoff_id} not found"
-        )
-    
-    update_data = weekoff_config_update.dict(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(db_weekoff_config, key, value)
-    
-    db.commit()
-    db.refresh(db_weekoff_config)
-    return db_weekoff_config
 
-@router.delete("/{weekoff_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_weekoff_config(
-    weekoff_id: int, 
+@router.put("/team/{team_id}", response_model=List[WeekoffConfigResponse])
+def update_weekoff_by_team(
+    team_id: int,
+    update_in: WeekoffConfigUpdate,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["weekoff-config.delete"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["weekoff-config.update"], check_tenant=True)),
 ):
-    db_weekoff_config = db.query(WeekoffConfig).filter(WeekoffConfig.weekoff_id == weekoff_id).first()
-    if not db_weekoff_config:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Weekoff Config with ID {weekoff_id} not found"
-        )
-    
-    db.delete(db_weekoff_config)
-    db.commit()
-    return None
+    """
+    Bulk update weekoff configs for a team.
+    """
+    try:
+        tenant_id = user_data.get("tenant_id")
+        user_type = user_data.get("user_type")
+
+        db_objs = weekoff_crud.update_by_team(db, team_id=team_id, obj_in=update_in)
+
+        if user_type == "employee":
+            db_objs = [obj for obj in db_objs if obj.employee.tenant_id == tenant_id]
+
+        db.commit()
+        return [
+            WeekoffConfigResponse.model_validate(obj, from_attributes=True)
+            for obj in db_objs
+        ]
+
+    except SQLAlchemyError as e:
+        raise handle_db_error(e)
+    except Exception as e:
+        logger.exception(f"Unexpected error updating weekoff config for team {team_id}: {e}")
+        raise handle_http_error(e)
+
+
+@router.put("/tenant/{tenant_id}", response_model=List[WeekoffConfigResponse])
+def update_weekoff_by_tenant(
+    tenant_id: str,
+    update_in: WeekoffConfigUpdate,
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["weekoff-config.update"], check_tenant=True)),
+):
+    """
+    Bulk update weekoff configs for a tenant.
+    """
+    try:
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        if user_type == "employee" and tenant_id != token_tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You cannot update weekoff config outside your tenant",
+                    error_code="TENANT_FORBIDDEN",
+                ),
+            )
+
+        db_objs = weekoff_crud.update_by_tenant(db, tenant_id=tenant_id, obj_in=update_in)
+        db.commit()
+
+        return [
+            WeekoffConfigResponse.model_validate(obj, from_attributes=True)
+            for obj in db_objs
+        ]
+
+    except SQLAlchemyError as e:
+        raise handle_db_error(e)
+    except Exception as e:
+        logger.exception(f"Unexpected error updating weekoff config for tenant {tenant_id}: {e}")
+        raise handle_http_error(e)
+
+
+@router.get("/team/{team_id}", response_model=List[WeekoffConfigResponse])
+def get_weekoffs_by_team(
+    team_id: int,
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["weekoff-config.read"], check_tenant=True)),
+):
+    """
+    Fetch weekoff configs for all employees in a team.
+    """
+    try:
+        tenant_id = user_data.get("tenant_id")
+        user_type = user_data.get("user_type")
+
+        db_objs = weekoff_crud.get_by_team(db, team_id=team_id)
+        if user_type == "employee":
+            db_objs = [obj for obj in db_objs if obj.employee.tenant_id == tenant_id]
+
+        return [
+            WeekoffConfigResponse.model_validate(obj, from_attributes=True)
+            for obj in db_objs
+        ]
+
+    except SQLAlchemyError as e:
+        raise handle_db_error(e)
+    except Exception as e:
+        logger.exception(f"Unexpected error fetching weekoff configs for team {team_id}: {e}")
+        raise handle_http_error(e)
+
+
+@router.get("/tenant/{tenant_id}", response_model=List[WeekoffConfigResponse])
+def get_weekoffs_by_tenant(
+    tenant_id: str,
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["weekoff-config.read"], check_tenant=True)),
+):
+    """
+    Fetch weekoff configs for all employees in a tenant.
+    """
+    try:
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        if user_type == "employee" and tenant_id != token_tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You cannot view weekoff config outside your tenant",
+                    error_code="TENANT_FORBIDDEN",
+                ),
+            )
+
+        db_objs = weekoff_crud.get_by_tenant(db, tenant_id=tenant_id)
+
+        return [
+            WeekoffConfigResponse.model_validate(obj, from_attributes=True)
+            for obj in db_objs
+        ]
+
+    except SQLAlchemyError as e:
+        raise handle_db_error(e)
+    except Exception as e:
+        logger.exception(f"Unexpected error fetching weekoff configs for tenant {tenant_id}: {e}")
+        raise handle_http_error(e)

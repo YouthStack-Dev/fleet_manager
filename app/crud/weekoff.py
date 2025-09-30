@@ -1,4 +1,6 @@
+from fastapi import HTTPException, status
 from typing import Optional, List, Dict, Any, Union
+from app.utils.response_utils import ResponseWrapper
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 
@@ -18,57 +20,93 @@ class CRUDWeekoff(CRUDBase[WeekoffConfig, WeekoffConfigCreate, WeekoffConfigUpda
             .first()
         )
 
-    def create_or_update(
-        self,
-        db: Session,
-        *,
-        employee_id: int,
-        obj_in: Union[WeekoffConfigCreate, Dict[str, Any]]
-    ) -> WeekoffConfig:
-        """
-        Create or update weekoff config for an employee.
-        Enforces one config per employee.
-        """
-        update_data = obj_in if isinstance(obj_in, dict) else obj_in.dict(exclude_unset=True)
+    def ensure_weekoff_config(self, db: Session, employee_id: int) -> WeekoffConfig:
+        """Ensure employee always has a weekoff config (default Sunday=True)."""
 
+        employee = db.query(Employee).filter(Employee.employee_id == employee_id).first()
+        if not employee:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Employee with ID {employee_id} does not exist",
+                    error_code="EMPLOYEE_NOT_FOUND",
+                )
+            )
         db_obj = self.get_by_employee(db, employee_id=employee_id)
-        if db_obj:
-            # update existing
-            for field, value in update_data.items():
-                setattr(db_obj, field, value)
-        else:
-            # create new
-            db_obj = WeekoffConfig(employee_id=employee_id, **update_data)
+        if not db_obj:
+            db_obj = WeekoffConfig(
+                employee_id=employee_id,
+                sunday=True,
+                monday=False,
+                tuesday=False,
+                wednesday=False,
+                thursday=False,
+                friday=False,
+                saturday=False,
+            )
             db.add(db_obj)
-
-        try:
             db.flush()
-        except IntegrityError as e:
-            db.rollback()
-            raise ValueError(f"Weekoff config failed for employee {employee_id}: {e.orig}")
         return db_obj
 
-    def get_by_tenant(
-        self, db: Session, *, tenant_id: str, skip: int = 0, limit: int = 100
+    def update_by_employee(
+        self, db: Session, *, employee_id: int, obj_in: Union[WeekoffConfigUpdate, Dict[str, Any]]
+    ) -> WeekoffConfig:
+        db_obj = self.ensure_weekoff_config(db, employee_id=employee_id)
+        update_data = obj_in if isinstance(obj_in, dict) else obj_in.dict(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(db_obj, field, value)
+        db.flush()
+        return db_obj
+
+    def update_by_team(
+        self, db: Session, *, team_id: int, obj_in: Union[WeekoffConfigUpdate, Dict[str, Any]]
     ) -> List[WeekoffConfig]:
-        """Fetch all weekoff configs belonging to a tenant (via employees)"""
+        employees = db.query(Employee).filter(Employee.team_id == team_id).all()
+        if not employees:
+            return []
+
+        update_data = obj_in if isinstance(obj_in, dict) else obj_in.dict(exclude_unset=True)
+        results = []
+        for emp in employees:
+            db_obj = self.ensure_weekoff_config(db, employee_id=emp.employee_id)
+            for field, value in update_data.items():
+                setattr(db_obj, field, value)
+            results.append(db_obj)
+        db.flush()
+        return results
+
+    def update_by_tenant(
+        self, db: Session, *, tenant_id: str, obj_in: Union[WeekoffConfigUpdate, Dict[str, Any]]
+    ) -> List[WeekoffConfig]:
+        employees = db.query(Employee).filter(Employee.tenant_id == tenant_id).all()
+        if not employees:
+            return []
+
+        update_data = obj_in if isinstance(obj_in, dict) else obj_in.dict(exclude_unset=True)
+        results = []
+        for emp in employees:
+            db_obj = self.ensure_weekoff_config(db, employee_id=emp.employee_id)
+            for field, value in update_data.items():
+                setattr(db_obj, field, value)
+            results.append(db_obj)
+        db.flush()
+        return results
+
+    def get_by_team(self, db: Session, *, team_id: int) -> List[WeekoffConfig]:
+        return (
+            db.query(WeekoffConfig)
+            .join(Employee, Employee.employee_id == WeekoffConfig.employee_id)
+            .filter(Employee.team_id == team_id)
+            .all()
+        )
+
+    def get_by_tenant(self, db: Session, *, tenant_id: str) -> List[WeekoffConfig]:
         return (
             db.query(WeekoffConfig)
             .join(Employee, Employee.employee_id == WeekoffConfig.employee_id)
             .filter(Employee.tenant_id == tenant_id)
-            .offset(skip)
-            .limit(limit)
             .all()
         )
-
-    def delete_by_employee(self, db: Session, *, employee_id: int) -> bool:
-        """Delete weekoff config for an employee"""
-        db_obj = self.get_by_employee(db, employee_id=employee_id)
-        if not db_obj:
-            return False
-        db.delete(db_obj)
-        db.flush()
-        return True
 
 
 weekoff_crud = CRUDWeekoff(WeekoffConfig)
