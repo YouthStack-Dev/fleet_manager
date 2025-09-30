@@ -7,6 +7,7 @@ from typing import List, Optional
 from app.crud.team import team_crud
 from app.database.session import get_db
 from app.crud.weekoff import weekoff_crud
+from app.crud.tenant import tenant_crud
 from app.schemas.weekoff_config import WeekoffConfigUpdate, WeekoffConfigResponse
 from common_utils.auth.permission_checker import PermissionChecker
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
@@ -141,6 +142,117 @@ def get_weekoffs_by_team(
         logger.exception(f"Unexpected error while fetching weekoff configs for team {team_id}: {e}")
         raise handle_http_error(e)
 
+@router.get("/tenant/", response_model=dict, status_code=status.HTTP_200_OK)
+def get_weekoffs_by_tenant(
+    tenant_id: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
+    is_active: Optional[bool] = None,
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["weekoff-config.read"], check_tenant=True)),
+):
+    """
+    Fetch weekoff configs for all employees in a tenant.
+    - employee → only within their tenant
+    - admin → can access any tenant
+    Paginated, filtered by is_active.
+    Ensures every employee has a weekoff config.
+    """
+    try:
+        logger.info("Starting get_weekoffs_by_tenant")
+        logger.debug(f"user_data: {user_data}, tenant_id param: {tenant_id}, skip: {skip}, limit: {limit}, is_active: {is_active}")
+
+        user_type = user_data.get("user_type")
+        logger.info(f"User type: {user_type}")
+
+        # 🚫 Vendors/Drivers forbidden
+        if user_type in {"vendor", "driver"}:
+            logger.warning("Vendor/Driver attempted to fetch weekoff configs")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to view employees",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # Employee tenant enforcement
+        if user_type == "employee":
+            tenant_id = user_data.get("tenant_id")
+            logger.info(f"Employee tenant enforced: {tenant_id}")
+            if not tenant_id:
+                logger.error("Tenant ID missing in token for employee")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+        elif user_type == "admin":
+            if not tenant_id:
+                logger.error("Tenant ID missing for admin request")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID is required for admin",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+            logger.info(f"Admin requested tenant: {tenant_id}")
+            # Ensure tenant exists
+        if not tenant_crud.get_by_id(db, tenant_id=tenant_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Tenant {tenant_id} not found",
+                    error_code="TENANT_NOT_FOUND",
+                ),
+            )
+        # Query employees in tenant
+        logger.info(f"Querying employees in tenant {tenant_id}")
+        query = db.query(Employee).filter(Employee.tenant_id == tenant_id)
+        if is_active is not None:
+            query = query.filter(Employee.is_active == is_active)
+            logger.info(f"Filtering employees by is_active={is_active}")
+
+        total, employees = paginate_query(query, skip, limit)
+        logger.info(f"Fetched {len(employees)} employees (total: {total}) for tenant {tenant_id}")
+
+        # Prepare weekoff configs
+        configs_response = []
+        for emp in employees:
+            logger.debug(f"Processing employee_id={emp.employee_id}, name={emp.name}")
+            try:
+                config = weekoff_crud.ensure_weekoff_config(db, employee_id=emp.employee_id)
+                db.flush()  # flush changes without committing yet
+                logger.debug(f"Weekoff config ensured for employee {emp.employee_id}")
+            except HTTPException:
+                logger.warning(f"Skipping weekoff config for employee {emp.employee_id} (not found)")
+                continue
+
+            configs_response.append(
+                WeekoffConfigResponse.model_validate(config, from_attributes=True).dict()
+            )
+
+        db.commit()  # commit all default weekoff configs at once
+        logger.info(f"Committed weekoff configs for tenant {tenant_id}")
+
+        return ResponseWrapper.success(
+            data={"total": total, "items": configs_response},
+            message=f"Weekoff configs fetched for tenant {tenant_id}"
+        )
+
+    except SQLAlchemyError as e:
+        logger.exception(f"DB error while fetching weekoff configs for tenant {tenant_id}: {e}")
+        raise handle_db_error(e)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error while fetching weekoff configs for tenant {tenant_id}: {e}")
+        raise handle_http_error(e)
+
+
 @router.put("/{employee_id}", response_model=WeekoffConfigResponse)
 def update_weekoff_by_employee(
     employee_id: int,
@@ -254,41 +366,3 @@ def update_weekoff_by_tenant(
         logger.exception(f"Unexpected error updating weekoff config for tenant {tenant_id}: {e}")
         raise handle_http_error(e)
 
-
-
-
-
-@router.get("/tenant/{tenant_id}", response_model=List[WeekoffConfigResponse])
-def get_weekoffs_by_tenant(
-    tenant_id: str,
-    db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["weekoff-config.read"], check_tenant=True)),
-):
-    """
-    Fetch weekoff configs for all employees in a tenant.
-    """
-    try:
-        user_type = user_data.get("user_type")
-        token_tenant_id = user_data.get("tenant_id")
-
-        if user_type == "employee" and tenant_id != token_tenant_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=ResponseWrapper.error(
-                    message="You cannot view weekoff config outside your tenant",
-                    error_code="TENANT_FORBIDDEN",
-                ),
-            )
-
-        db_objs = weekoff_crud.get_by_tenant(db, tenant_id=tenant_id)
-
-        return [
-            WeekoffConfigResponse.model_validate(obj, from_attributes=True)
-            for obj in db_objs
-        ]
-
-    except SQLAlchemyError as e:
-        raise handle_db_error(e)
-    except Exception as e:
-        logger.exception(f"Unexpected error fetching weekoff configs for tenant {tenant_id}: {e}")
-        raise handle_http_error(e)
