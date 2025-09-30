@@ -1,4 +1,5 @@
 from app.models.employee import Employee
+from app.models.team import Team
 from app.models.weekoff_config import WeekoffConfig
 from app.utils.pagination import paginate_query
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -338,8 +339,7 @@ def update_weekoff_by_employee(
         logger.exception(f"Unexpected error updating weekoff config for employee {employee_id}: {e}")
         raise handle_http_error(e)
 
-
-@router.put("/team/{team_id}", response_model=List[WeekoffConfigResponse])
+@router.put("/team/{team_id}", response_model=dict, status_code=status.HTTP_200_OK)
 def update_weekoff_by_team(
     team_id: int,
     update_in: WeekoffConfigUpdate,
@@ -347,29 +347,81 @@ def update_weekoff_by_team(
     user_data=Depends(PermissionChecker(["weekoff-config.update"], check_tenant=True)),
 ):
     """
-    Bulk update weekoff configs for a team.
-    All employees under the team will have their weekoff config updated.
+    Bulk update weekoff configs for all employees under a team.
+    - employee → only within their tenant
+    - admin → can update across tenants
+    Includes validation, tenant enforcement, and detailed logs.
     """
     try:
+        logger.info(f"Starting bulk weekoff update for team_id={team_id}")
+        logger.debug(f"Payload received: {update_in.dict(exclude_unset=True)}")
+
         tenant_id = user_data.get("tenant_id")
         user_type = user_data.get("user_type")
+        logger.info(f"Requester user_type={user_type}, tenant_id={tenant_id}")
 
+        # 🚫 Vendors/Drivers forbidden
+        if user_type in {"vendor", "driver"}:
+            logger.warning("Vendor/Driver attempted to update weekoff configs")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to update weekoff configs",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # ✅ Ensure team exists
+        team = db.query(Team).filter(Team.team_id == team_id).first()
+        if not team:
+            logger.warning(f"Team {team_id} not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Team {team_id} not found",
+                    error_code="TEAM_NOT_FOUND",
+                ),
+            )
+        logger.info(f"Team {team_id} found (tenant_id={team.tenant_id})")
+
+        # 🔒 Tenant enforcement
+        if user_type == "employee" and team.tenant_id != tenant_id:
+            logger.warning(
+                f"Employee user cannot update weekoff outside their tenant "
+                f"(team_id={team_id}, team_tenant={team.tenant_id}, user_tenant={tenant_id})"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You cannot update weekoff config outside your tenant",
+                    error_code="TENANT_FORBIDDEN",
+                ),
+            )
+
+        # ✅ Bulk update via CRUD
         db_objs = weekoff_crud.update_by_team(db, team_id=team_id, obj_in=update_in)
-
-        # filter if employee role
-        if user_type == "employee":
-            db_objs = [obj for obj in db_objs if obj.employee.tenant_id == tenant_id]
+        logger.info(f"Weekoff configs updated for {len(db_objs)} employees in team {team_id}")
 
         db.commit()
-        db.refresh_all(db_objs)
+        for obj in db_objs:
+            db.refresh(obj)
+        logger.info(f"Committed bulk weekoff update for team {team_id}")
 
-        return [
-            WeekoffConfigResponse.model_validate(obj, from_attributes=True)
-            for obj in db_objs
-        ]
+        return ResponseWrapper.success(
+            data={
+                "weekoff_configs": [
+                    WeekoffConfigResponse.model_validate(obj, from_attributes=True)
+                    for obj in db_objs
+                ]
+            },
+            message=f"Weekoff configs updated successfully for team {team_id} ({len(db_objs)} employees)",
+        )
 
     except SQLAlchemyError as e:
+        logger.exception(f"DB error while updating weekoff config for team {team_id}: {e}")
         raise handle_db_error(e)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(f"Unexpected error updating weekoff config for team {team_id}: {e}")
         raise handle_http_error(e)
