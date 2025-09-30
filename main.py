@@ -85,7 +85,7 @@ app.include_router(team_router, prefix="/api/v1")
 app.include_router(shift_router, prefix="/api/v1")
 # app.include_router(route_router, prefix="/api/v1")
 # app.include_router(route_booking_router, prefix="/api/v1")
-# app.include_router(weekoff_config_router, prefix="/api/v1")
+app.include_router(weekoff_config_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")  # Add the auth router
 
 # Include IAM routers
