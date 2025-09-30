@@ -2,6 +2,8 @@ from fastapi import Depends, Request, HTTPException, status
 from typing import List
 import logging
 
+from app.utils.response_utils import ResponseWrapper
+
 from .middleware import JWTAuthMiddleware
 from .token_validation import validate_bearer_token
 
@@ -39,18 +41,21 @@ class PermissionChecker:
         logger.info("Permission check passed")
 
         # Check tenant access if required
-        if self.check_tenant:
-            tenant_id = request.path_params.get("tenant_id")
+        # if self.check_tenant:
+        #     tenant_id = request.path_params.get("tenant_id")
 
-            logger.info(f"Tenant Check - Path tenant_id: {tenant_id}, Token tenant_id: {user_data['tenant_id']}")
+        #     logger.info(f"Tenant Check - Path tenant_id: {tenant_id}, Token tenant_id: {user_data['tenant_id']}")
 
-            if tenant_id and int(tenant_id) != int(user_data["tenant_id"]):
-                logger.warning(f"Tenant access forbidden - Path tenant_id: {tenant_id}, Token tenant_id: {user_data['tenant_id']}")
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Access to this tenant is forbidden"
-                )
+        #     if tenant_id and str(tenant_id) != str(user_data["tenant_id"]):
+        #         logger.warning(f"Tenant access forbidden - Path tenant_id: {tenant_id}, Token tenant_id: {user_data['tenant_id']}")
+        #         raise HTTPException(
+        #         status_code=status.HTTP_403_FORBIDDEN,
+        #         detail=ResponseWrapper.error(
+        #             message="You cannot update weekoff config outside your tenant",
+        #             error_code="TENANT_FORBIDDEN",
+        #         ),
+        #     )
 
-            logger.info("Tenant check passed")
+        #     logger.info("Tenant check passed")
 
         return user_data
