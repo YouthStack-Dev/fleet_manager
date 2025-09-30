@@ -7,6 +7,7 @@ from app.models.team import Team
 from app.schemas.employee import EmployeeCreate, EmployeeUpdate
 from app.crud.base import CRUDBase
 from common_utils.auth.utils import hash_password
+from app.crud.weekoff import weekoff_crud
 
 class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
     def get_by_email(self, db: Session, *, email: str) -> Optional[Employee]:
@@ -46,6 +47,11 @@ class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
         )
         db.add(db_obj)
         db.flush()
+        weekoff_crud.create_or_update(
+            db,
+            employee_id=db_obj.employee_id,
+            obj_in={"sunday": True}  # 👈 only Sunday off
+        )
         return db_obj
     
     def update_with_password(
