@@ -128,6 +128,7 @@ def read_employees(
     name: Optional[str] = None,
     tenant_id: Optional[str] = None,
     team_id: Optional[int] = None,
+    is_active: Optional[bool] = None,  # 👈 Added filter
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["employee.read"], check_tenant=True)),
 ):
@@ -137,6 +138,7 @@ def read_employees(
     - employee → only within their tenant
     - admin → must filter by tenant_id
     - team_id → optional filter, must belong to the same tenant
+    - is_active → optional filter
     """
     try:
         user_type = user_data.get("user_type")
@@ -186,7 +188,7 @@ def read_employees(
         # --- Team filter check ---
         if team_id is not None:
             team = team_crud.get_by_id(db, team_id=team_id)
-            if not team:
+            if not team or team.tenant_id != tenant_id:  # 🔒 enforce tenant match
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=ResponseWrapper.error(
@@ -197,10 +199,13 @@ def read_employees(
 
         # Query employees
         query = db.query(Employee).filter(Employee.tenant_id == tenant_id)
+
         if name:
             query = query.filter(Employee.name.ilike(f"%{name}%"))
         if team_id is not None:
             query = query.filter(Employee.team_id == team_id)
+        if is_active is not None:  # 👈 Apply is_active filter
+            query = query.filter(Employee.is_active == is_active)
 
         total, items = paginate_query(query, skip, limit)
 
