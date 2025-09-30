@@ -253,7 +253,7 @@ def get_weekoffs_by_tenant(
         raise handle_http_error(e)
 
 
-@router.put("/{employee_id}", response_model=WeekoffConfigResponse)
+@router.put("/{employee_id}", response_model=dict, status_code=status.HTTP_200_OK)
 def update_weekoff_by_employee(
     employee_id: int,
     update_in: WeekoffConfigUpdate,
@@ -262,14 +262,48 @@ def update_weekoff_by_employee(
 ):
     """
     Update weekoff config for an employee.
+    - employee → only within their tenant
+    - admin → can access any tenant
+    Includes validation and detailed logs.
     """
     try:
+        logger.info(f"Starting weekoff update for employee_id={employee_id}")
+        logger.debug(f"Payload received: {update_in.dict(exclude_unset=True)}")
+
         tenant_id = user_data.get("tenant_id")
         user_type = user_data.get("user_type")
+        logger.info(f"Requester user_type={user_type}, tenant_id={tenant_id}")
 
-        db_obj = weekoff_crud.ensure_weekoff_config(db, employee_id=employee_id)
+        # 🚫 Vendors/Drivers forbidden
+        if user_type in {"vendor", "driver"}:
+            logger.warning("Vendor/Driver attempted to fetch weekoff configs")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to view employees",
+                    error_code="FORBIDDEN",
+                ),
+            )
 
-        if user_type == "employee" and db_obj.employee.tenant_id != tenant_id:
+        # Ensure employee exists
+        employee = db.query(Employee).filter(Employee.employee_id == employee_id).first()
+        if not employee:
+            logger.warning(f"Employee {employee_id} not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Employee {employee_id} not found",
+                    error_code="EMPLOYEE_NOT_FOUND",
+                ),
+            )
+        logger.info(f"Employee {employee_id} found (tenant_id={employee.tenant_id}, is_active={employee.is_active})")
+
+        # Tenant enforcement
+        if user_type == "employee" and employee.tenant_id != tenant_id:
+            logger.warning(
+                f"Employee user cannot update weekoff outside their tenant "
+                f"(employee_id={employee_id}, employee_tenant={employee.tenant_id}, user_tenant={tenant_id})"
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
@@ -278,16 +312,25 @@ def update_weekoff_by_employee(
                 ),
             )
 
+        # Ensure config exists or create default
+        db_obj = weekoff_crud.ensure_weekoff_config(db, employee_id=employee_id)
+        logger.debug(f"Existing weekoff config found for employee {employee_id}: weekoff_id={db_obj.weekoff_id}")
+
+        # Update via CRUD
         db_obj = weekoff_crud.update_by_employee(db, employee_id=employee_id, obj_in=update_in)
+        logger.info(f"Weekoff config updated for employee {employee_id}: {update_in.dict(exclude_unset=True)}")
+
         db.commit()
         db.refresh(db_obj)
+        logger.info(f"Committed weekoff update for employee {employee_id}")
 
         return ResponseWrapper.success(
             data={"weekoff_config": WeekoffConfigResponse.model_validate(db_obj, from_attributes=True)},
-            message="Weekoff config updated successfully"
+            message=f"Weekoff config updated successfully for employee {employee_id}"
         )
 
     except SQLAlchemyError as e:
+        logger.exception(f"DB error while updating weekoff config for employee {employee_id}: {e}")
         raise handle_db_error(e)
     except HTTPException:
         raise
