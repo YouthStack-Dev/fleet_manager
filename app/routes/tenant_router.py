@@ -11,6 +11,7 @@ from app.models.iam.role import Role
 from app.models.tenant import Tenant
 from app.crud.tenant import tenant_crud
 from app.crud.team import team_crud
+from app.crud.iam.policy import policy_crud 
 from sqlalchemy.exc import SQLAlchemyError
 from app.models.tenant import Tenant
 from app.schemas.team import TeamCreate, TeamUpdate, TeamResponse, TeamPaginationResponse
@@ -450,12 +451,28 @@ def read_tenant(
 
         tenant = TenantResponse.model_validate(db_tenant, from_attributes=True)
 
-        logger.info(f"Tenant fetched successfully: {tenant_id}")
+        # 👑 Fetch only the connected admin policy for this tenant
+        admin_policy = (
+            db.query(Policy)
+            .filter(
+                Policy.tenant_id == tenant_id,
+                Policy.name == f"{tenant_id}_AdminPolicy"
+            )
+            .first()
+        )
+
+        admin_policy_data = None
+        if admin_policy:
+            admin_policy_data = PolicyResponse.model_validate(admin_policy, from_attributes=True)
 
         return ResponseWrapper.success(
-            data=tenant,
+            data={
+                "tenant": tenant,
+                "admin_policy": admin_policy_data  # single policy, not a list
+            },
             message="Tenant fetched successfully",
         )
+
 
     except HTTPException:
         raise
@@ -470,6 +487,8 @@ def read_tenant(
                 details={"error": str(e)},
             ),
         )
+
+
 @router.put("/{tenant_id}", response_model=dict, status_code=status.HTTP_200_OK)
 def update_tenant(
     tenant_id: str,
