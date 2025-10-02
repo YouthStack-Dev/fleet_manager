@@ -1,4 +1,5 @@
 from email.mime import message
+from app.schemas.cutoff import CutoffCreate
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -10,6 +11,7 @@ from app.models.iam.role import Role
 from app.models.tenant import Tenant
 from app.crud.tenant import tenant_crud
 from app.crud.team import team_crud
+from app.crud.iam.policy import policy_crud 
 from sqlalchemy.exc import SQLAlchemyError
 from app.models.tenant import Tenant
 from app.schemas.team import TeamCreate, TeamUpdate, TeamResponse, TeamPaginationResponse
@@ -20,6 +22,7 @@ from app.core.logging_config import get_logger
 from app.core.email_service import get_email_service
 
 from app.crud.employee import employee_crud
+from app.crud.cutoff import cutoff_crud
 from app.schemas.employee import EmployeeCreate, EmployeeResponse
 from app.schemas.iam.policy import PolicyResponse
 from app.schemas.iam.role import RoleResponse
@@ -114,6 +117,17 @@ def create_tenant(
             # --- Create tenant ---
             new_tenant = tenant_crud.create(db, obj_in=tenant)
             logger.info(f"Tenant created successfully: {new_tenant.tenant_id}")
+
+            # --- Create default Cutoff ---
+            default_cutoff = cutoff_crud.create_with_tenant(
+                db,
+                obj_in=CutoffCreate(
+                    tenant_id=new_tenant.tenant_id,
+                    booking_cutoff="0:00",  # default 0 hr 0 min
+                    cancel_cutoff="0:00"
+                )
+            )
+            logger.info(f"Default cutoff created for tenant {new_tenant.tenant_id}")
 
             # --- Create default team ---
             default_team = team_crud.create(
@@ -437,12 +451,28 @@ def read_tenant(
 
         tenant = TenantResponse.model_validate(db_tenant, from_attributes=True)
 
-        logger.info(f"Tenant fetched successfully: {tenant_id}")
+        # 👑 Fetch only the connected admin policy for this tenant
+        admin_policy = (
+            db.query(Policy)
+            .filter(
+                Policy.tenant_id == tenant_id,
+                Policy.name == f"{tenant_id}_AdminPolicy"
+            )
+            .first()
+        )
+
+        admin_policy_data = None
+        if admin_policy:
+            admin_policy_data = PolicyResponse.model_validate(admin_policy, from_attributes=True)
 
         return ResponseWrapper.success(
-            data=tenant,
+            data={
+                "tenant": tenant,
+                "admin_policy": admin_policy_data  # single policy, not a list
+            },
             message="Tenant fetched successfully",
         )
+
 
     except HTTPException:
         raise
@@ -457,6 +487,8 @@ def read_tenant(
                 details={"error": str(e)},
             ),
         )
+
+
 @router.put("/{tenant_id}", response_model=dict, status_code=status.HTTP_200_OK)
 def update_tenant(
     tenant_id: str,

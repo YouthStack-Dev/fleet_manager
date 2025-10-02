@@ -104,6 +104,7 @@ def seed_iam(db: Session):
         "vendor",
         "vendor-user",
         "weekoff-config",
+        "cutoff",
         "permissions",
         "policy",
         "role",
