@@ -1,4 +1,4 @@
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, SerializationInfo, field_serializer, validator
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -37,13 +37,22 @@ class CutoffCreate(CutoffBase):
 
 
 class CutoffUpdate(CutoffBase):
-    tenant_id: str
+    tenant_id: Optional[str] = None  # Optional for updates
 
 
-class CutoffOut(CutoffBase):
+class CutoffOut(BaseModel):
     tenant_id: str
+    booking_cutoff: timedelta
+    cancel_cutoff: timedelta
     created_at: datetime
     updated_at: datetime
 
     class Config:
         orm_mode = True
+
+    @field_serializer("booking_cutoff", "cancel_cutoff")
+    def serialize_cutoff(self, v: timedelta, _info):
+        # Convert timedelta -> "HH:MM"
+        total_minutes = int(v.total_seconds() // 60)
+        h, m = divmod(total_minutes, 60)
+        return f"{h}:{m:02d}"

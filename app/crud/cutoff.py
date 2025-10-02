@@ -39,12 +39,18 @@ class CRUDCutoff(CRUDBase[Cutoff, CutoffCreate, CutoffUpdate]):
     def update_by_tenant(self, db: Session, *, tenant_id: str, obj_in: CutoffUpdate) -> Cutoff:
         db_obj = self.ensure_cutoff(db, tenant_id=tenant_id)
         update_data = obj_in.dict(exclude_unset=True)
+
+        # Never allow tenant_id to be updated
+        update_data.pop("tenant_id", None)
+
         if "booking_cutoff" in update_data:
             update_data["booking_cutoff"] = self._parse_time(update_data["booking_cutoff"])
         if "cancel_cutoff" in update_data:
             update_data["cancel_cutoff"] = self._parse_time(update_data["cancel_cutoff"])
+
         for field, value in update_data.items():
             setattr(db_obj, field, value)
+
         db.add(db_obj)
         db.flush()
         return db_obj

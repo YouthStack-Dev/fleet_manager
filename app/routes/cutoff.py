@@ -80,9 +80,8 @@ def get_cutoffs(
         raise handle_http_error(e)
 
 
-@router.put("/{tenant_id}",status_code=status.HTTP_200_OK)
+@router.put("/",status_code=status.HTTP_200_OK)
 def update_cutoff(
-    tenant_id: str,
     update_in: CutoffUpdate,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["cutoff.update"], check_tenant=True)),
@@ -95,6 +94,15 @@ def update_cutoff(
     try:
         user_type = user_data.get("user_type")
         token_tenant_id = user_data.get("tenant_id")
+        if user_type == "admin" and not update_in.tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Admin must provide tenant_id to update cutoff",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+        tenant_id = update_in.tenant_id if user_type == "admin" else token_tenant_id
 
         if user_type == "employee" and tenant_id != token_tenant_id:
             raise HTTPException(
@@ -106,7 +114,7 @@ def update_cutoff(
             )
 
         # Ensure tenant exists
-        tenant = tenant_crud.get_by_id(db, tenant_id)
+        tenant = tenant_crud.get_by_id(db, tenant_id=tenant_id)
         if not tenant:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
