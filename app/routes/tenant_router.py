@@ -1,4 +1,5 @@
 from email.mime import message
+from app.schemas.cutoff import CutoffCreate
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -20,6 +21,7 @@ from app.core.logging_config import get_logger
 from app.core.email_service import get_email_service
 
 from app.crud.employee import employee_crud
+from app.crud.cutoff import cutoff_crud
 from app.schemas.employee import EmployeeCreate, EmployeeResponse
 from app.schemas.iam.policy import PolicyResponse
 from app.schemas.iam.role import RoleResponse
@@ -114,6 +116,17 @@ def create_tenant(
             # --- Create tenant ---
             new_tenant = tenant_crud.create(db, obj_in=tenant)
             logger.info(f"Tenant created successfully: {new_tenant.tenant_id}")
+
+            # --- Create default Cutoff ---
+            default_cutoff = cutoff_crud.create_with_tenant(
+                db,
+                obj_in=CutoffCreate(
+                    tenant_id=new_tenant.tenant_id,
+                    booking_cutoff="0:00",  # default 0 hr 0 min
+                    cancel_cutoff="0:00"
+                )
+            )
+            logger.info(f"Default cutoff created for tenant {new_tenant.tenant_id}")
 
             # --- Create default team ---
             default_team = team_crud.create(

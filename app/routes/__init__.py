@@ -12,3 +12,4 @@ from app.routes.route_router import router as route_router
 from app.routes.route_booking_router import router as route_booking_router
 from app.routes.weekoff_config_router import router as weekoff_config_router
 from app.routes.auth_router import router as auth_router
+from app.routes.cutoff import router as cutoff_router

@@ -13,6 +13,7 @@ from app.models.booking import Booking
 from app.models.route import Route
 from app.models.route_booking import RouteBooking
 from app.models.weekoff_config import WeekoffConfig
+from app.models.cutoff import Cutoff
 
 # IAM models
 from app.models.iam.permission import Permission
