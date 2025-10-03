@@ -24,6 +24,16 @@ class CRUDVehicleType(CRUDBase[VehicleType, VehicleTypeCreate, VehicleTypeUpdate
             .first()
         )
 
+    def get_by_vendor_and_id(
+        self, db: Session, *, vendor_id: Optional[int], vehicle_type_id: int
+    ) -> Optional[VehicleType]:
+        """Fetch vehicle type by vendor + id"""
+        query = db.query(VehicleType).filter(VehicleType.vehicle_type_id == vehicle_type_id)
+        if vendor_id is not None:  # vendor user
+            query = query.filter(VehicleType.vendor_id == vendor_id)
+        return query.first()
+
+
     def create_with_vendor(
         self, db: Session, *, vendor_id: int, obj_in: VehicleTypeCreate
     ) -> VehicleType:
@@ -80,11 +90,11 @@ class CRUDVehicleType(CRUDBase[VehicleType, VehicleTypeCreate, VehicleTypeUpdate
 
         return db_obj
 
-    def get_by_vendor(self, db: Session, *, vendor_id: int, active_only: bool = True) -> List[VehicleType]:
+    def get_by_vendor(self, db: Session, *, vendor_id: int, active_only: Optional[bool] = True) -> List[VehicleType]:
         """Get all vehicle types for a vendor"""
         query = db.query(VehicleType).filter(VehicleType.vendor_id == vendor_id)
-        if active_only:
-            query = query.filter(VehicleType.is_active.is_(True))
+        if active_only is not None:
+            query = query.filter(VehicleType.is_active.is_(active_only))
         return query.all()
 
 

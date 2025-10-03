@@ -119,17 +119,64 @@ def create_vehicle_type(
         raise handle_http_error(e)
 
 
-
-@router.get("/{vendor_id}", response_model=dict, status_code=status.HTTP_200_OK)
-def list_vehicle_types(
-    vendor_id: int,
+@router.get("/", response_model=dict, status_code=status.HTTP_200_OK)
+def get_all_vehicle_types(
+    vendor_id: Optional[int] = None,
     active_only: Optional[bool] = True,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vehicle-type.read"], check_tenant=False)),
 ):
-    """List all vehicle types for a vendor (optionally only active ones)"""
+    """
+    Get all vehicle types under a vendor.
+
+    Rules:
+    - vendor -> vendor_id taken from token
+    - admin  -> vendor_id required in query
+    - others -> forbidden
+    """
     try:
-        logger.info(f"Listing vehicle types for vendor_id={vendor_id}, active_only={active_only}")
+        user_type = user_data.get("user_type")
+
+        if user_type == "vendor":
+            vendor_id = user_data.get("vendor_id")
+            if not vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Vendor ID missing in token",
+                        error_code="VENDOR_ID_REQUIRED",
+                    ),
+                )
+
+        elif user_type == "admin":
+            if not vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="vendor_id is required in query for admin users",
+                        error_code="VENDOR_ID_REQUIRED",
+                    ),
+                )
+
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to read vehicle types",
+                    error_code="FORBIDDEN",
+                ),
+            )
+        vendor = vendor_crud.get_by_id(db, vendor_id=vendor_id)
+        if not vendor:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Vendor {vendor_id} not found",
+                    error_code="VENDOR_NOT_FOUND",
+                ),
+            )
+
+        logger.info(f"Fetching all vehicle types for vendor_id={vendor_id}, active_only={active_only}")
         items = vehicle_type_crud.get_by_vendor(db, vendor_id=vendor_id, active_only=active_only)
 
         return ResponseWrapper.success(
@@ -138,13 +185,82 @@ def list_vehicle_types(
         )
 
     except SQLAlchemyError as e:
-        logger.exception(f"DB error while listing vehicle types for vendor {vendor_id}: {e}")
+        logger.exception(f"DB error while fetching all vehicle types for vendor {vendor_id}: {e}")
         raise handle_db_error(e)
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"Unexpected error listing vehicle types for vendor {vendor_id}: {e}")
+        logger.exception(f"Unexpected error fetching all vehicle types for vendor {vendor_id}: {e}")
         raise handle_http_error(e)
+
+
+@router.get("/{vehicle_type_id}", response_model=dict, status_code=status.HTTP_200_OK)
+def get_vehicle_type(
+    vehicle_type_id: int,
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["vehicle-type.read"], check_tenant=False)),
+):
+    """
+    Get a particular vehicle type by ID.
+
+    Rules:
+    - vendor -> vendor_id taken from token
+    - admin  -> vendor_id required in query
+    - others -> forbidden
+    """
+    try:
+        user_type = user_data.get("user_type")
+
+        if user_type == "vendor":
+            vendor_id = user_data.get("vendor_id")
+            if not vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Vendor ID missing in token",
+                        error_code="VENDOR_ID_REQUIRED",
+                    ),
+                )
+        elif user_type == "admin":
+            vendor_id = None
+
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to read vehicle types",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        db_obj = vehicle_type_crud.get_by_vendor_and_id(
+            db, vendor_id=vendor_id, vehicle_type_id=vehicle_type_id
+        )
+
+
+        if not db_obj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Vehicle type {vehicle_type_id} not found for vendor {vendor_id}",
+                    error_code="VEHICLE_TYPE_NOT_FOUND",
+                ),
+            )
+
+        return ResponseWrapper.success(
+            data={"vehicle_type": VehicleTypeResponse.model_validate(db_obj, from_attributes=True)},
+            message=f"Vehicle type {vehicle_type_id} fetched successfully",
+        )
+
+    except SQLAlchemyError as e:
+        logger.exception(f"DB error while fetching vehicle type {vehicle_type_id}: {e}")
+        raise handle_db_error(e)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error fetching vehicle type {vehicle_type_id}: {e}")
+        raise handle_http_error(e)
+
 
 
 @router.put("/{vehicle_type_id}", response_model=dict, status_code=status.HTTP_200_OK)
