@@ -60,7 +60,6 @@ class VehicleTypeCreate(VehicleTypeBase):
 
 class VehicleTypeUpdate(BaseModel, BaseValidatorsMixin):
     name: Optional[str] = None
-    vendor_id: Optional[int] = None
     seats: Optional[int] = Field(None, ge=1, le=100)
     description: Optional[str] = None
     is_active: Optional[bool] = None
@@ -69,7 +68,6 @@ class VehicleTypeUpdate(BaseModel, BaseValidatorsMixin):
         json_schema_extra={
             "example": {
                 "name": "Updated Mini Bus",
-                "vendor_id": 1,
                 "seats": 25,
                 "description": "Updated description for the vehicle type",
                 "is_active": False,

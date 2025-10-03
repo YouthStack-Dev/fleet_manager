@@ -267,7 +267,6 @@ def get_vehicle_type(
         raise handle_http_error(e)
 
 
-
 @router.put("/{vehicle_type_id}", response_model=dict, status_code=status.HTTP_200_OK)
 def update_vehicle_type(
     vehicle_type_id: int,
@@ -275,16 +274,73 @@ def update_vehicle_type(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vehicle-type.update"], check_tenant=False)),
 ):
-    """Update an existing vehicle type"""
+    """
+    Update an existing vehicle type.
+
+    Rules:
+    - vendor -> can only update their own vehicle types
+    - admin  -> can update any vehicle type
+    """
     try:
-        logger.info(f"Updating vehicle type {vehicle_type_id} with data={update_in.dict(exclude_unset=True)}")
-        db_obj = vehicle_type_crud.update_with_vendor(db, vehicle_type_id=vehicle_type_id, obj_in=update_in)
+        user_type = user_data.get("user_type")
+        vendor_id = None
+
+        if user_type == "vendor":
+            vendor_id = user_data.get("vendor_id")
+            if not vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Vendor ID missing in token",
+                        error_code="VENDOR_ID_REQUIRED",
+                    ),
+                )
+        elif user_type != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to update vehicle types",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # Fetch existing vehicle type
+        db_obj = vehicle_type_crud.get_by_vendor_and_id(db, vendor_id=vendor_id, vehicle_type_id=vehicle_type_id)
+        if not db_obj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Vehicle type {vehicle_type_id} not found",
+                    error_code="VEHICLE_TYPE_NOT_FOUND",
+                ),
+            )
+
+        # Check for duplicate name if name is being updated
+        if update_in.name and update_in.name != db_obj.name:
+            duplicate = vehicle_type_crud.get_by_vendor_and_name(db, vendor_id=db_obj.vendor_id, name=update_in.name)
+            if duplicate:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=ResponseWrapper.error(
+                        message=f"Vehicle type '{update_in.name}' already exists for vendor {db_obj.vendor_id}",
+                        error_code="VEHICLE_TYPE_CONFLICT",
+                    ),
+                )
+
+        # Apply updates
+        update_data = update_in.dict(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(db_obj, field, value)
+
         db.commit()
         db.refresh(db_obj)
 
+        logger.info(
+            f"Vehicle type {vehicle_type_id} updated by user {user_data.get('user_id')} with data={update_data}"
+        )
         return ResponseWrapper.success(
             data={"vehicle_type": VehicleTypeResponse.model_validate(db_obj, from_attributes=True)},
-            message=f"Vehicle type {vehicle_type_id} updated successfully",
+            message="Vehicle type updated successfully",
         )
 
     except SQLAlchemyError as e:
@@ -297,45 +353,4 @@ def update_vehicle_type(
     except Exception as e:
         db.rollback()
         logger.exception(f"Unexpected error updating vehicle type {vehicle_type_id}: {e}")
-        raise handle_http_error(e)
-
-
-@router.delete("/{vehicle_type_id}", response_model=dict, status_code=status.HTTP_200_OK)
-def delete_vehicle_type(
-    vehicle_type_id: int,
-    db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vehicle-type.delete"], check_tenant=False)),
-):
-    """Soft delete or deactivate a vehicle type"""
-    try:
-        logger.info(f"Deleting (soft) vehicle type {vehicle_type_id}")
-        db_obj = db.query(vehicle_type_crud.model).filter_by(vehicle_type_id=vehicle_type_id).first()
-        if not db_obj:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=ResponseWrapper.error(
-                    message=f"Vehicle type {vehicle_type_id} not found",
-                    error_code="VEHICLE_TYPE_NOT_FOUND",
-                ),
-            )
-
-        db_obj.is_active = False
-        db.commit()
-        db.refresh(db_obj)
-
-        return ResponseWrapper.success(
-            data={"vehicle_type": VehicleTypeResponse.model_validate(db_obj, from_attributes=True)},
-            message=f"Vehicle type {vehicle_type_id} deactivated successfully",
-        )
-
-    except SQLAlchemyError as e:
-        db.rollback()
-        logger.exception(f"DB error while deleting vehicle type {vehicle_type_id}: {e}")
-        raise handle_db_error(e)
-    except HTTPException:
-        db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"Unexpected error deleting vehicle type {vehicle_type_id}: {e}")
         raise handle_http_error(e)
