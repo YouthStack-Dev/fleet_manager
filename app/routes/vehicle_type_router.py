@@ -122,6 +122,7 @@ def create_vehicle_type(
 @router.get("/", response_model=dict, status_code=status.HTTP_200_OK)
 def get_all_vehicle_types(
     vendor_id: Optional[int] = None,
+    name: Optional[str] = None,  # <-- filter by name
     active_only: Optional[bool] = True,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vehicle-type.read"], check_tenant=False)),
@@ -166,6 +167,7 @@ def get_all_vehicle_types(
                     error_code="FORBIDDEN",
                 ),
             )
+
         vendor = vendor_crud.get_by_id(db, vendor_id=vendor_id)
         if not vendor:
             raise HTTPException(
@@ -176,8 +178,10 @@ def get_all_vehicle_types(
                 ),
             )
 
-        logger.info(f"Fetching all vehicle types for vendor_id={vendor_id}, active_only={active_only}")
-        items = vehicle_type_crud.get_by_vendor(db, vendor_id=vendor_id, active_only=active_only)
+        logger.info(f"Fetching all vehicle types for vendor_id={vendor_id}, active_only={active_only}, name={name}")
+        items = vehicle_type_crud.get_by_vendor(
+            db, vendor_id=vendor_id, active_only=active_only, name=name
+        )
 
         return ResponseWrapper.success(
             data={"items": [VehicleTypeResponse.model_validate(obj, from_attributes=True) for obj in items]},
@@ -192,6 +196,7 @@ def get_all_vehicle_types(
     except Exception as e:
         logger.exception(f"Unexpected error fetching all vehicle types for vendor {vendor_id}: {e}")
         raise handle_http_error(e)
+
 
 
 @router.get("/{vehicle_type_id}", response_model=dict, status_code=status.HTTP_200_OK)

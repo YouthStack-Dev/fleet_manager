@@ -34,6 +34,7 @@ class CRUDVehicleType(CRUDBase[VehicleType, VehicleTypeCreate, VehicleTypeUpdate
         return query.first()
 
 
+
     def create_with_vendor(
         self, db: Session, *, vendor_id: int, obj_in: VehicleTypeCreate
     ) -> VehicleType:
@@ -90,11 +91,23 @@ class CRUDVehicleType(CRUDBase[VehicleType, VehicleTypeCreate, VehicleTypeUpdate
 
         return db_obj
 
-    def get_by_vendor(self, db: Session, *, vendor_id: int, active_only: Optional[bool] = True) -> List[VehicleType]:
-        """Get all vehicle types for a vendor"""
+    def get_by_vendor(
+        self,
+        db: Session,
+        *,
+        vendor_id: int,
+        active_only: Optional[bool] = True,
+        name: Optional[str] = None  # <-- filter by name
+    ) -> List[VehicleType]:
+        """Get all vehicle types for a vendor, optionally filter by name and active status"""
         query = db.query(VehicleType).filter(VehicleType.vendor_id == vendor_id)
+
         if active_only is not None:
             query = query.filter(VehicleType.is_active.is_(active_only))
+
+        if name:
+            query = query.filter(VehicleType.name.ilike(f"%{name.strip()}%"))
+
         return query.all()
 
 
