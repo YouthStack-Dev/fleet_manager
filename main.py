@@ -33,6 +33,7 @@ from app.routes import (
     route_router,
     route_booking_router,
     weekoff_config_router,
+    
     auth_router  # Add the new auth router
 )
 
@@ -79,7 +80,7 @@ app.include_router(employee_router, prefix="/api/v1")
 # app.include_router(booking_router, prefix="/api/v1")
 app.include_router(tenant_router, prefix="/api/v1")
 app.include_router(vendor_router, prefix="/api/v1")
-# app.include_router(vehicle_type_router, prefix="/api/v1")
+app.include_router(vehicle_type_router, prefix="/api/v1")
 # app.include_router(vehicle_router, prefix="/api/v1")
 # app.include_router(vendor_user_router, prefix="/api/v1")
 app.include_router(team_router, prefix="/api/v1")
