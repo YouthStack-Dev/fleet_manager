@@ -354,3 +354,77 @@ def update_vehicle_type(
         db.rollback()
         logger.exception(f"Unexpected error updating vehicle type {vehicle_type_id}: {e}")
         raise handle_http_error(e)
+    
+@router.patch("/{vehicle_type_id}/toggle-status", response_model=dict, status_code=status.HTTP_200_OK)
+def toggle_vehicle_type_status(
+    vehicle_type_id: int,
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["vehicle-type.update"], check_tenant=False)),
+):
+    """
+    Toggle the active status of a vehicle type.
+
+    Rules:
+    - vendor -> can only toggle their own vehicle types
+    - admin  -> can toggle any vehicle type
+    """
+    try:
+        user_type = user_data.get("user_type")
+        vendor_id = None
+
+        if user_type == "vendor":
+            vendor_id = user_data.get("vendor_id")
+            if not vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Vendor ID missing in token",
+                        error_code="VENDOR_ID_REQUIRED",
+                    ),
+                )
+        elif user_type != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to update vehicle types",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # Fetch vehicle type
+        db_obj = vehicle_type_crud.get_by_vendor_and_id(db, vendor_id=vendor_id, vehicle_type_id=vehicle_type_id)
+        if not db_obj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Vehicle type {vehicle_type_id} not found",
+                    error_code="VEHICLE_TYPE_NOT_FOUND",
+                ),
+            )
+
+        # Toggle status
+        db_obj.is_active = not db_obj.is_active
+        db.commit()
+        db.refresh(db_obj)
+
+        status_text = "activated" if db_obj.is_active else "deactivated"
+        logger.info(
+            f"Vehicle type {vehicle_type_id} {status_text} by user {user_data.get('user_id')}"
+        )
+
+        return ResponseWrapper.success(
+            data={"vehicle_type": VehicleTypeResponse.model_validate(db_obj, from_attributes=True)},
+            message=f"Vehicle type {vehicle_type_id} {status_text} successfully",
+        )
+
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.exception(f"DB error while toggling status of vehicle type {vehicle_type_id}: {e}")
+        raise handle_db_error(e)
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.exception(f"Unexpected error toggling status of vehicle type {vehicle_type_id}: {e}")
+        raise handle_http_error(e)
