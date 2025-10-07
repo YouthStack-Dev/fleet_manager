@@ -7,7 +7,7 @@ from app.models.vehicle import Vehicle
 from app.models.vehicle_type import VehicleType
 from app.models.driver import Driver
 from app.schemas.vehicle import VehicleCreate, VehicleUpdate
-from app.utils.response_utils import ResponseWrapper
+from app.utils.response_utils import ResponseWrapper, handle_db_error
 from app.crud.base import CRUDBase
 from app.core.logging_config import get_logger
 
@@ -111,8 +111,8 @@ class CRUDVehicle(CRUDBase[Vehicle, VehicleCreate, VehicleUpdate]):
         # ✅ Create vehicle record
         db_obj = Vehicle(
             vendor_id=vendor_id,
-            vehicle_type_id=obj_in.vehicle_type_id,
-            driver_id=obj_in.driver_id,
+            vehicle_type_id=obj_in.vehicle_type_id, 
+            driver_id=driver_id,
             rc_number=obj_in.rc_number.strip(),
             description=obj_in.description,
             puc_expiry_date=obj_in.puc_expiry_date,
@@ -139,13 +139,7 @@ class CRUDVehicle(CRUDBase[Vehicle, VehicleCreate, VehicleUpdate]):
             logger.error(
                 f"[VehicleCreate] IntegrityError for vendor_id={vendor_id}, rc_number={obj_in.rc_number}: {str(e)}"
             )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="Duplicate vehicle document number for this vendor",
-                    error_code="VEHICLE_DUPLICATE",
-                ),
-            )
+            raise handle_db_error(e)
         except Exception as e:
             logger.exception(
                 f"[VehicleCreate] Unexpected error creating vehicle for vendor_id={vendor_id}: {str(e)}"
