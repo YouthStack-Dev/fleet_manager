@@ -123,7 +123,7 @@ def create_vehicle_type(
 def get_all_vehicle_types(
     vendor_id: Optional[int] = None,
     name: Optional[str] = None,  # <-- filter by name
-    active_only: Optional[bool] = True,
+    active_only: Optional[bool] = None,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vehicle-type.read"], check_tenant=False)),
 ):

@@ -4,7 +4,7 @@ from datetime import datetime, date
 
 class VehicleBase(BaseModel):
     vehicle_type_id: int
-    vendor_id: int
+    vendor_id: Optional[int] = None
     rc_number: str
     driver_id: Optional[int] = None
     rc_expiry_date: Optional[date] = None
@@ -26,7 +26,6 @@ class VehicleCreate(VehicleBase):
 
 class VehicleUpdate(BaseModel):
     vehicle_type_id: Optional[int] = None
-    vendor_id: Optional[int] = None
     driver_id: Optional[int] = None
     rc_number: Optional[str] = None
     rc_expiry_date: Optional[date] = None
