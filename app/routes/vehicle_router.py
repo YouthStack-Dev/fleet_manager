@@ -133,8 +133,54 @@ def create_vehicle(
         logger.exception(f"Unexpected error creating vehicle: {e}")
         raise handle_http_error(e)
 
+@router.get("/{vehicle_id}", status_code=status.HTTP_200_OK)
+def read_vehicle(
+    vehicle_id: int,
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["vehicle.read"], check_tenant=True)),
+):
+    """
+    Get details of a specific vehicle by ID.
+    Enforces tenant isolation for vendor users.
+    """
+    try:
+        user_type = user_data.get("user_type")
+        token_vendor_id = user_data.get("vendor_id")
 
-@router.get("/", response_model=VehiclePaginationResponse)
+        query = db.query(Vehicle).filter(Vehicle.vehicle_id == vehicle_id)
+
+        # --- Restrict vendor user to own vendor_id
+        if user_type == "vendor":
+            query = query.filter(Vehicle.vendor_id == token_vendor_id)
+
+        db_vehicle = query.first()
+        if not db_vehicle:
+            logger.warning(f"[VehicleRead] Vehicle ID {vehicle_id} not found or unauthorized access")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(f"Vehicle {vehicle_id} not found", "VEHICLE_NOT_FOUND"),
+            )
+
+        logger.info(f"[VehicleRead] Vehicle ID={vehicle_id} fetched by user_id={user_data.get('user_id')}")
+        return ResponseWrapper.success(
+            data=VehicleResponse.model_validate(db_vehicle, from_attributes=True),
+            message="Vehicle details fetched successfully",
+        )
+
+    except SQLAlchemyError as e:
+        logger.exception(f"[VehicleRead] DB error for vehicle_id={vehicle_id}: {e}")
+        raise handle_db_error(e)
+    except HTTPException as e:
+        logger.exception(f"[VehicleRead] HTTP error for vehicle_id={vehicle_id}: {e}")
+        raise handle_http_error(e)
+    except Exception as e:
+        logger.exception(f"[VehicleRead] Unexpected error for vehicle_id={vehicle_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error("Unexpected error fetching vehicle details", "VEHICLE_READ_FAILED"),
+        )
+
+@router.get("/", status_code=status.HTTP_200_OK, response_model=dict)
 def read_vehicles(
     skip: int = 0,
     limit: int = 100,
@@ -144,38 +190,65 @@ def read_vehicles(
     driver_id: Optional[int] = None,
     is_active: Optional[bool] = None,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vehicle.read"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["vehicle.read"], check_tenant=True)),
 ):
-    query = db.query(Vehicle)
-    
-    # Apply filters
-    if rc_number:
-        query = query.filter(Vehicle.rc_number.ilike(f"%{rc_number}%"))
-    if vendor_id:
-        query = query.filter(Vehicle.vendor_id == vendor_id)
-    if vehicle_type_id:
-        query = query.filter(Vehicle.vehicle_type_id == vehicle_type_id)
-    if driver_id:
-        query = query.filter(Vehicle.driver_id == driver_id)
-    if is_active is not None:
-        query = query.filter(Vehicle.is_active == is_active)
-    
-    total, items = paginate_query(query, skip, limit)
-    return {"total": total, "items": items}
+    try:
+        user_type = user_data.get("user_type")
+        token_vendor_id = user_data.get("vendor_id")
 
-@router.get("/{vehicle_id}", response_model=VehicleResponse)
-def read_vehicle(
-    vehicle_id: int, 
-    db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vehicle.read"], check_tenant=True))
-):
-    db_vehicle = db.query(Vehicle).filter(Vehicle.vehicle_id == vehicle_id).first()
-    if not db_vehicle:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Vehicle with ID {vehicle_id} not found"
+        if user_type == "vendor":
+            vendor_id = token_vendor_id
+        elif user_type in ["employee", "driver"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to create vehicles",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        query = db.query(Vehicle)
+        if vendor_id:
+            query = query.filter(Vehicle.vendor_id == vendor_id)
+        if rc_number:
+            query = query.filter(Vehicle.rc_number.ilike(f"%{rc_number}%"))
+        if vehicle_type_id:
+            query = query.filter(Vehicle.vehicle_type_id == vehicle_type_id)
+        if driver_id:
+            query = query.filter(Vehicle.driver_id == driver_id)
+        if is_active is not None:
+            query = query.filter(Vehicle.is_active == is_active)
+
+        total, items = paginate_query(query, skip, limit)
+
+        # 🔥 Convert ORM → Pydantic
+        vehicle_list = [VehicleResponse.model_validate(vehicle) for vehicle in items]
+
+        logger.info(
+            f"[VehicleList] vendor_id={vendor_id} user_id={user_data.get('user_id')} "
+            f"filters={{rc_number:{rc_number}, driver_id:{driver_id}, active:{is_active}}} "
+            f"returned={len(vehicle_list)}"
         )
-    return db_vehicle
+
+        return ResponseWrapper.success(
+            data={"total": total, "items": vehicle_list},
+            message="Vehicle list fetched successfully",
+        )
+
+    except SQLAlchemyError as e:
+        logger.exception(f"[VehicleList] DB error: {e}")
+        raise handle_db_error(e)
+    except HTTPException:
+        logger.exception(f"[VehicleList] HTTP error: {e}")
+        raise handle_http_error(e)
+    except Exception as e:
+        logger.exception(f"[VehicleList] Unexpected error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error("Unexpected error fetching vehicles", "VEHICLE_FETCH_FAILED"),
+        )
+
+
 
 @router.put("/{vehicle_id}", response_model=VehicleResponse)
 def update_vehicle(
