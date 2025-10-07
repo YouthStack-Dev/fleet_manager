@@ -2,24 +2,137 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import Optional
 from app.database.session import get_db
+from app.crud.vehicle import  vehicle_crud
+from app.crud.vendor import vendor_crud
+from app.crud.vehicle_type import vehicle_type_crud
+from app.crud.driver import driver_crud
+from sqlalchemy.exc import SQLAlchemyError
 from app.models.vehicle import Vehicle
 from app.schemas.vehicle import VehicleCreate, VehicleUpdate, VehicleResponse, VehiclePaginationResponse
 from app.utils.pagination import paginate_query
+from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
+from app.core.logging_config import get_logger
 
+logger = get_logger(__name__)
 router = APIRouter(prefix="/vehicles", tags=["vehicles"])
 
-@router.post("/", response_model=VehicleResponse, status_code=status.HTTP_201_CREATED)
+
+@router.post("/", response_model=dict, status_code=status.HTTP_201_CREATED)
 def create_vehicle(
-    vehicle: VehicleCreate, 
+    vehicle_in: VehicleCreate,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vehicle.create"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["vehicle.create"], check_tenant=False)),
 ):
-    db_vehicle = Vehicle(**vehicle.dict())
-    db.add(db_vehicle)
-    db.commit()
-    db.refresh(db_vehicle)
-    return db_vehicle
+    """
+    Create a new vehicle.
+
+    Rules:
+    - Vendor users -> vendor_id taken from token (payload.vendor_id ignored)
+    - Admin users  -> vendor_id must be provided in payload
+    - Others       -> forbidden
+    """
+    try:
+        user_type = user_data.get("user_type")
+
+        # --- Vendor role ---
+        if user_type == "vendor":
+            vendor_id = user_data.get("vendor_id")
+            if not vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Vendor ID missing in token",
+                        error_code="VENDOR_ID_REQUIRED",
+                    ),
+                )
+
+        # --- Admin role ---
+        elif user_type in {"admin"}:
+            vendor_id = getattr(vehicle_in, "vendor_id", None)
+            if not vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="vendor_id is required in payload for admin/superadmin users",
+                        error_code="VENDOR_ID_REQUIRED",
+                    ),
+                )
+
+        # --- Others blocked ---
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to create vehicles",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # --- Ensure vendor exists ---
+        vendor = vendor_crud.get_by_id(db, vendor_id=vendor_id)
+        if not vendor:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Vendor {vendor_id} not found",
+                    error_code="VENDOR_NOT_FOUND",
+                ),
+            )
+
+        # --- Validate vehicle type belongs to vendor ---
+        vehicle_type = vehicle_type_crud.get_by_vendor_and_id(
+            db, vendor_id=vendor_id, vehicle_type_id=vehicle_in.vehicle_type_id
+        )
+        if not vehicle_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Invalid vehicle_type_id for this vendor",
+                    error_code="INVALID_VEHICLE_TYPE",
+                ),
+            )
+
+        # --- Validate driver (if provided) ---
+        if vehicle_in.driver_id:
+            driver = driver_crud.get_by_id_and_vendor(
+                db, driver_id=vehicle_in.driver_id, vendor_id=vendor_id
+            )
+            if not driver:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Driver not found for this vendor",
+                        error_code="INVALID_DRIVER",
+                    ),
+                )
+
+        # --- Create ---
+        db_obj = vehicle_crud.create_with_vendor(db, vendor_id=vendor_id, obj_in=vehicle_in)
+        db.commit()
+        db.refresh(db_obj)
+
+        logger.info(
+            f"Vehicle '{vehicle_in.rc_number}' created for vendor {vendor_id} by user {user_data.get('user_id')}"
+        )
+
+        return ResponseWrapper.success(
+            data={"vehicle": VehicleResponse.model_validate(db_obj, from_attributes=True)},
+            message="Vehicle created successfully",
+        )
+
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.exception(f"DB error while creating vehicle: {e}")
+        raise handle_db_error(e)
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.exception(f"Unexpected error creating vehicle: {e}")
+        raise handle_http_error(e)
+
 
 @router.get("/", response_model=VehiclePaginationResponse)
 def read_vehicles(
