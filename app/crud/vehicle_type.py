@@ -96,7 +96,7 @@ class CRUDVehicleType(CRUDBase[VehicleType, VehicleTypeCreate, VehicleTypeUpdate
         db: Session,
         *,
         vendor_id: int,
-        active_only: Optional[bool] = True,
+        active_only: Optional[bool] = None,
         name: Optional[str] = None  # <-- filter by name
     ) -> List[VehicleType]:
         """Get all vehicle types for a vendor, optionally filter by name and active status"""
