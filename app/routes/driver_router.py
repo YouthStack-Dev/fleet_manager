@@ -49,13 +49,14 @@ async def create_driver(
     user_data=Depends(PermissionChecker(["driver.create"])),
 ):
     """
-    Create a new driver for a vendor.
-    Includes file upload, validation, and atomic DB commit.
+    Create a new driver for a vendor with file uploads and validation.
+    Logs are concise and indicate success/failure clearly.
     """
+    driver_code = code.strip()
     try:
-        logger.info(f"Creating driver under vendor_id={vendor_id} by user={user_data.get('user_id')}")
+        logger.info(f"Creating driver '{driver_code}' under vendor_id={vendor_id} by user={user_data.get('user_id')}")
 
-        # Validate file types and size
+        # Validate files
         allowed_docs = ["image/jpeg", "image/png", "application/pdf"]
         photo = await file_size_validator(photo, ["image/jpeg", "image/png"], 5, required=False)
         license_file = await file_size_validator(license_file, allowed_docs, 5, required=False)
@@ -63,17 +64,16 @@ async def create_driver(
         alt_govt_id_file = await file_size_validator(alt_govt_id_file, allowed_docs, 5, required=False)
         bgv_file = await file_size_validator(bgv_file, allowed_docs, 10, required=False)
 
-        # Save files in structured folder: /uploads/vendor_<id>/driver_<code>/
-        driver_code = code.strip()
-        base_folder = f"vendor_{vendor_id}/driver_{driver_code}"
+        # Save files
         photo_url = save_file(photo, vendor_id, driver_code, "photo")
         license_url = save_file(license_file, vendor_id, driver_code, "license")
         badge_url = save_file(badge_file, vendor_id, driver_code, "badge")
         alt_govt_id_url = save_file(alt_govt_id_file, vendor_id, driver_code, "alt_govt_id")
         bgv_doc_url = save_file(bgv_file, vendor_id, driver_code, "bgv")
 
+        logger.info(f"Files saved successfully for driver '{driver_code}'")
 
-        # Prepare validated payload
+        # Prepare driver payload
         driver_in = DriverCreate(
             vendor_id=vendor_id,
             name=name,
@@ -106,27 +106,29 @@ async def create_driver(
             bgv_doc_url=bgv_doc_url
         )
 
-        # Persist in DB
+        # Persist to DB
         db_obj = driver_crud.create_with_vendor(db, vendor_id=vendor_id, obj_in=driver_in)
         db.commit()
         db.refresh(db_obj)
 
-        logger.info(f"✅ Driver created successfully: id={db_obj.driver_id}, vendor_id={vendor_id}")
-
+        logger.info(f"Driver '{driver_code}' created successfully with ID={db_obj.driver_id}")
         return ResponseWrapper.success(
             data={"driver": DriverResponse.model_validate(db_obj, from_attributes=True)},
             message="Driver created successfully"
         )
-    except SQLAlchemyError as e:
-        raise handle_db_error(e)
+
     except HTTPException as e:
         db.rollback()
-        logger.warning("Driver creation failed with HTTPException, rolling back transaction.")
+        logger.warning(f"Driver creation failed (HTTPException) for driver '{driver_code}': {e.detail}")
+        raise
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error creating driver '{driver_code}': {e}")
+        raise handle_db_error(e)
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Unexpected error creating driver '{driver_code}': {e}")
         raise handle_http_error(e)
-    # except Exception as e:
-    #     db.rollback()
-    #     logger.exception(f"Unexpected error creating driver for vendor {vendor_id}: {e}")
-    #     raise handle_http_error(e)
 
 
 

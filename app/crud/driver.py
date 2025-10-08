@@ -2,11 +2,11 @@ from typing import Optional, List, Dict, Any, Union
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
-
+from sqlalchemy.exc import SQLAlchemyError
 from app.models.driver import Driver, VerificationStatusEnum, GenderEnum
 from app.schemas.driver import DriverCreate, DriverUpdate
 from app.models.vendor import Vendor
-from app.utils.response_utils import ResponseWrapper
+from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from app.crud.base import CRUDBase
 
 
@@ -102,14 +102,11 @@ class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
         db.add(db_obj)
         try:
             db.flush()
-        except IntegrityError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="Duplicate driver details found (email/phone/license/badge/code)",
-                    error_code="DRIVER_DUPLICATE",
-                ),
-            )
+        except SQLAlchemyError as e:
+            raise handle_db_error(e)
+        except HTTPException as e:
+            raise handle_http_error(e)
+            
         return db_obj
 
     def update_with_vendor(
