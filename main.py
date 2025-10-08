@@ -76,7 +76,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(employee_router, prefix="/api/v1")
-# app.include_router(driver_router, prefix="/api/v1")
+app.include_router(driver_router, prefix="/api/v1")
 # app.include_router(booking_router, prefix="/api/v1")
 app.include_router(tenant_router, prefix="/api/v1")
 app.include_router(vendor_router, prefix="/api/v1")
