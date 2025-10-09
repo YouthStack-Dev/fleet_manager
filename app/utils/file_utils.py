@@ -116,6 +116,10 @@ def save_file(
         logger.info(
             f"File '{doc_type}' uploaded successfully for driver={driver_code}, vendor={vendor_id}, path={clean_path}"
         )
+        if file_path.exists():
+            logger.info(f"[DEBUG] File exists on disk: {file_path.resolve()}")
+        else:
+            logger.warning(f"[DEBUG] File not found on disk: {file_path.resolve()}")
 
         return clean_path
 

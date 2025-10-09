@@ -191,7 +191,7 @@ def seed_database(
         seed_weekoffs(db)
         seed_vendors(db)
         seed_vendor_users(db)
-        seed_drivers(db)
+        # seed_drivers(db)
         seed_vehicle_types(db)
         seed_vehicles(db)
         logger.info("Database seeding completed successfully.")

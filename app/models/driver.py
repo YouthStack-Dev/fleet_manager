@@ -68,6 +68,7 @@ class Driver(Base):
     # License info
     license_number = Column(String(100))
     license_expiry_date = Column(Date)
+    license_url = Column(Text)
 
     # Badge info
     badge_number = Column(String(100))
@@ -80,7 +81,6 @@ class Driver(Base):
     alt_govt_id_url = Column(Text)
 
     # Induction
-    induction_status = Column(Enum(VerificationStatusEnum, native_enum=False))
     induction_date = Column(Date)
     induction_url = Column(Text)
 

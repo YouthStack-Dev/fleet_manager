@@ -24,7 +24,7 @@ async def create_driver(
     code: str = Form(...),
     email: str = Form(...),
     phone: str = Form(...),
-    gender: str = Form(...),
+    gender: Optional[str] = Form(None),
     password: str = Form(...),
     date_of_birth: Optional[str] = Form(None),
     date_of_joining: Optional[str] = Form(None),
@@ -38,40 +38,67 @@ async def create_driver(
     alt_govt_id_type: Optional[str] = Form(None),
     induction_date: Optional[str] = Form(None),
 
-    # File uploads
+    # File uploads (10 total)
     photo: Optional[UploadFile] = None,
     license_file: Optional[UploadFile] = None,
     badge_file: Optional[UploadFile] = None,
     alt_govt_id_file: Optional[UploadFile] = None,
     bgv_file: Optional[UploadFile] = None,
-
+    police_file: Optional[UploadFile] = None,
+    medical_file: Optional[UploadFile] = None,
+    training_file: Optional[UploadFile] = None,
+    eye_file: Optional[UploadFile] = None,
+    induction_file: Optional[UploadFile] = None,
+    bg_verify_status: Optional[VerificationStatusEnum] = VerificationStatusEnum.PENDING,
+    police_verify_status: Optional[VerificationStatusEnum] = VerificationStatusEnum.PENDING,
+    medical_verify_status: Optional[VerificationStatusEnum] = VerificationStatusEnum.PENDING,
+    training_verify_status: Optional[VerificationStatusEnum] = VerificationStatusEnum.PENDING,
+    eye_verify_status: Optional[VerificationStatusEnum] = VerificationStatusEnum.PENDING,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["driver.create"])),
 ):
-    """
-    Create a new driver for a vendor with file uploads and validation.
-    Logs are concise and indicate success/failure clearly.
-    """
     driver_code = code.strip()
     try:
+        logger.info(f"[CREATE DRIVER] Received files: "
+            f"photo={photo.filename if photo else None}, "
+            f"license_file={license_file.filename if license_file else None}, "
+            f"badge_file={badge_file.filename if badge_file else None}, "
+            f"alt_govt_id_file={alt_govt_id_file.filename if alt_govt_id_file else None}, "
+            f"bgv_file={bgv_file.filename if bgv_file else None}, "
+            f"police_file={police_file.filename if police_file else None}, "
+            f"medical_file={medical_file.filename if medical_file else None}, "
+            f"training_file={training_file.filename if training_file else None}, "
+            f"eye_file={eye_file.filename if eye_file else None}, "
+            f"induction_file={induction_file.filename if induction_file else None})")
         logger.info(f"Creating driver '{driver_code}' under vendor_id={vendor_id} by user={user_data.get('user_id')}")
 
-        # Validate files
         allowed_docs = ["image/jpeg", "image/png", "application/pdf"]
+        # Validate files
         photo = await file_size_validator(photo, ["image/jpeg", "image/png"], 5, required=False)
         license_file = await file_size_validator(license_file, allowed_docs, 5, required=False)
         badge_file = await file_size_validator(badge_file, allowed_docs, 5, required=False)
         alt_govt_id_file = await file_size_validator(alt_govt_id_file, allowed_docs, 5, required=False)
         bgv_file = await file_size_validator(bgv_file, allowed_docs, 10, required=False)
+        police_file = await file_size_validator(police_file, allowed_docs, 5, required=False)
+        medical_file = await file_size_validator(medical_file, allowed_docs, 5, required=False)
+        training_file = await file_size_validator(training_file, allowed_docs, 5, required=False)
+        eye_file = await file_size_validator(eye_file, allowed_docs, 5, required=False)
+        induction_file = await file_size_validator(induction_file, allowed_docs, 5, required=False)
 
         # Save files
         photo_url = save_file(photo, vendor_id, driver_code, "photo")
         license_url = save_file(license_file, vendor_id, driver_code, "license")
         badge_url = save_file(badge_file, vendor_id, driver_code, "badge")
         alt_govt_id_url = save_file(alt_govt_id_file, vendor_id, driver_code, "alt_govt_id")
-        bgv_doc_url = save_file(bgv_file, vendor_id, driver_code, "bgv")
+        bg_verify_url = save_file(bgv_file, vendor_id, driver_code, "bgv")
+        police_verify_url = save_file(police_file, vendor_id, driver_code, "police")
+        medical_verify_url = save_file(medical_file, vendor_id, driver_code, "medical")
+        training_verify_url = save_file(training_file, vendor_id, driver_code, "training")
+        eye_verify_url = save_file(eye_file, vendor_id, driver_code, "eye")
+        induction_url = save_file(induction_file, vendor_id, driver_code, "induction")
 
         logger.info(f"Files saved successfully for driver '{driver_code}'")
+        logger.info(f"photo_url: {photo_url}, license_url: {license_url}, badge_url: {badge_url}, alt_govt_id_url: {alt_govt_id_url}, bg_verify_url: {bg_verify_url}, police_verify_url: {police_verify_url}, medical_verify_url: {medical_verify_url}, training_verify_url: {training_verify_url}, eye_verify_url: {eye_verify_url}, induction_url: {induction_url}")
 
         # Prepare driver payload
         driver_in = DriverCreate(
@@ -86,25 +113,42 @@ async def create_driver(
             date_of_joining=date_of_joining,
             permanent_address=permanent_address,
             current_address=current_address,
+            
+            # FILE URLS
             photo_url=photo_url,
+            license_url=license_url,
+            badge_url=badge_url,
+            alt_govt_id_url=alt_govt_id_url,
+            bg_verify_url=bg_verify_url,
+            police_verify_url=police_verify_url,
+            medical_verify_url=medical_verify_url,
+            training_verify_url=training_verify_url,
+            eye_verify_url=eye_verify_url,
+            induction_url=induction_url,
+            
+            # Verification statuses
+            bg_verify_status=bg_verify_status,
+            police_verify_status=police_verify_status,
+            medical_verify_status=medical_verify_status,
+            training_verify_status=training_verify_status,
+            eye_verify_status=eye_verify_status,
+
+            # License info
             license_number=license_number,
             license_expiry_date=license_expiry_date,
-            license_url=license_url,
+
+            # Badge info
             badge_number=badge_number,
             badge_expiry_date=badge_expiry_date,
-            badge_url=badge_url,
+
+            # Alternate govt ID
             alt_govt_id_number=alt_govt_id_number,
             alt_govt_id_type=alt_govt_id_type,
-            alt_govt_id_url=alt_govt_id_url,
+
+            # Induction
             induction_date=induction_date,
-            induction_status=VerificationStatusEnum.PENDING,
-            bg_verify_status=VerificationStatusEnum.PENDING,
-            police_verify_status=VerificationStatusEnum.PENDING,
-            medical_verify_status=VerificationStatusEnum.PENDING,
-            training_verify_status=VerificationStatusEnum.PENDING,
-            eye_verify_status=VerificationStatusEnum.PENDING,
-            bgv_doc_url=bgv_doc_url
         )
+
 
         # Persist to DB
         db_obj = driver_crud.create_with_vendor(db, vendor_id=vendor_id, obj_in=driver_in)
