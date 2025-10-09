@@ -10,6 +10,7 @@ class BookingStatusEnum(str, Enum):
     ONGOING = "Ongoing"
     COMPLETED = "Completed"
     CANCELED = "Canceled"
+    NO_SHOW = "No-Show"
 
 
 class BookingBase(BaseModel):
@@ -38,18 +39,8 @@ class BookingCreate(BaseModel):
 
 
 class BookingUpdate(BaseModel):
-    shift_id: Optional[int] = None
-    team_id: Optional[int] = None
-    booking_date: Optional[date] = None
-    pickup_latitude: Optional[float] = None
-    pickup_longitude: Optional[float] = None
-    pickup_location: Optional[str] = None
-    drop_latitude: Optional[float] = None
-    drop_longitude: Optional[float] = None
-    drop_location: Optional[str] = None
     status: Optional[BookingStatusEnum] = None
     reason: Optional[str] = None
-    is_active: Optional[bool] = None
 
 
 class BookingResponse(BookingBase):

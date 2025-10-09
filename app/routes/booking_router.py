@@ -377,3 +377,96 @@ def get_booking_by_id(
     except Exception as e:
         logger.exception("Unexpected error occurred while fetching booking by ID")
         raise handle_http_error(e)
+
+
+
+from fastapi import Body, Path
+
+# ============================================================
+# 4️⃣ Update booking by booking_id
+# ============================================================
+@router.put("/{booking_id}", response_model=BaseResponse[BookingResponse])
+def update_booking(
+    booking_id: int = Path(..., description="Booking ID to update"),
+    booking_update: BookingUpdate = Body(...),
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["booking.update"], check_tenant=True)),
+):
+    try:
+        user_type = user_data.get("user_type")
+        tenant_id = user_data.get("tenant_id")
+
+        logger.info(f"Updating booking_id={booking_id} by user_id={user_data.get('user_id')}")
+
+        # Fetch the booking
+        query = db.query(Booking).filter(Booking.booking_id == booking_id)
+        if user_type != "admin":
+            query = query.filter(Booking.tenant_id == tenant_id)
+
+        booking = query.first()
+        if not booking:
+            logger.warning(f"Booking not found: booking_id={booking_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Booking not found",
+                    error_code="BOOKING_NOT_FOUND",
+                ),
+            )
+
+        # Only allow certain roles to update bookings
+        if user_type in {"vendor", "driver"}:
+            logger.warning(f"Unauthorized update attempt by user_type={user_type}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to update bookings",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # Apply updates
+        updated_fields = []
+        if booking_update.status is not None:
+            booking.status = booking_update.status
+            updated_fields.append("status")
+        if booking_update.reason is not None:
+            booking.reason = booking_update.reason
+            updated_fields.append("reason")
+        
+
+        if not updated_fields:
+            logger.warning(f"No fields provided to update for booking_id={booking_id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="No valid fields provided for update",
+                    error_code="NO_UPDATE_FIELDS",
+                ),
+            )
+
+        # Commit changes
+        db.commit()
+        db.refresh(booking)
+
+        logger.info(f"Booking updated successfully: booking_id={booking_id}, fields={updated_fields}")
+
+        return ResponseWrapper.success(
+            data=BookingResponse.model_validate(booking, from_attributes=True),
+            message="Booking updated successfully"
+        )
+
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.exception("Database error occurred while updating booking")
+        raise handle_db_error(e)
+    except HTTPException as e:
+        db.rollback()
+        raise handle_http_error(e)
+    except Exception as e:
+        db.rollback()
+        logger.exception("Unexpected error occurred while updating booking")
+        raise HTTPException(
+            status_code=500,
+            detail=ResponseWrapper.error(message="Internal Server Error", error_code="INTERNAL_ERROR")
+        )
