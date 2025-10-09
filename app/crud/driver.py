@@ -2,11 +2,11 @@ from typing import Optional, List, Dict, Any, Union
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
-
+from sqlalchemy.exc import SQLAlchemyError
 from app.models.driver import Driver, VerificationStatusEnum, GenderEnum
 from app.schemas.driver import DriverCreate, DriverUpdate
 from app.models.vendor import Vendor
-from app.utils.response_utils import ResponseWrapper
+from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from app.crud.base import CRUDBase
 
 
@@ -66,50 +66,67 @@ class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
                 ),
             )
 
-        # ✅ Create new driver
+        # ✅ Create new driver strictly according to model fields
         db_obj = Driver(
-            vendor_id=vendor_id,
-            name=obj_in.name.strip(),
-            code=obj_in.code.strip(),
-            email=obj_in.email.strip(),
-            phone=obj_in.phone.strip(),
-            gender=obj_in.gender,
-            password=obj_in.password,
-            date_of_birth=obj_in.date_of_birth,
-            date_of_joining=obj_in.date_of_joining,
-            permanent_address=obj_in.permanent_address,
-            current_address=obj_in.current_address,
-            photo_url=obj_in.photo_url,
-            bg_verify_status=obj_in.bg_verify_status or VerificationStatusEnum.PENDING,
-            police_verify_status=obj_in.police_verify_status or VerificationStatusEnum.PENDING,
-            medical_verify_status=obj_in.medical_verify_status or VerificationStatusEnum.PENDING,
-            training_verify_status=obj_in.training_verify_status or VerificationStatusEnum.PENDING,
-            eye_verify_status=obj_in.eye_verify_status or VerificationStatusEnum.PENDING,
-            license_number=obj_in.license_number,
-            license_expiry_date=obj_in.license_expiry_date,
-            badge_number=obj_in.badge_number,
-            badge_expiry_date=obj_in.badge_expiry_date,
-            badge_url=obj_in.badge_url,
-            alt_govt_id_number=obj_in.alt_govt_id_number,
-            alt_govt_id_type=obj_in.alt_govt_id_type,
-            alt_govt_id_url=obj_in.alt_govt_id_url,
-            induction_status=obj_in.induction_status or VerificationStatusEnum.PENDING,
-            induction_date=obj_in.induction_date,
-            induction_url=obj_in.induction_url,
-            is_active=obj_in.is_active if obj_in.is_active is not None else True,
-        )
+        vendor_id=vendor_id,
+        name=obj_in.name.strip(),
+        code=obj_in.code.strip(),
+        email=obj_in.email.strip(),
+        phone=obj_in.phone.strip(),
+        gender=obj_in.gender,
+        password=obj_in.password,
+        date_of_birth=obj_in.date_of_birth,
+        date_of_joining=obj_in.date_of_joining,
+        permanent_address=obj_in.permanent_address,
+        current_address=obj_in.current_address,
+        
+        # FILE URLS
+        photo_url=obj_in.photo_url,
+        license_url=obj_in.license_url,
+        badge_url=obj_in.badge_url,
+        alt_govt_id_url=obj_in.alt_govt_id_url,
+        bg_verify_url=obj_in.bg_verify_url,
+        police_verify_url=obj_in.police_verify_url,
+        medical_verify_url=obj_in.medical_verify_url,
+        training_verify_url=obj_in.training_verify_url,
+        eye_verify_url=obj_in.eye_verify_url,
+        induction_url=obj_in.induction_url,
+
+        # Verification statuses
+        bg_verify_status=obj_in.bg_verify_status,
+        police_verify_status=obj_in.police_verify_status,
+        medical_verify_status=obj_in.medical_verify_status,
+        training_verify_status=obj_in.training_verify_status,
+        eye_verify_status=obj_in.eye_verify_status,
+
+        # License info
+        license_number=obj_in.license_number,
+        license_expiry_date=obj_in.license_expiry_date,
+
+        # Badge info
+        badge_number=obj_in.badge_number,
+        badge_expiry_date=obj_in.badge_expiry_date,
+
+        # Alternate govt ID
+        alt_govt_id_number=obj_in.alt_govt_id_number,
+        alt_govt_id_type=obj_in.alt_govt_id_type,
+
+        # Induction
+        induction_date=obj_in.induction_date,
+
+        # System flags
+        is_active=obj_in.is_active if obj_in.is_active is not None else True,
+    )
+
 
         db.add(db_obj)
         try:
             db.flush()
-        except IntegrityError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="Duplicate driver details found (email/phone/license/badge/code)",
-                    error_code="DRIVER_DUPLICATE",
-                ),
-            )
+        except SQLAlchemyError as e:
+            raise handle_db_error(e)
+        except HTTPException as e:
+            raise handle_http_error(e)
+            
         return db_obj
 
     def update_with_vendor(
@@ -138,14 +155,8 @@ class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
 
         try:
             db.flush()
-        except IntegrityError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="Duplicate driver document or identification field",
-                    error_code="DRIVER_DUPLICATE",
-                ),
-            )
+        except SQLAlchemyError as e:
+            raise handle_db_error(e)
         return db_obj
 
     def delete_with_vendor(self, db: Session, *, driver_id: int, vendor_id: int) -> bool:
