@@ -390,3 +390,49 @@ async def update_driver(
         db.rollback()
         logger.error(f"[UPDATE DRIVER] Unexpected error: {e}")
         raise handle_http_error(e)
+@router.patch("/vendor/{vendor_id}/{driver_id}/toggle-active", response_model=dict)
+def toggle_driver_active(
+    vendor_id: int,
+    driver_id: int,
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["driver.update"]))
+):
+    """
+    Toggle the active status of a driver (soft activate/deactivate).
+    """
+    try:
+        logger.info(f"[TOGGLE DRIVER ACTIVE] User {user_data.get('user_id')} toggling active status for driver_id={driver_id} vendor_id={vendor_id}")
+
+        driver = driver_crud.get_by_id_and_vendor(db, driver_id=driver_id, vendor_id=vendor_id)
+        if not driver:
+            logger.warning(f"[TOGGLE DRIVER ACTIVE] Driver {driver_id} not found for vendor {vendor_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Driver not found",
+                    error_code="DRIVER_NOT_FOUND"
+                )
+            )
+
+        # Toggle the is_active flag
+        driver.is_active = not driver.is_active
+        db.flush()
+        db.commit()
+        db.refresh(driver)
+
+        status_str = "activated" if driver.is_active else "deactivated"
+        logger.info(f"[TOGGLE DRIVER ACTIVE] Driver {driver_id} has been {status_str}")
+
+        return ResponseWrapper.success(
+            data={"driver_id": driver.driver_id, "is_active": driver.is_active},
+            message=f"Driver successfully {status_str}"
+        )
+
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"[TOGGLE DRIVER ACTIVE] Database error: {e}")
+        raise handle_db_error(e)
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[TOGGLE DRIVER ACTIVE] Unexpected error: {e}")
+        raise handle_http_error(e)
