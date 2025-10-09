@@ -216,35 +216,42 @@ def create_booking(
 # ============================================================
 # 1️⃣ Get all bookings (filtered by tenant_id and optional date)
 # ============================================================
-@router.get("/{tenant_id}", response_model=PaginatedResponse[BookingResponse])
+@router.get("/tenant/{tenant_id}", response_model=PaginatedResponse[BookingResponse])
 def get_bookings(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True)),
     booking_date: Optional[date] = Query(None, description="Filter by booking date"),
-    # tenant_id: str = Path(..., description="Tenant ID"),
-    page: int = Query(1, ge=1),
-    per_page: int = Query(10, ge=1, le=100),
+    tenant_id: str = Path(..., description="Tenant ID"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(10, ge=1, le=100),
 ):
     try:
-        validate_pagination_params(page, per_page)
+        # Normalize skip/limit
+        skip = max(skip, 0)
+        limit = max(min(limit, 100), 1)
 
         logger.info(
             f"Fetching bookings for tenant_id={user_data['tenant_id']} "
-            f"date_filter={booking_date}"
+            f"date_filter={booking_date}, skip={skip}, limit={limit}"
         )
 
-        query = db.query(Booking).filter(Booking.tenant_id == user_data["tenant_id"])
+        # Admins can query any tenant, employees limited to their own
+        effective_tenant_id = tenant_id if user_data["user_type"] == "admin" else user_data["tenant_id"]
+
+        logger.debug(f"Effective tenant_id for query: {effective_tenant_id}")
+
+        query = db.query(Booking).filter(Booking.tenant_id == effective_tenant_id)
 
         if booking_date:
             query = query.filter(Booking.booking_date == booking_date)
 
-        total, items = paginate_query(query, page, per_page)
+        total, items = paginate_query(query, skip, limit)
 
         return ResponseWrapper.paginated(
             items=[BookingResponse.model_validate(b) for b in items],
             total=total,
-            page=page,
-            per_page=per_page,
+            page=(skip // limit) + 1,  # for meta info
+            per_page=limit,
             message="Bookings fetched successfully"
         )
 
@@ -252,11 +259,12 @@ def get_bookings(
         logger.exception("Database error occurred while fetching bookings")
         raise handle_db_error(e)
 
-    except Exception as e:
-        logger.exception("Unexpected error occurred while fetching bookings")
-        raise handle_http_error(e)
     except HTTPException as e:
         logger.warning(f"HTTPException: {e.detail}")
+        raise handle_http_error(e)
+
+    except Exception as e:
+        logger.exception("Unexpected error occurred while fetching bookings")
         raise handle_http_error(e)
 
 
@@ -275,6 +283,7 @@ def get_bookings_by_employee(
 ):
     try:
         # Validate filters
+        logger.debug(f"Received filters - employee_id: {employee_id}, employee_code: {employee_code}, booking_date: {booking_date}")    
         if not employee_id and not employee_code:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -346,7 +355,9 @@ def get_bookings_by_employee(
         logger.exception("Unexpected error occurred while fetching employee bookings")
         raise handle_http_error(e)
 
-
+    except HTTPException as e:
+        logger.warning(f"HTTPException: {e.detail}")
+        raise handle_http_error(e)      
 
 # ============================================================
 # 3️⃣ Get single booking by booking_id
