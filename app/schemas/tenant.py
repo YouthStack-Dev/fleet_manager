@@ -19,9 +19,9 @@ class TenantBase(BaseModel):
 
     tenant_id: str = Field(..., min_length=3, max_length=50, description="Unique tenant identifier")
     name: str = Field(..., min_length=2, max_length=150, description="Tenant name")
-    address: Optional[str] = Field(None, max_length=255, description="Tenant address")
-    longitude: Optional[float] = Field(None, ge=-180, le=180, description="Longitude coordinate")
-    latitude: Optional[float] = Field(None, ge=-90, le=90, description="Latitude coordinate")
+    address: str = Field(..., max_length=255, description="Tenant address")
+    longitude: float = Field(..., ge=-180, le=180, description="Longitude coordinate")
+    latitude: float = Field(..., ge=-90, le=90, description="Latitude coordinate")
     is_active: bool = Field(default=True, description="Is tenant active?")
 
     @field_validator("tenant_id")
