@@ -4,7 +4,7 @@ from app.models.employee import Employee
 from app.models.shift import Shift
 from app.models.tenant import Tenant
 from app.models.weekoff_config import WeekoffConfig
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, status, Query
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from datetime import date, datetime, datetime
@@ -213,122 +213,185 @@ def create_booking(
 
 
 
-# @router.get("/")
-# def read_bookings(
-#     skip: int = 0,
-#     limit: int = 100,
-#     employee_id: Optional[int] = None,
-#     shift_id: Optional[int] = None,
-#     booking_date: Optional[date] = None,
-#     status_filter: Optional[BookingStatusEnum] = None,
-#     team_id: Optional[int] = None,
-#     db: Session = Depends(get_db),
-#     user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True))
-# ):
-#     page, per_page = validate_pagination_params(skip, limit)
-    
-#     query = db.query(Booking)
-    
-#     # Apply filters
-#     if employee_id:
-#         query = query.filter(Booking.employee_id == employee_id)
-#     if shift_id:
-#         query = query.filter(Booking.shift_id == shift_id)
-#     if booking_date:
-#         query = query.filter(Booking.booking_date == booking_date)
-#     if status_filter:
-#         query = query.filter(Booking.status == status_filter)
-#     if team_id:
-#         query = query.filter(Booking.team_id == team_id)
-    
-#     total = query.count()
-#     items = query.offset(skip).limit(limit).all()
-    
-#     booking_responses = [BookingResponse.model_validate(item) for item in items]
-    
-#     return ResponseWrapper.paginated(
-#         items=booking_responses,
-#         total=total,
-#         page=page,
-#         per_page=per_page,
-#         message="Bookings retrieved successfully"
-#     )
+# ============================================================
+# 1️⃣ Get all bookings (filtered by tenant_id and optional date)
+# ============================================================
+@router.get("/{tenant_id}", response_model=PaginatedResponse[BookingResponse])
+def get_bookings(
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True)),
+    booking_date: Optional[date] = Query(None, description="Filter by booking date"),
+    # tenant_id: str = Path(..., description="Tenant ID"),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(10, ge=1, le=100),
+):
+    try:
+        validate_pagination_params(page, per_page)
 
-# @router.get("/{booking_id}")
-# def read_booking(
-#     booking_id: int, 
-#     db: Session = Depends(get_db),
-#     user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True))
-# ):
-#     db_booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
-#     if not db_booking:
-#         raise HTTPException(
-#             status_code=status.HTTP_404_NOT_FOUND,
-#             detail=ResponseWrapper.error(
-#                 message=f"Booking with ID {booking_id} not found",
-#                 error_code="BOOKING_NOT_FOUND"
-#             )
-#         )
-    
-#     return ResponseWrapper.success(
-#         data=BookingResponse.model_validate(db_booking),
-#         message="Booking retrieved successfully"
-#     )
+        logger.info(
+            f"Fetching bookings for tenant_id={user_data['tenant_id']} "
+            f"date_filter={booking_date}"
+        )
 
-# @router.put("/{booking_id}")
-# def update_booking(
-#     booking_id: int, 
-#     booking_update: BookingUpdate, 
-#     db: Session = Depends(get_db),
-#     user_data=Depends(PermissionChecker(["booking.update"], check_tenant=True))
-# ):
-#     db_booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
-#     if not db_booking:
-#         raise HTTPException(
-#             status_code=status.HTTP_404_NOT_FOUND,
-#             detail=ResponseWrapper.error(
-#                 message=f"Booking with ID {booking_id} not found",
-#                 error_code="BOOKING_NOT_FOUND"
-#             )
-#         )
-    
-#     try:
-#         update_data = booking_update.dict(exclude_unset=True)
-#         for key, value in update_data.items():
-#             setattr(db_booking, key, value)
-        
-#         db.commit()
-#         db.refresh(db_booking)
-        
-#         return ResponseWrapper.updated(
-#             data=BookingResponse.model_validate(db_booking),
-#             message="Booking updated successfully"
-#         )
-#     except Exception as e:
-#         db.rollback()
-#         raise handle_db_error(e)
+        query = db.query(Booking).filter(Booking.tenant_id == user_data["tenant_id"])
 
-# @router.delete("/{booking_id}", status_code=status.HTTP_200_OK)
-# def delete_booking(
-#     booking_id: int, 
-#     db: Session = Depends(get_db),
-#     user_data=Depends(PermissionChecker(["booking.delete"], check_tenant=True))
-# ):
-#     db_booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
-#     if not db_booking:
-#         raise HTTPException(
-#             status_code=status.HTTP_404_NOT_FOUND,
-#             detail=ResponseWrapper.error(
-#                 message=f"Booking with ID {booking_id} not found",
-#                 error_code="BOOKING_NOT_FOUND"
-#             )
-#         )
-    
-#     try:
-#         db.delete(db_booking)
-#         db.commit()
-        
-#         return ResponseWrapper.deleted(message="Booking deleted successfully")
-#     except Exception as e:
-#         db.rollback()
-#         raise handle_db_error(e)
+        if booking_date:
+            query = query.filter(Booking.booking_date == booking_date)
+
+        total, items = paginate_query(query, page, per_page)
+
+        return ResponseWrapper.paginated(
+            items=[BookingResponse.model_validate(b) for b in items],
+            total=total,
+            page=page,
+            per_page=per_page,
+            message="Bookings fetched successfully"
+        )
+
+    except SQLAlchemyError as e:
+        logger.exception("Database error occurred while fetching bookings")
+        raise handle_db_error(e)
+
+    except Exception as e:
+        logger.exception("Unexpected error occurred while fetching bookings")
+        raise handle_http_error(e)
+    except HTTPException as e:
+        logger.warning(f"HTTPException: {e.detail}")
+        raise handle_http_error(e)
+
+
+# ============================================================
+# 2️⃣ Get bookings for a specific employee (by ID or code)
+# ============================================================
+@router.get("/employee", response_model=PaginatedResponse[BookingResponse])
+def get_bookings_by_employee(
+    employee_id: Optional[int] = Query(None, description="Employee ID"),
+    employee_code: Optional[str] = Query(None, description="Employee code"),
+    booking_date: Optional[date] = Query(None, description="Optional booking date filter"),
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True)),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(10, ge=1, le=100),
+):
+    try:
+        # Validate filters
+        if not employee_id and not employee_code:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Either employee_id or employee_code is required",
+                    error_code="MISSING_FILTER",
+                ),
+            )
+
+        # Pagination params validation
+        page, per_page = validate_pagination_params(page, per_page)
+
+        user_type = user_data.get("user_type")
+        tenant_id = user_data.get("tenant_id")
+
+        logger.info(
+            f"[Booking] Fetching bookings for employee_id={employee_id}, "
+            f"employee_code={employee_code}, tenant_id={tenant_id}, user_type={user_type}, "
+            f"booking_date={booking_date}"
+        )
+
+        # 🚫 Restrict vendors and drivers
+        if user_type in {"vendor", "driver"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to view employee bookings",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # 🔍 Base query
+        query = db.query(Booking)
+
+        # Apply employee filter
+        if employee_id:
+            query = query.filter(Booking.employee_id == employee_id)
+        elif employee_code:
+            query = query.filter(Booking.employee_code == employee_code)
+
+        # Apply booking date filter
+        if booking_date:
+            query = query.filter(Booking.booking_date == booking_date)
+
+        # 🔒 Tenant-level restriction for employees
+        if user_type == "employee":
+            query = query.filter(Booking.tenant_id == tenant_id)
+
+        # Paginate
+        total, items = paginate_query(query, page, per_page)
+
+        # ✅ Response
+        return ResponseWrapper.paginated(
+            items=[BookingResponse.model_validate(b, from_attributes=True) for b in items],
+            total=total,
+            page=page,
+            per_page=per_page,
+            message="Employee bookings fetched successfully",
+        )
+
+    except SQLAlchemyError as e:
+        logger.exception("Database error occurred while fetching employee bookings")
+        raise handle_db_error(e)
+
+    except HTTPException as e:
+        raise handle_http_error(e)
+
+    except Exception as e:
+        logger.exception("Unexpected error occurred while fetching employee bookings")
+        raise handle_http_error(e)
+
+
+
+# ============================================================
+# 3️⃣ Get single booking by booking_id
+# ============================================================
+@router.get("/{booking_id}", response_model=BaseResponse[BookingResponse])
+def get_booking_by_id(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True)),
+):
+    try:
+        logger.info(
+            f"Fetching booking by booking_id={booking_id} for tenant_id={user_data['tenant_id']}"
+        )
+
+        booking = (
+            db.query(Booking)
+            .filter(
+                Booking.booking_id == booking_id,
+                Booking.tenant_id == user_data["tenant_id"],
+            )
+            .first()
+        )
+
+        if not booking:
+            logger.warning(
+                f"Booking not found: booking_id={booking_id}, tenant_id={user_data['tenant_id']}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Booking not found for this tenant",
+                    error_code="BOOKING_NOT_FOUND",
+                ),
+            )
+
+        return ResponseWrapper.success(
+            data=BookingResponse.model_validate(booking),
+            message="Booking fetched successfully"
+        )
+
+    except SQLAlchemyError as e:
+        logger.exception("Database error occurred while fetching booking by ID")
+        raise handle_db_error(e)
+
+    except Exception as e:
+        logger.exception("Unexpected error occurred while fetching booking by ID")
+        raise handle_http_error(e)
