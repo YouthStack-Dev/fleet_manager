@@ -155,14 +155,8 @@ class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
 
         try:
             db.flush()
-        except IntegrityError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="Duplicate driver document or identification field",
-                    error_code="DRIVER_DUPLICATE",
-                ),
-            )
+        except SQLAlchemyError as e:
+            raise handle_db_error(e)
         return db_obj
 
     def delete_with_vendor(self, db: Session, *, driver_id: int, vendor_id: int) -> bool:

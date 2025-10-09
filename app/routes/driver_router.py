@@ -243,3 +243,150 @@ def get_drivers(
     except Exception as e:
         logger.error(f"[GET DRIVERS] Unexpected error: {e}")
         raise handle_db_error(e)
+    
+@router.put("/vendor/{vendor_id}/{driver_id}", response_model=dict)
+async def update_driver(
+    vendor_id: int,
+    driver_id: int,
+    name: Optional[str] = Form(None),
+    code: Optional[str] = Form(None),
+    email: Optional[str] = Form(None),
+    phone: Optional[str] = Form(None),
+    gender: Optional[str] = Form(None),
+    password: Optional[str] = Form(None),
+    date_of_birth: Optional[str] = Form(None),
+    date_of_joining: Optional[str] = Form(None),
+    permanent_address: Optional[str] = Form(None),
+    current_address: Optional[str] = Form(None),
+    license_number: Optional[str] = Form(None),
+    license_expiry_date: Optional[str] = Form(None),
+    badge_number: Optional[str] = Form(None),
+    badge_expiry_date: Optional[str] = Form(None),
+    alt_govt_id_number: Optional[str] = Form(None),
+    alt_govt_id_type: Optional[str] = Form(None),
+    induction_date: Optional[str] = Form(None),
+    bg_verify_status: Optional[VerificationStatusEnum] = None,
+    police_verify_status: Optional[VerificationStatusEnum] = None,
+    medical_verify_status: Optional[VerificationStatusEnum] = None,
+    training_verify_status: Optional[VerificationStatusEnum] = None,
+    eye_verify_status: Optional[VerificationStatusEnum] = None,
+    # File uploads (optional)
+    photo: Optional[UploadFile] = None,
+    license_file: Optional[UploadFile] = None,
+    badge_file: Optional[UploadFile] = None,
+    alt_govt_id_file: Optional[UploadFile] = None,
+    bgv_file: Optional[UploadFile] = None,
+    police_file: Optional[UploadFile] = None,
+    medical_file: Optional[UploadFile] = None,
+    training_file: Optional[UploadFile] = None,
+    eye_file: Optional[UploadFile] = None,
+    induction_file: Optional[UploadFile] = None,
+
+
+
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["driver.update"])),
+):
+    """
+    Update driver details including optional files and verification statuses.
+    """
+    try:
+        logger.info(f"[UPDATE DRIVER] Updating driver_id={driver_id} for vendor_id={vendor_id} by user={user_data.get('user_id')}")
+
+        # Fetch existing driver
+        db_obj = driver_crud.get_by_id_and_vendor(db, driver_id=driver_id, vendor_id=vendor_id)
+        if not db_obj:
+            logger.warning(f"[UPDATE DRIVER] Driver {driver_id} not found for vendor {vendor_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Driver not found",
+                    error_code="DRIVER_NOT_FOUND"
+                )
+            )
+
+        allowed_docs = ["image/jpeg", "image/png", "application/pdf"]
+
+        # Validate and save files if provided
+        file_mapping = {
+            "photo": (photo, 5),
+            "license_file": (license_file, 5),
+            "badge_file": (badge_file, 5),
+            "alt_govt_id_file": (alt_govt_id_file, 5),
+            "bgv_file": (bgv_file, 10),
+            "police_file": (police_file, 5),
+            "medical_file": (medical_file, 5),
+            "training_file": (training_file, 5),
+            "eye_file": (eye_file, 5),
+            "induction_file": (induction_file, 5),
+        }
+
+        file_urls = {}
+        for key, (file_obj, size_mb) in file_mapping.items():
+            validated_file = await file_size_validator(file_obj, allowed_docs, size_mb, required=False)
+            if validated_file:
+                file_urls[key] = save_file(validated_file, vendor_id, db_obj.code, key)
+
+        # Prepare update payload
+        update_data = {
+            "name": name,
+            "code": code,
+            "email": email,
+            "phone": phone,
+            "gender": gender,
+            "password": password,
+            "date_of_birth": date_of_birth,
+            "date_of_joining": date_of_joining,
+            "permanent_address": permanent_address,
+            "current_address": current_address,
+            "license_number": license_number,
+            "license_expiry_date": license_expiry_date,
+            "badge_number": badge_number,
+            "badge_expiry_date": badge_expiry_date,
+            "alt_govt_id_number": alt_govt_id_number,
+            "alt_govt_id_type": alt_govt_id_type,
+            "induction_date": induction_date,
+            "bg_verify_status": bg_verify_status,
+            "police_verify_status": police_verify_status,
+            "medical_verify_status": medical_verify_status,
+            "training_verify_status": training_verify_status,
+            "eye_verify_status": eye_verify_status,
+            # File URLs
+            "photo_url": file_urls.get("photo"),
+            "license_url": file_urls.get("license_file"),
+            "badge_url": file_urls.get("badge_file"),
+            "alt_govt_id_url": file_urls.get("alt_govt_id_file"),
+            "bg_verify_url": file_urls.get("bgv_file"),
+            "police_verify_url": file_urls.get("police_file"),
+            "medical_verify_url": file_urls.get("medical_file"),
+            "training_verify_url": file_urls.get("training_file"),
+            "eye_verify_url": file_urls.get("eye_file"),
+            "induction_url": file_urls.get("induction_file"),
+        }
+
+        # Remove None values
+        update_data = {k: v for k, v in update_data.items() if v is not None}
+
+        # Update driver
+        updated_driver = driver_crud.update_with_vendor(db, driver_id=driver_id, obj_in=update_data)
+        db.commit()
+        db.refresh(updated_driver)
+
+        logger.info(f"[UPDATE DRIVER] Driver {driver_id} updated successfully")
+        return ResponseWrapper.success(
+            data={"driver": DriverResponse.model_validate(updated_driver, from_attributes=True)},
+            message="Driver updated successfully"
+        )
+
+    except HTTPException as e:
+        db.rollback()
+        logger.warning(f"[UPDATE DRIVER] HTTPException: {e.detail}")
+        raise
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"[UPDATE DRIVER] Database error: {e}")
+        raise handle_db_error(e)
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[UPDATE DRIVER] Unexpected error: {e}")
+        raise handle_http_error(e)
