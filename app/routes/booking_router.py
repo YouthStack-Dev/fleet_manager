@@ -143,11 +143,35 @@ def create_booking(
             pickup_lat = pickup_lng = drop_lat = drop_lng = None
             pickup_addr = drop_addr = None
 
-        # --- 6️⃣ Create booking ---
+        # --- 6️⃣ Check for existing booking ---
+        existing_booking = (
+            db.query(Booking)
+            .filter(
+                Booking.employee_id == employee.employee_id,
+                Booking.booking_date == booking.booking_date,
+                Booking.shift_id == booking.shift_id,
+            )
+            .first()
+        )
+        if existing_booking:
+            logger.warning(
+                f"Employee already has booking for this shift: "
+                f"employee_id={employee.employee_id}, date={booking.booking_date}, shift_id={booking.shift_id}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Employee already has a booking for this shift and date",
+                    error_code="ALREADY_BOOKED",
+                ),
+            )
+
+        # --- 7️⃣ Create booking with team_id ---
         db_booking = Booking(
             tenant_id=user_data["tenant_id"],
             employee_id=employee.employee_id,
             employee_code=employee.employee_code,
+            team_id=employee.team_id,
             shift_id=booking.shift_id,
             booking_date=booking.booking_date,
             pickup_latitude=pickup_lat,
