@@ -44,8 +44,11 @@ services:
     container_name: service_manager
     restart: always
     env_file:
-      - ./service.env        # secrets + env vars stored in this file
+      - ./service.prod.env        # production specific env file
     volumes:
+      # Map production storage directory to container (will be removed when using S3)
+      - /var/lib/fleet/storage:/var/lib/fleet/storage
+      # Legacy uploads mapping (if needed for backward compatibility)
       - /var/lib/fleet/uploads:/app/uploaded_files
     environment:
       - DATABASE_URL=postgresql://fleetadmin:fleetpass@fleet_postgres:5432/fleet_db
@@ -55,6 +58,11 @@ services:
       - REDIS_PASSWORD=redispassword
       - USE_REDIS=1
       - TOKEN_EXPIRY_HOURS=1
+      - ENV=production
+      - STORAGE_TYPE=filesystem  # Change to 's3' when migrating to AWS
+      - PROD_SERVER_STORAGE_PATH=/var/lib/fleet/storage
+      - MAX_FILE_SIZE_MB=10
+      
     depends_on:
       redis_server:
         condition: service_healthy
@@ -72,4 +80,3 @@ networks:
 volumes:
   postgres_data:
   redis_data:
-  uploads_data:

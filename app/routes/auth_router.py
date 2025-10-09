@@ -5,6 +5,7 @@ import logging
 import sys
 from app.crud.vendor_user import vendor_user_crud
 from app.models.admin import Admin
+from app.models.driver import Driver
 from app.models.tenant import Tenant
 from fastapi import APIRouter, Depends, HTTPException, Header, status, Body, Query
 
@@ -19,6 +20,7 @@ from app.models.vendor_user import VendorUser
 from app.schemas.auth import (
     AdminLoginRequest, AdminLoginResponse, LoginRequest, TokenResponse, RefreshTokenRequest, LoginResponse, PasswordResetRequest
 )
+from app.schemas.driver import DriverResponse
 from app.schemas.vendor_user import VendorUserResponse
 from common_utils.auth.utils import (
     create_access_token, create_refresh_token, 
@@ -616,6 +618,138 @@ async def admin_login(
         raise handle_db_error(e)
     except Exception as e:
         logger.error(f"Admin login failed with unexpected error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message="Login failed due to server error",
+                error_code="SERVER_ERROR",
+                details={"error": str(e)}
+            )
+        )
+
+
+@router.post("/driver/login")
+async def driver_login(
+    form_data: LoginRequest = Body(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Authenticate a driver and return access + refresh tokens with roles and permissions.
+    """
+    logger.info(f"Driver login attempt for user: {form_data.username} in tenant: {form_data.tenant_id}")
+
+    try:
+        # Step 1: Fetch driver by email and tenant
+        driver = (
+            db.query(Driver)
+            .join(Vendor, Vendor.vendor_id == Driver.vendor_id)
+            .join(Tenant, Tenant.tenant_id == Vendor.tenant_id)
+            .filter(
+                Driver.email == form_data.username,
+                Tenant.tenant_id == form_data.tenant_id
+            )
+            .first()
+        )
+
+        if not driver:
+            logger.warning(f"Driver login failed - Not found: {form_data.username} in tenant {form_data.tenant_id}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error(
+                    message="Incorrect tenant, email, or password",
+                    error_code=status.HTTP_401_UNAUTHORIZED
+                )
+            )
+
+        vendor = driver.vendor
+        tenant = vendor.tenant
+        logger.debug(f"Tenant validation successful - ID: {tenant.tenant_id}")
+
+        # Step 2: Password verification
+        if not verify_password(hash_password(form_data.password), driver.password):
+            logger.warning(f"🔒 Invalid password for driver {driver.driver_id} ({form_data.username})")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error(
+                    message="Incorrect password",
+                    error_code=status.HTTP_401_UNAUTHORIZED
+                )
+            )
+
+        # Step 3: Check active status
+        if not driver.is_active or not vendor.is_active or not tenant.is_active:
+            logger.warning(f"🚫 Login failed - Inactive driver: {driver.driver_id}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="User account is inactive",
+                    error_code="ACCOUNT_INACTIVE"
+                )
+            )
+
+
+        # Step 5: Generate token payload
+        current_time = int(time.time())
+        expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
+        opaque_token = secrets.token_hex(16)
+
+        token_payload = {
+            "user_id": str(driver.driver_id),
+            "tenant_id": str(tenant.tenant_id),
+            "vendor_id": str(vendor.vendor_id),
+            "opaque_token": opaque_token,
+            "user_type": "driver",
+            "iat": current_time,
+            "exp": expiry_time,
+        }
+
+        # Step 6: Store opaque token in Redis
+        oauth_accessor = Oauth2AsAccessor()
+        ttl = expiry_time - current_time
+        if not oauth_accessor.store_opaque_token(opaque_token, token_payload, 1800):
+            logger.error(f"💥 Failed to store opaque token in Redis for driver {driver.driver_id}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error(
+                    message="Failed to store authentication token",
+                    error_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            )
+
+        # Step 7: Generate JWT access/refresh tokens
+        access_token = create_access_token(
+            user_id=str(driver.driver_id),
+            tenant_id=str(tenant.tenant_id),
+            vendor_id=str(vendor.vendor_id),
+            opaque_token=opaque_token,
+            user_type="driver"
+        )
+        refresh_token = create_refresh_token(
+            user_id=str(driver.driver_id),
+            user_type="driver"
+        )
+
+        logger.info(f"🚀 Login successful for driver {driver.driver_id} ({driver.email}) in tenant {tenant.tenant_id}")
+
+        # Step 8: Prepare response
+        response_data = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "user": {
+                "driver": DriverResponse.model_validate(driver),
+            }
+        }
+
+        return ResponseWrapper.success(
+            data=response_data,
+            message="Driver login successful"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Driver login failed with unexpected error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=ResponseWrapper.error(

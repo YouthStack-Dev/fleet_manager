@@ -10,6 +10,16 @@ on:
         description: "Branch to deploy"
         required: true
         default: "main"
+      remove_images:
+        description: "Remove Docker images before deployment"
+        required: false
+        default: "true"
+        type: boolean
+      remove_volumes:
+        description: "Remove Docker volumes (will reset database)"
+        required: false
+        default: "false"
+        type: boolean
 
 env:
   IMAGE_TAG: latest
@@ -74,26 +84,43 @@ jobs:
           username: ${{ secrets.VPS_USERNAME }}
           password: ${{ secrets.VPS_PASSWORD }}
           script: |
-            # Create service.env on VPS
-            cat <<EOF > ~/service.env
-            DATABASE_URL=postgresql://fleetadmin:fleetpass@fleet_postgres:5432/fleet_db
+            # Create service.prod.env on VPS with secrets
+            cat <<EOF > ~/service.prod.env
+            DATABASE_URL=postgresql://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@fleet_postgres:5432/${{ secrets.POSTGRES_DB }}
             REDIS_HOST=redis_server
             REDIS_PORT=6379
             REDIS_DB=0
-            REDIS_PASSWORD=redispassword
+            REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
             USE_REDIS=1
-            TOKEN_EXPIRY_HOURS=1
+            TOKEN_EXPIRY_HOURS=${{ secrets.TOKEN_EXPIRY_HOURS || '1' }}
+            
+            # Storage configuration
+            ENV=production
+            STORAGE_TYPE=filesystem
+            PROD_SERVER_STORAGE_PATH=/var/lib/fleet/storage
+            MAX_FILE_SIZE_MB=10
+            
             EOF
 
-            # Cleanup old containers & volumes
-            docker compose -f ~/docker-compose_${{ env.ENV }}.yaml down --volumes --remove-orphans
-            docker image prune -af
-            docker volume prune -f
-            docker network prune -f
+            # Stop containers
+            docker compose -f ~/docker-compose_${{ env.ENV }}.yaml down
+
+            # Conditional cleanup based on inputs
+            if [ "${{ github.event.inputs.remove_volumes }}" = "true" ]; then
+              echo "Removing volumes (database will be reset)..."
+              docker compose -f ~/docker-compose_${{ env.ENV }}.yaml down -v
+              docker volume prune -f
+            fi
+
+            if [ "${{ github.event.inputs.remove_images }}" = "true" ]; then
+              echo "Removing old images..."
+              docker image prune -f
+            fi
 
             # Pull latest image
             docker pull dheerajkumarp/fleet_service_manager:${{ env.IMAGE_TAG }}
 
             # Deploy new version
-            docker compose -f ~/docker-compose_${{ env.ENV }}.yaml up -d --force-recreate
-            docker system prune -af
+            docker compose -f ~/docker-compose_${{ env.ENV }}.yaml up -d
+
+            echo "Deployment completed successfully!"
