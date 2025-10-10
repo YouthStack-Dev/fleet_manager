@@ -137,8 +137,10 @@ class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
         try:
             db.flush()
         except SQLAlchemyError as e:
+            db.rollback()
             raise handle_db_error(e)
         except HTTPException as e:
+            db.rollback()
             raise handle_http_error(e)
         
         return db_obj
@@ -170,6 +172,7 @@ class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
         try:
             db.flush()
         except SQLAlchemyError as e:
+            db.rollback()
             raise handle_db_error(e)
         return db_obj
 

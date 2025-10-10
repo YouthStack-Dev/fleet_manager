@@ -1,4 +1,5 @@
 from datetime import date
+from app.utils.validition import validate_future_dates
 from common_utils.auth.utils import hash_password
 from fastapi import APIRouter, Depends, UploadFile, Form, HTTPException, status , Query
 from sqlalchemy.orm import Session
@@ -82,6 +83,17 @@ async def create_driver(
     Vendor users → can only create drivers for their own vendor.
     Admin users → can create for any vendor.
     """
+    expiry_fields = {
+        "bg_expiry_date": bg_expiry_date,
+        "police_expiry_date": police_expiry_date,
+        "medical_expiry_date": medical_expiry_date,
+        "training_expiry_date": training_expiry_date,
+        "eye_expiry_date": eye_expiry_date,
+        "badge_expiry_date": badge_expiry_date,
+        "license_expiry_date": license_expiry_date,
+
+    }
+    validate_future_dates(expiry_fields, context="driver")
     try:
         user_type = user_data.get("user_type")
         token_vendor_id = user_data.get("vendor_id")
@@ -297,11 +309,17 @@ async def update_driver(
     alt_govt_id_number: Optional[str] = Form(None),
     alt_govt_id_type: Optional[str] = Form(None),
     induction_date: Optional[str] = Form(None),
-    bg_verify_status: Optional[VerificationStatusEnum] = None,
-    police_verify_status: Optional[VerificationStatusEnum] = None,
-    medical_verify_status: Optional[VerificationStatusEnum] = None,
-    training_verify_status: Optional[VerificationStatusEnum] = None,
-    eye_verify_status: Optional[VerificationStatusEnum] = None,
+    bg_expiry_date: Optional[date] = Form(None),
+    police_expiry_date: Optional[date] = Form(None),
+    medical_expiry_date: Optional[date] = Form(None),
+    training_expiry_date: Optional[date] = Form(None),
+    eye_expiry_date: Optional[date] = Form(None),
+
+    bg_verify_status: Optional[VerificationStatusEnum] = Form(None),
+    police_verify_status: Optional[VerificationStatusEnum] = Form(None),
+    medical_verify_status: Optional[VerificationStatusEnum] = Form(None),
+    training_verify_status: Optional[VerificationStatusEnum] = Form(None),
+    eye_verify_status: Optional[VerificationStatusEnum] = Form(None),
     # File uploads
     photo: Optional[UploadFile] = None,
     license_file: Optional[UploadFile] = None,
@@ -320,6 +338,17 @@ async def update_driver(
     Update driver details, including optional files and verification statuses.
     Handles old file deletion automatically.
     """
+    expiry_fields = {
+        "bg_expiry_date": bg_expiry_date,
+        "police_expiry_date": police_expiry_date,
+        "medical_expiry_date": medical_expiry_date,
+        "training_expiry_date": training_expiry_date,
+        "eye_expiry_date": eye_expiry_date,
+        "badge_expiry_date": badge_expiry_date,
+        "license_expiry_date": license_expiry_date,
+    }
+
+    validate_future_dates(expiry_fields, context="driver")
     try:
         logger.info(f"[UPDATE DRIVER] Updating driver_id={driver_id} for vendor_id={vendor_id} by user={user_data.get('user_id')}")
 
@@ -349,6 +378,7 @@ async def update_driver(
             "induction_file": induction_file,
         }
 
+        # Save files if provided and delete old ones
         for key, file_obj in file_fields.items():
             if file_obj and await file_size_validator(file_obj, allowed_docs, 10, required=False):
                 db_field = key.replace("_file", "_url")
@@ -377,15 +407,32 @@ async def update_driver(
             "alt_govt_id_number": alt_govt_id_number,
             "alt_govt_id_type": alt_govt_id_type,
             "induction_date": induction_date,
-            "bg_verify_status": bg_verify_status,
-            "police_verify_status": police_verify_status,
-            "medical_verify_status": medical_verify_status,
-            "training_verify_status": training_verify_status,
-            "eye_verify_status": eye_verify_status,
         }
 
+        # Update normal fields
         for key, value in update_fields.items():
             if value is not None:
+                setattr(db_obj, key, value)
+
+        # --- Handle verification status enums separately ---
+        enum_fields = [
+            "bg_verify_status",
+            "police_verify_status",
+            "medical_verify_status",
+            "training_verify_status",
+            "eye_verify_status",
+        ]
+        for key in enum_fields:
+            value = locals().get(key)
+            if value is not None:
+                if isinstance(value, str):
+                    try:
+                        value = VerificationStatusEnum(value)
+                    except ValueError:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=ResponseWrapper.error(f"Invalid value for {key}", "INVALID_ENUM")
+                        )
                 setattr(db_obj, key, value)
 
         db.commit()
