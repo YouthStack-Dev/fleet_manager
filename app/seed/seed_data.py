@@ -22,7 +22,7 @@ def seed_admins(db: Session):
 
         admin_data = {
             "name": f"{role.name} User",
-            "email": f"{role.name.lower()}@example.com",
+            "email": f"{role.name.lower()}@admin.com",
             "phone": f"9000{role.role_id:05d}",
             "password": "e86f78a8a3caf0b60d8e74e5942aa6d86dc150cd3c03338aef25b7d2d7e3acc7",  # Admin@123
             "role_id": role.role_id,
@@ -300,25 +300,29 @@ def seed_employees(db: Session):
                 "tenant_id": tenant.tenant_id,
                 "employee_code": f"{tenant.tenant_id}-EMP1",
                 "name": f"{tenant.name} Employee One",
-                "email": f"{tenant.tenant_id.lower()}_emp1@example.com",
+                "email": f"emp1@emp.com",
                 "password": "b4bd29480ab196faa782e0d4ecd10c2f4212814105227e5f7992f5bf4b212a64", #Employee@123
                 "team_id": teams[0].team_id,
                 "role_id": superadmin_role_id,  # guaranteed to exist
                 "phone": f"9000{random.randint(100000,999999)}",
                 "gender": GenderEnum.MALE,
                 "address": "123 Main Street, Bangalore",
+                "longitude": 12.9716,
+                "latitude": 77.5946
             },
             {
                 "tenant_id": tenant.tenant_id,
                 "employee_code": f"{tenant.tenant_id}-EMP2",
                 "name": f"{tenant.name} Employee Two",
-                "email": f"{tenant.tenant_id.lower()}_emp2@example.com",
+                "email": f"emp2@emp.com",
                 "password": "b4bd29480ab196faa782e0d4ecd10c2f4212814105227e5f7992f5bf4b212a64", #Employee@123
                 "team_id": teams[-1].team_id,
                 "role_id": admin_role_id,  # guaranteed to exist
                 "phone": f"8000{random.randint(100000,999999)}",
                 "gender": GenderEnum.FEMALE,
                 "address": "456 Market Road, Bangalore",
+                "longitude": 12.9716,
+                "latitude": 77.5946
             },
         ]
 
