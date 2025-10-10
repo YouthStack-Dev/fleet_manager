@@ -35,3 +35,8 @@ postgres_data/
 
 # Logs
 *.log
+
+
+# uploads
+uploads/
+local_storage/
