@@ -34,9 +34,9 @@ class BookingBase(BaseModel):
 class BookingCreate(BaseModel):
     tenant_id: Optional[str] = None
     employee_id: int
-    booking_date: date
+    booking_dates: List[date] 
     shift_id: int
-    @field_validator("booking_date")
+    @field_validator("booking_date", check_fields=False)
     def validate_booking_date_not_past(cls, v):
         if v < date.today():
             raise ValueError("Booking date cannot be in the past")
