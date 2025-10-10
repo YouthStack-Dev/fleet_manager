@@ -4,7 +4,7 @@ from app.models.employee import Employee
 from app.models.shift import Shift
 from app.models.tenant import Tenant
 from app.models.weekoff_config import WeekoffConfig
-from fastapi import APIRouter, Depends, HTTPException, Path, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, status, Query,Body
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from datetime import date, datetime, datetime
@@ -21,6 +21,17 @@ from app.core.logging_config import get_logger
 logger = get_logger(__name__)
 router = APIRouter(prefix="/bookings", tags=["bookings"])
 
+def booking_validate_future_dates(dates: list[date], context: str = "dates"):
+    today = date.today()
+    for d in dates:
+        if d <= today:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message=f"{context} must contain only future dates (invalid: {d})",
+                    error_code="INVALID_DATE",
+                ),
+            )
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
@@ -30,18 +41,41 @@ def create_booking(
     user_data=Depends(PermissionChecker(["booking.create"], check_tenant=True)),
 ):
     try:
-        logger.info(
-            f"Attempting to create booking for employee_id={booking.employee_id} "
-            f"on date={booking.booking_date} by user_id={user_data.get('user_id')}"
-        )
+        user_type = user_data.get("user_type")
 
-        # --- 1️⃣ Check employee ---
+
+        # employee_id = user_data.get("user_id")
+        logger.info(f"Attempting to create bookings for employee_id={booking.employee_id} ")
+        logger.info(f"booking: {booking.booking_dates}")
+        # --- Tenant validation ---
+        if user_type == "admin":
+            tenant_id = booking.tenant_id
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Admin must provide tenant_id to create drivers",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+        elif user_type == "employee":
+            tenant_id = user_data.get("tenant_id")
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to create drivers",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # --- Employee validation ---
         employee = (
             db.query(Employee)
             .filter(
                 Employee.employee_id == booking.employee_id,
-                Employee.tenant_id == user_data["tenant_id"],
-                Employee.is_active == True
+                Employee.tenant_id == tenant_id,
+                Employee.is_active.is_(True)
             )
             .first()
         )
@@ -55,153 +89,151 @@ def create_booking(
                 ),
             )
 
-        if user_data.get("user_type") != "employee":
-            logger.warning(f"User is not an employee: user_type={user_data.get('user_type')}")
+        # --- Shift validation ---
+        shift = (
+            db.query(Shift)
+            .filter(Shift.shift_id == booking.shift_id, Shift.tenant_id == tenant_id)
+            .first()
+        )
+        if not shift:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=ResponseWrapper.error(
-                    message="Only employees can create bookings",
-                    error_code="FORBIDDEN",
-                ),
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error("Shift not found for this tenant", "SHIFT_NOT_FOUND"),
             )
 
-        # --- 2️⃣ Check shift ---
-        shift = None
-        if booking.shift_id:
-            shift = (
-                db.query(Shift)
-                .filter(
-                    Shift.shift_id == booking.shift_id,
-                    Shift.tenant_id == user_data["tenant_id"]
-                )
-                .first()
-            )
-            if not shift:
-                logger.warning(f"Shift not found: shift_id={booking.shift_id}")
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=ResponseWrapper.error(
-                        message="Shift not found for this tenant",
-                        error_code="SHIFT_NOT_FOUND",
-                    ),
-                )
+        # --- Tenant lookup ---
+        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        if not tenant:
+            raise HTTPException(status_code=404, detail="Tenant not found")
 
-        # --- 3️⃣ Check weekoff ---
-        weekday = booking.booking_date.weekday()
+        # --- Weekoff & Cutoff configs ---
         weekoff_config = db.query(WeekoffConfig).filter(
-            WeekoffConfig.employee_id == booking.employee_id
+            WeekoffConfig.employee_id == employee.employee_id
         ).first()
+        cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == tenant_id).first()
+
+        created_bookings = []
         weekday_map = {0: "monday", 1: "tuesday", 2: "wednesday", 3: "thursday",
                        4: "friday", 5: "saturday", 6: "sunday"}
-        if weekoff_config and getattr(weekoff_config, weekday_map[weekday], False):
-            logger.info(f"Booking on weekoff day: employee_id={booking.employee_id}, weekday={weekday_map[weekday]}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="Cannot create booking on employee's weekoff day",
-                    error_code="WEEKOFF_DAY",
-                ),
-            )
+        booking_validate_future_dates(booking.booking_dates, context="dates")
+        unique_dates = sorted(set(booking.booking_dates))
+        for booking_date in unique_dates:
+            
+            weekday = booking_date.weekday()
 
-        # --- 4️⃣ Check cutoff ---
-        cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == user_data["tenant_id"]).first()
-        if cutoff and shift:
-            shift_datetime = datetime.combine(booking.booking_date, shift.shift_time)
-            booking_cutoff_datetime = shift_datetime - cutoff.booking_cutoff
-            now = datetime.now()
-            if now > booking_cutoff_datetime:
-                logger.info(
-                    f"Booking cutoff passed: now={now}, cutoff_datetime={booking_cutoff_datetime}, "
-                    f"employee_id={booking.employee_id}"
-                )
+            # 1️⃣ Weekoff validation
+            if weekoff_config and getattr(weekoff_config, weekday_map[weekday], False):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ResponseWrapper.error(
-                        message=f"Booking cutoff time has passed for this shift (cutoff: {cutoff.booking_cutoff})",
-                        error_code="BOOKING_CUTOFF",
+                        f"Cannot create booking on weekoff day ({weekday_map[weekday]})",
+                        "WEEKOFF_DAY",
                     ),
                 )
+            
 
-        # --- 5️⃣ Determine pickup & drop locations ---
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == user_data["tenant_id"]).first()
-        if not tenant:
-            logger.error(f"Tenant not found: tenant_id={user_data['tenant_id']}")
-            raise HTTPException(status_code=404, detail="Tenant not found")
+            # 2️⃣ Cutoff validation
+            if cutoff and shift and cutoff.booking_cutoff and cutoff.booking_cutoff.total_seconds() > 0:
+                shift_datetime = datetime.combine(booking_date, shift.shift_time)
+                now = datetime.now()
+                time_until_shift = shift_datetime - now
+                logger.info(
+                    f"Cutoff check: now={now}, shift_datetime={shift_datetime}, "
+                    f"time_until_shift={time_until_shift}, cutoff={cutoff.booking_cutoff}"
+                )
+                if time_until_shift < cutoff.booking_cutoff:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=ResponseWrapper.error(
+                            f"Booking cutoff time has passed for this shift (cutoff: {cutoff.booking_cutoff})",
+                            "BOOKING_CUTOFF",
+                        ),
+                    )
 
-        if shift:
+
+
+            # 3️⃣ Duplicate booking check
+            existing_booking = (
+                db.query(Booking)
+                .filter(
+                    Booking.employee_id == employee.employee_id,
+                    Booking.booking_date == booking_date,
+                    Booking.shift_id == booking.shift_id,
+                )
+                .first()
+            )
+            logger.info(
+                    f"Existing booking check: employee_id={employee.employee_id}, booking_date={booking_date}, shift_id={shift.shift_id}"
+                )
+
+            if existing_booking:
+                if existing_booking.status != BookingStatusEnum.CANCELLED:  # Only allow if previous booking was cancelled
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=ResponseWrapper.error(
+                            message=f"Employee already has an active booking for this shift and date ({booking_date})",
+                            error_code="ALREADY_BOOKED",
+                        ),
+                    )
+                else:
+                    logger.info(f"Previous booking was cancelled, proceeding to create a new one for booking_date={booking_date}")
+
+            # 4️⃣ Compute pickup/drop based on shift
             if shift.log_type == "IN":  # home → office
-                pickup_lat, pickup_lng = float(employee.latitude), float(employee.longitude)
+                pickup_lat, pickup_lng = employee.latitude, employee.longitude
                 pickup_addr = employee.address
-                drop_lat, drop_lng = float(tenant.latitude), float(tenant.longitude)
+                drop_lat, drop_lng = tenant.latitude, tenant.longitude
                 drop_addr = tenant.address
-            elif shift.log_type == "OUT":  # office → home
-                pickup_lat, pickup_lng = float(tenant.latitude), float(tenant.longitude)
+            else:  # OUT: office → home
+                pickup_lat, pickup_lng = tenant.latitude, tenant.longitude
                 pickup_addr = tenant.address
-                drop_lat, drop_lng = float(employee.latitude), float(employee.longitude)
+                drop_lat, drop_lng = employee.latitude, employee.longitude
                 drop_addr = employee.address
-        else:
-            pickup_lat = pickup_lng = drop_lat = drop_lng = None
-            pickup_addr = drop_addr = None
 
-        # --- 6️⃣ Check for existing booking ---
-        existing_booking = (
-            db.query(Booking)
-            .filter(
-                Booking.employee_id == employee.employee_id,
-                Booking.booking_date == booking.booking_date,
-                Booking.shift_id == booking.shift_id,
+            # 5️⃣ Create booking object
+            db_booking = Booking(
+                tenant_id=tenant_id,
+                employee_id=employee.employee_id,
+                employee_code=employee.employee_code,
+                team_id=employee.team_id,
+                shift_id=booking.shift_id,
+                booking_date=booking_date,
+                pickup_latitude=pickup_lat,
+                pickup_longitude=pickup_lng,
+                pickup_location=pickup_addr,
+                drop_latitude=drop_lat,
+                drop_longitude=drop_lng,
+                drop_location=drop_addr,
+                status="Pending",
             )
-            .first()
-        )
-        if existing_booking:
-            logger.warning(
-                f"Employee already has booking for this shift: "
-                f"employee_id={employee.employee_id}, date={booking.booking_date}, shift_id={booking.shift_id}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="Employee already has a booking for this shift and date",
-                    error_code="ALREADY_BOOKED",
-                ),
-            )
+            db.add(db_booking)
+            db.flush()
+            created_bookings.append(db_booking)
 
-        # --- 7️⃣ Create booking with team_id ---
-        db_booking = Booking(
-            tenant_id=user_data["tenant_id"],
-            employee_id=employee.employee_id,
-            employee_code=employee.employee_code,
-            team_id=employee.team_id,
-            shift_id=booking.shift_id,
-            booking_date=booking.booking_date,
-            pickup_latitude=pickup_lat,
-            pickup_longitude=pickup_lng,
-            pickup_location=pickup_addr,
-            drop_latitude=drop_lat,
-            drop_longitude=drop_lng,
-            drop_location=drop_addr,
-            status="Pending",
-        )
-        db.add(db_booking)
         db.commit()
-        db.refresh(db_booking)
+        for b in created_bookings:
+            db.refresh(b)
 
-        logger.info(f"Booking created successfully: booking_id={db_booking.booking_id}")
+        logger.info(
+            f"Created {len(created_bookings)} bookings for employee_id={employee.employee_id} "
+            f"on dates={[b.booking_date for b in created_bookings]}"
+        )
 
         return ResponseWrapper.created(
-            data=BookingResponse.model_validate(db_booking),
-            message="Booking created successfully"
+            data=[BookingResponse.model_validate(b) for b in created_bookings],
+            message=f"{len(created_bookings)} booking(s) created successfully",
         )
+
+    except HTTPException as e:
+        db.rollback()
+        logger.warning(f"HTTPException during booking creation: {e.detail}")
+        raise handle_http_error(e)
 
     except SQLAlchemyError as e:
         db.rollback()
         logger.exception("Database error occurred while creating booking")
         raise handle_db_error(e)
 
-    except HTTPException as e:
-        db.rollback()
-        logger.warning(f"HTTPException: {e.detail}")
-        raise handle_http_error(e)
 
     except Exception as e:
         db.rollback()
@@ -221,27 +253,56 @@ def get_bookings(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True)),
     booking_date: Optional[date] = Query(None, description="Filter by booking date"),
-    tenant_id: str = Path(..., description="Tenant ID"),
+    tenant_id: Optional[str] = None,
+    status_filter: Optional[BookingStatusEnum] = Query(None, description="Filter by booking status"),
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=100),
 ):
     try:
-        # Normalize skip/limit
+        # --- Determine effective tenant ---
+        user_type = user_data.get("user_type")
+        if user_type == "admin":
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Admin must provide tenant_id",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+            effective_tenant_id = tenant_id
+        elif user_type == "employee":
+            effective_tenant_id = user_data.get("tenant_id")
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to view bookings",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
         skip = max(skip, 0)
         limit = max(min(limit, 100), 1)
 
         logger.info(
-            f"Fetching bookings for tenant_id={user_data['tenant_id']} "
+            f"Fetching bookings: user_type={user_type}, effective_tenant_id={effective_tenant_id}, "
             f"date_filter={booking_date}, skip={skip}, limit={limit}"
         )
 
-        # Admins can query any tenant, employees limited to their own
-        effective_tenant_id = tenant_id if user_data["user_type"] == "admin" else user_data["tenant_id"]
-        logger.info(f"Fetching bookings for tenant_id={effective_tenant_id}, date={booking_date}, skip={skip}, limit={limit}")
-
+        # --- Build query ---
         query = db.query(Booking).filter(Booking.tenant_id == effective_tenant_id)
         if booking_date:
             query = query.filter(Booking.booking_date == booking_date)
+        if status_filter:
+            query = query.filter(Booking.status == status_filter)
+
+        # 🔹 Log total filtered records before pagination
+        filtered_count = query.count()
+        logger.info(
+            f"Filtered bookings count for tenant_id={effective_tenant_id} "
+            f"with date={booking_date}: {filtered_count}"
+        )
 
         total, items = paginate_query(query, skip, limit)
 
@@ -263,6 +324,7 @@ def get_bookings(
         raise handle_http_error(e)
 
 
+
 # ============================================================
 # 2️⃣ Get bookings for a specific employee (by ID or code)
 # ============================================================
@@ -271,6 +333,7 @@ def get_bookings_by_employee(
     employee_id: Optional[int] = Query(None, description="Employee ID"),
     employee_code: Optional[str] = Query(None, description="Employee code"),
     booking_date: Optional[date] = Query(None, description="Optional booking date filter"),
+    status_filter: Optional[BookingStatusEnum] = Query(None, description="Filter by booking status"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True)),
     skip: int = Query(0, ge=0),
@@ -311,6 +374,8 @@ def get_bookings_by_employee(
 
         if booking_date:
             query = query.filter(Booking.booking_date == booking_date)
+        if status_filter:        
+            query = query.filter(Booking.status == status_filter)
 
         # Tenant enforcement for non-admin employees
         if user_type != "admin":
@@ -379,31 +444,40 @@ def get_booking_by_id(
         raise handle_http_error(e)
 
 
-
-from fastapi import Body, Path
-
 # ============================================================
-# 4️⃣ Update booking by booking_id
+# 4️⃣ cancel booking by booking_id
 # ============================================================
-@router.put("/{booking_id}", response_model=BaseResponse[BookingResponse])
-def update_booking(
-    booking_id: int = Path(..., description="Booking ID to update"),
-    booking_update: BookingUpdate = Body(...),
+@router.patch("/cancel/{booking_id}", response_model=BaseResponse[BookingResponse])
+def cancel_booking(
+    booking_id: int = Path(..., description="Booking ID to cancel"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["booking.update"], check_tenant=True)),
 ):
+    """
+    Employee can cancel a booking.
+    - Only the employee who owns the booking can cancel it.
+    - Only future bookings can be cancelled.
+    """
     try:
         user_type = user_data.get("user_type")
-        tenant_id = user_data.get("tenant_id")
+        employee_tenant_id = user_data.get("tenant_id")
+        employee_id = user_data.get("user_id")  # This is employee_id stored in token
 
-        logger.info(f"Updating booking_id={booking_id} by user_id={user_data.get('user_id')}")
+        logger.info(f"Attempting to cancel booking_id={booking_id} by employee_id={employee_id}, user_type={user_type}")
 
-        # Fetch the booking
-        query = db.query(Booking).filter(Booking.booking_id == booking_id)
-        if user_type != "admin":
-            query = query.filter(Booking.tenant_id == tenant_id)
+        # Only employees can cancel
+        if user_type != "employee":
+            logger.warning(f"Unauthorized cancellation attempt by employee_id={employee_id}, user_type={user_type}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Only employees can cancel their bookings",
+                    error_code="FORBIDDEN",
+                ),
+            )
 
-        booking = query.first()
+        # Fetch booking
+        booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
         if not booking:
             logger.warning(f"Booking not found: booking_id={booking_id}")
             raise HTTPException(
@@ -413,59 +487,72 @@ def update_booking(
                     error_code="BOOKING_NOT_FOUND",
                 ),
             )
+        logger.info(f"Booking fetched successfully: booking_id={booking.booking_id}, status={booking.status}")
 
-        # Only allow certain roles to update bookings
-        if user_type in {"vendor", "driver"}:
-            logger.warning(f"Unauthorized update attempt by user_type={user_type}")
+        # Map token employee_id to Employee.employee_id
+        employee = db.query(Employee).filter(
+            Employee.employee_id == employee_id,
+            Employee.tenant_id == employee_tenant_id,
+            Employee.is_active.is_(True)
+        ).first()
+        if not employee:
+            logger.warning(f"No active employee found for employee_id={employee_id} in tenant={employee_tenant_id}")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
-                    message="You don't have permission to update bookings",
+                    message="Invalid employee",
                     error_code="FORBIDDEN",
                 ),
             )
+        logger.info(f"Employee record found: employee_id={employee.employee_id}, tenant_id={employee.tenant_id}")
 
-        # Apply updates
-        updated_fields = []
-        if booking_update.status is not None:
-            booking.status = booking_update.status
-            updated_fields.append("status")
-        if booking_update.reason is not None:
-            booking.reason = booking_update.reason
-            updated_fields.append("reason")
-        
 
-        if not updated_fields:
-            logger.warning(f"No fields provided to update for booking_id={booking_id}")
+        # Check if booking is in the past
+        if booking.booking_date < date.today():
+            logger.warning(f"Attempted cancellation for past booking: booking_id={booking.booking_id}, date={booking.booking_date}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ResponseWrapper.error(
-                    message="No valid fields provided for update",
-                    error_code="NO_UPDATE_FIELDS",
+                    message="Cannot cancel past bookings",
+                    error_code="PAST_BOOKING",
                 ),
             )
+        logger.info(f"Booking is in future: booking_date={booking.booking_date}")
 
-        # Commit changes
+        # Check if already cancelled
+        if booking.status.lower() == "Cancelled":
+            logger.warning(f"Booking already cancelled: booking_id={booking.booking_id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Booking is already cancelled",
+                    error_code="ALREADY_CANCELLED",
+                ),
+            )
+        logger.info(f"Booking is not yet cancelled, proceeding to cancel: booking_id={booking.booking_id}")
+
+        # Cancel booking
+        booking.status = "Cancelled"
         db.commit()
         db.refresh(booking)
-
-        logger.info(f"Booking updated successfully: booking_id={booking_id}, fields={updated_fields}")
+        logger.info(f"Booking cancelled successfully: booking_id={booking.booking_id}, employee_id={employee.employee_id}")
 
         return ResponseWrapper.success(
             data=BookingResponse.model_validate(booking, from_attributes=True),
-            message="Booking updated successfully"
+            message="Booking successfully cancelled"
         )
 
     except SQLAlchemyError as e:
         db.rollback()
-        logger.exception("Database error occurred while updating booking")
+        logger.exception(f"Database error occurred while cancelling booking_id={booking_id}")
         raise handle_db_error(e)
     except HTTPException as e:
         db.rollback()
+        logger.warning(f"HTTPException during cancellation of booking_id={booking_id}: {e.detail}")
         raise handle_http_error(e)
     except Exception as e:
         db.rollback()
-        logger.exception("Unexpected error occurred while updating booking")
+        logger.exception(f"Unexpected error occurred while cancelling booking_id={booking_id}")
         raise HTTPException(
             status_code=500,
             detail=ResponseWrapper.error(message="Internal Server Error", error_code="INTERNAL_ERROR")
