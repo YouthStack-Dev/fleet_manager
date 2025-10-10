@@ -1,7 +1,8 @@
 from pydantic import BaseModel, Field
+from datetime import date, datetime
 from typing import Optional, List
-from datetime import datetime, date
 from enum import Enum
+
 
 class BookingStatusEnum(str, Enum):
     PENDING = "Pending"
@@ -10,34 +11,46 @@ class BookingStatusEnum(str, Enum):
     COMPLETED = "Completed"
     CANCELED = "Canceled"
 
-class BookingBase(BaseModel):
-    employee_id: int
-    shift_id: Optional[int] = None
-    booking_date: date
-    pickup_latitude: Optional[float] = Field(None, ge=-90, le=90)
-    pickup_longitude: Optional[float] = Field(None, ge=-180, le=180)
-    pickup_location: Optional[str] = None
-    drop_latitude: Optional[float] = Field(None, ge=-90, le=90)
-    drop_longitude: Optional[float] = Field(None, ge=-180, le=180)
-    drop_location: Optional[str] = None
-    status: BookingStatusEnum = BookingStatusEnum.PENDING
-    team_id: Optional[int] = None
 
-class BookingCreate(BookingBase):
-    pass
+class BookingBase(BaseModel):
+    tenant_id: str
+    employee_id: int
+    employee_code: str
+    shift_id: Optional[int] = None
+    team_id: Optional[int] = None
+    booking_date: date
+    pickup_latitude: Optional[float] = None
+    pickup_longitude: Optional[float] = None
+    pickup_location: Optional[str] = None
+    drop_latitude: Optional[float] = None
+    drop_longitude: Optional[float] = None
+    drop_location: Optional[str] = None
+    status: Optional[BookingStatusEnum] = BookingStatusEnum.PENDING
+    reason: Optional[str] = None
+    is_active: Optional[bool] = True
+
+
+class BookingCreate(BaseModel):
+    tenant_id: str = Field(..., max_length=50)
+    employee_id: int
+    booking_date: date
+    shift_id: Optional[int] = None
+
 
 class BookingUpdate(BaseModel):
-    employee_id: Optional[int] = None
     shift_id: Optional[int] = None
+    team_id: Optional[int] = None
     booking_date: Optional[date] = None
-    pickup_latitude: Optional[float] = Field(None, ge=-90, le=90)
-    pickup_longitude: Optional[float] = Field(None, ge=-180, le=180)
+    pickup_latitude: Optional[float] = None
+    pickup_longitude: Optional[float] = None
     pickup_location: Optional[str] = None
-    drop_latitude: Optional[float] = Field(None, ge=-90, le=90)
-    drop_longitude: Optional[float] = Field(None, ge=-180, le=180)
+    drop_latitude: Optional[float] = None
+    drop_longitude: Optional[float] = None
     drop_location: Optional[str] = None
     status: Optional[BookingStatusEnum] = None
-    team_id: Optional[int] = None
+    reason: Optional[str] = None
+    is_active: Optional[bool] = None
+
 
 class BookingResponse(BookingBase):
     booking_id: int
@@ -45,8 +58,4 @@ class BookingResponse(BookingBase):
     updated_at: datetime
 
     class Config:
-        from_attributes = True
-
-class BookingPaginationResponse(BaseModel):
-    total: int
-    items: List[BookingResponse]
+        orm_mode = True

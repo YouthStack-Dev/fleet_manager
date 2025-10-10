@@ -26,7 +26,7 @@ class Booking(Base):
     # Scope
     tenant_id = Column(String(50), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
     employee_id = Column(Integer, ForeignKey("employees.employee_id", ondelete="CASCADE"), nullable=False)
-
+    employee_code = Column(String(50), nullable=False)
     shift_id = Column(Integer, ForeignKey("shifts.shift_id", ondelete="CASCADE"), nullable=True)
     team_id = Column(Integer, ForeignKey("teams.team_id", ondelete="SET NULL"), nullable=True)
 
@@ -48,7 +48,6 @@ class Booking(Base):
 
     # Audit & lifecycle
     reason = Column(Text, nullable=True)  # reason for cancellation/update
-    is_active = Column(Boolean, default=True, nullable=False)
 
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)

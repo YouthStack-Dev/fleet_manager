@@ -489,7 +489,10 @@ def read_tenant(
         )
 
 
-@router.put("/{tenant_id}", response_model=dict, status_code=status.HTTP_200_OK)
+@router.put(
+    "/{tenant_id}", response_model=dict,
+    status_code=status.HTTP_200_OK
+)
 def update_tenant(
     tenant_id: str,
     tenant_update: TenantUpdate,
@@ -539,7 +542,9 @@ def update_tenant(
         for key, value in tenant_fields.items():
             setattr(db_tenant, key, value)
 
-        # --- Handle policy updates ---
+        updated_policy = None
+
+        # --- Handle policy updates (existing logic intact) ---
         if "permission_ids" in update_data and update_data["permission_ids"]:
             admin_policy = (
                 db.query(Policy)
@@ -584,26 +589,56 @@ def update_tenant(
                 f"for policy {admin_policy.name}"
             )
 
+            updated_policy = admin_policy
+
         db.commit()
         db.refresh(db_tenant)
 
-        updated_tenant = TenantResponse.model_validate(db_tenant, from_attributes=True)
-        logger.info(f"Tenant updated successfully: {tenant_id}")
+        # --- ALWAYS fetch the admin policy for the response (no logic change) ---
+        admin_policy = (
+            db.query(Policy)
+            .filter(
+                Policy.tenant_id == tenant_id,
+                Policy.name == f"{tenant_id}_AdminPolicy"
+            )
+            .first()
+        )
+
+        # ✅ Prepare final response data (same structure as create_tenant)
+        policy_data = None
+        if admin_policy:
+            policy_data = PolicyResponse.model_validate(admin_policy)
+        else:
+            # Fetch current admin policy even if permissions weren't updated
+            admin_policy = (
+                db.query(Policy)
+                .filter(
+                    Policy.tenant_id == tenant_id,
+                    Policy.name == f"{tenant_id}_AdminPolicy"
+                )
+                .first()
+            )
+            if admin_policy:
+                policy_data = PolicyResponse.model_validate(admin_policy)
 
         return ResponseWrapper.success(
-            data=updated_tenant,
+            data={
+                "tenant": TenantResponse.model_validate(db_tenant),
+                "admin_policy": policy_data,
+            },
             message=f"Tenant '{tenant_id}' updated successfully",
         )
 
+
     except SQLAlchemyError as e:
-        # Handle DB errors in a structured way
+        db.rollback()
         raise handle_db_error(e)
     except HTTPException:
-        # Propagate known HTTPExceptions
+        db.rollback()
         raise
     except Exception as e:
-        # Catch-all for unexpected errors
-        logger.exception(f"Unexpected error while fetching vendors: {str(e)}")
+        db.rollback()
+        logger.exception(f"Unexpected error while updating tenant: {str(e)}")
         raise handle_http_error(e)
 
 @router.patch("/{tenant_id}/toggle-status", response_model=dict, status_code=status.HTTP_200_OK)
