@@ -82,6 +82,7 @@ async def create_vehicle(
         user_type = user_data.get("user_type")
         if user_type == "vendor":
             vendor_id = user_data.get("vendor_id")
+            logger.info(f"[VehicleCreate] Vendor ID={vendor_id} creating vehicle by user_id={user_data.get('user_id')}")
             if not vendor_id:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -93,6 +94,7 @@ async def create_vehicle(
 
         # --- Admin role ---
         elif user_type in {"admin"}:
+            logger.info(f"[VehicleCreate] Admin creating vehicle for vendor_id={vendor_id} by user_id={user_data.get('user_id')}")
             if not vendor_id:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
