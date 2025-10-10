@@ -74,10 +74,10 @@ class BaseValidatorsMixin:
         return v
 
     @model_validator(mode="after")
-    def validate_special_needs_dates(cls, self):
-        special_needs = getattr(self, "special_needs", None)
-        start_date = getattr(self, "special_needs_start_date", None)
-        end_date = getattr(self, "special_needs_end_date", None)
+    def validate_special_needs_dates(self):
+        special_needs = self.special_needs
+        start_date = self.special_needs_start_date
+        end_date = self.special_needs_end_date
         today = date.today()
 
         if special_needs:
@@ -93,6 +93,7 @@ class BaseValidatorsMixin:
             self.special_needs_end_date = None
 
         return self
+
 
 class EmployeeBase(BaseModel):
     name: str

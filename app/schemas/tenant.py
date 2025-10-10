@@ -51,7 +51,13 @@ class TenantBase(BaseModel):
 # ------------------------------
 # Tenant Create Schema
 # ------------------------------
-class TenantCreate(TenantBase):
+class TenantCreate(BaseModel):
+    tenant_id: str = Field(..., min_length=3, max_length=50, description="Unique tenant identifier")
+    name: str = Field(..., min_length=2, max_length=150, description="Tenant name")
+    address: str = Field(..., max_length=255, description="Tenant address")
+    longitude: float = Field(..., ge=-180, le=180, description="Longitude coordinate")
+    latitude: float = Field(..., ge=-90, le=90, description="Latitude coordinate")
+    is_active: bool = Field(default=True, description="Is tenant active?")
     permission_ids: List[int] = Field(
         ..., min_items=1, description="List of permission IDs to assign to tenant admin policy"
     )
@@ -69,7 +75,16 @@ class TenantCreate(TenantBase):
         if not re.match(PHONE_REGEX, v):
             raise ValueError('Phone number must be in E.164 format (e.g., +1234567890)')
         return v
-
+    @field_validator("tenant_id")
+    def validate_tenant_id(cls, v: str):
+        if not re.match(USERNAME_REGEX, v):
+            raise ValueError("Tenant ID must be 3–50 chars (letters, numbers, underscores)")
+        return v
+    @field_validator("name")
+    def validate_name(cls, v: str):
+        if not re.match(NAME_REGEX, v):
+            raise ValueError("Name must be 2–50 chars, letters/spaces/hyphens/apostrophes only")
+        return v
     @validator('employee_name')
     def validate_name(cls, v):
         if not re.match(NAME_REGEX, v):

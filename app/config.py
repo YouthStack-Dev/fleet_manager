@@ -2,8 +2,8 @@ import os
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    ENV: str = os.getenv("ENV", "development")
-    DEBUG: bool = ENV == "development"
+    ENV: str = os.getenv("ENV", "development")  # development, dev-server, production
+    DEBUG: bool = ENV in ["development", "dev-server"]
     
     # Database settings
     POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "localhost")
@@ -19,6 +19,69 @@ class Settings(BaseSettings):
     REDIS_DB: int = int(os.getenv("REDIS_DB", "0"))
     REDIS_PASSWORD: str = os.getenv("REDIS_PASSWORD", "")
     USE_REDIS: bool = os.getenv("USE_REDIS", "0") == "1"
+    
+    # Storage Configuration - Environment Based
+    STORAGE_TYPE: str = os.getenv("STORAGE_TYPE", "filesystem")  # filesystem, s3, gcs, azure
+    
+    # Local development storage (relative to project root)
+    LOCAL_DEV_STORAGE_PATH: str = os.getenv("LOCAL_DEV_STORAGE_PATH", "./local_storage")
+    
+    # Dev Server storage (absolute path on dev server)
+    DEV_SERVER_STORAGE_PATH: str = os.getenv("DEV_SERVER_STORAGE_PATH", "/var/lib/fleet/dev-storage")
+    
+    # Production server storage (absolute path on production server)
+    PROD_SERVER_STORAGE_PATH: str = os.getenv("PROD_SERVER_STORAGE_PATH", "/var/lib/fleet/storage")
+    
+    # Cloud storage URLs (for future migration)
+    S3_STORAGE_URL: str = os.getenv("S3_STORAGE_URL", "s3://your-fleet-bucket/documents")
+    GCS_STORAGE_URL: str = os.getenv("GCS_STORAGE_URL", "gcs://your-fleet-bucket/documents")
+    AZURE_STORAGE_URL: str = os.getenv("AZURE_STORAGE_URL", "abfs://container@account.dfs.core.windows.net/documents")
+    
+    # Auto-detect storage based on environment
+    @property
+    def STORAGE_BASE_URL(self) -> str:
+        """
+        Automatically determine storage URL based on environment and storage type
+        
+        Environment mapping:
+        - development: Local machine filesystem (./local_storage)
+        - dev-server: Dev server filesystem (/var/lib/fleet/dev-storage)
+        - production: Production filesystem or cloud storage
+        """
+        storage_type = self.STORAGE_TYPE.lower()
+        
+        if storage_type == "filesystem":
+            if self.ENV == "development":
+                # Local development - relative path
+                return f"file://{os.path.abspath(self.LOCAL_DEV_STORAGE_PATH)}"
+            elif self.ENV == "dev-server":
+                # Dev server - absolute path
+                return f"file://{self.DEV_SERVER_STORAGE_PATH}"
+            elif self.ENV == "production":
+                # Production server - absolute path
+                return f"file://{self.PROD_SERVER_STORAGE_PATH}"
+            else:
+                # Default to local for unknown environments
+                return f"file://{os.path.abspath(self.LOCAL_DEV_STORAGE_PATH)}"
+                
+        elif storage_type == "s3":
+            return self.S3_STORAGE_URL
+        elif storage_type == "gcs":
+            return self.GCS_STORAGE_URL
+        elif storage_type == "azure":
+            return self.AZURE_STORAGE_URL
+        else:
+            # Default to filesystem for unknown storage types
+            if self.ENV == "development":
+                return f"file://{os.path.abspath(self.LOCAL_DEV_STORAGE_PATH)}"
+            elif self.ENV == "dev-server":
+                return f"file://{self.DEV_SERVER_STORAGE_PATH}"
+            else:
+                return f"file://{self.PROD_SERVER_STORAGE_PATH}"
+    
+    # File upload settings
+    MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "5"))
+    ALLOWED_FILE_TYPES: list = ["image/jpeg", "image/png", "application/pdf"]
     
     # Auth settings
     SECRET_KEY: str = os.getenv("SECRET_KEY", "supersecretkey")

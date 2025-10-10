@@ -23,6 +23,7 @@ class Vehicle(Base):
     driver_id = Column(Integer, ForeignKey("drivers.driver_id", ondelete="SET NULL"))
 
     rc_number = Column(String(100), nullable=False)
+    rc_expiry_date = Column(Date, nullable=True)      
     description = Column(Text)
 
     puc_number = Column(String(100))
