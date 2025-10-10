@@ -8,6 +8,11 @@ from app.schemas.driver import DriverCreate, DriverUpdate
 from app.models.vendor import Vendor
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from app.crud.base import CRUDBase
+from app.core.logging_config import get_logger
+from fastapi.encoders import jsonable_encoder
+
+logger = get_logger(__name__)
+
 
 
 class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
@@ -66,7 +71,7 @@ class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
                     error_code="INVALID_VENDOR",
                 ),
             )
-
+        logger.info(f"Driver creation obj_in: {jsonable_encoder(obj_in)}")
         # ✅ Create driver object
         db_obj = Driver(
             vendor_id=vendor_id,
@@ -127,6 +132,7 @@ class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
         )
 
         # ✅ Save
+        logger.info(f"Creating driver: {jsonable_encoder(db_obj)}")
         db.add(db_obj)
         try:
             db.flush()

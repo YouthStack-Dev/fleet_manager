@@ -15,7 +15,7 @@ from app.models.driver import VerificationStatusEnum ,GenderEnum
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
 from app.services.storage_service import storage_service
-
+from fastapi.encoders import jsonable_encoder
 logger = get_logger(__name__)
 router = APIRouter(prefix="/drivers", tags=["drivers"])
 
@@ -49,23 +49,23 @@ async def create_driver(
     induction_date: date = Form(...),
 
     # Verification expiries
-    bg_expiry_date: date = Form(None),
-    police_expiry_date: date= Form(None),
-    medical_expiry_date:date = Form(None),
-    training_expiry_date:date = Form(None),
-    eye_expiry_date: date = Form(None),
+    bg_expiry_date: date = Form(...),
+    police_expiry_date: date= Form(...),
+    medical_expiry_date:date = Form(...),
+    training_expiry_date:date = Form(...),
+    eye_expiry_date: date = Form(...),
 
     # File uploads
     photo: Optional[UploadFile] = Form(None),
-    license_file: UploadFile = Form(None),
-    badge_file: UploadFile = Form(None),
-    alt_govt_id_file: UploadFile = Form(None),
-    bgv_file:UploadFile = Form(None),
-    police_file: UploadFile = Form(None),
-    medical_file: UploadFile = Form(None),
-    training_file: UploadFile = Form(None),
-    eye_file: UploadFile = Form(None),
-    induction_file: UploadFile = Form(None),
+    license_file: UploadFile = Form(...),
+    badge_file: UploadFile = Form(...),
+    alt_govt_id_file: UploadFile = Form(...),
+    bgv_file:UploadFile = Form(...),
+    police_file: UploadFile = Form(...),
+    medical_file: UploadFile = Form(...),
+    training_file: UploadFile = Form(...),
+    eye_file: UploadFile = Form(...),
+    induction_file: UploadFile = Form(...),
 
     # Verification statuses (with default)
     bg_verify_status: VerificationStatusEnum = Form(default=VerificationStatusEnum.PENDING),
@@ -130,7 +130,7 @@ async def create_driver(
 
         # --- Hash password ---
         hashed_password = hash_password(password)
-
+        logger.info(f"Hashed password: {hashed_password}")
         # --- Build payload ---
         driver_in = DriverCreate(
             vendor_id=vendor_id,
@@ -183,6 +183,7 @@ async def create_driver(
         )
 
         # --- Persist ---
+        logger.info(f"Driver creation obj_in: {jsonable_encoder(driver_in)}")
         db_obj = driver_crud.create_with_vendor(db, vendor_id=vendor_id, obj_in=driver_in)
         db.commit()
         db.refresh(db_obj)
