@@ -92,14 +92,14 @@ class CRUDVehicle(CRUDBase[Vehicle, VehicleCreate, VehicleUpdate]):
 
         # ✅ Check driver validity (if provided)
         if obj_in.driver_id:
+            # 1️⃣ Check driver exists for this vendor
             driver_exists = db.query(Driver).filter(
                 Driver.driver_id == obj_in.driver_id,
                 Driver.vendor_id == vendor_id
             ).first()
+            
             if not driver_exists:
-                logger.warning(
-                    f"[VehicleCreate] Invalid driver_id={obj_in.driver_id} for vendor_id={vendor_id}"
-                )
+                logger.warning(f"[Vehicle] Invalid driver_id={obj_in.driver_id} for vendor_id={vendor_id}")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ResponseWrapper.error(
@@ -107,6 +107,24 @@ class CRUDVehicle(CRUDBase[Vehicle, VehicleCreate, VehicleUpdate]):
                         error_code="INVALID_DRIVER",
                     ),
                 )
+            
+            # 2️⃣ Check driver is not assigned to another active vehicle
+            assigned_vehicle = db.query(Vehicle).filter(
+                Vehicle.driver_id == obj_in.driver_id,
+                Vehicle.vehicle_id != getattr(obj_in, "vehicle_id", None),  # exclude current vehicle on update
+                Vehicle.is_active == True
+            ).first()
+            
+            if assigned_vehicle:
+                logger.warning(f"[Vehicle] Driver_id={obj_in.driver_id} is already assigned to vehicle_id={assigned_vehicle.vehicle_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message=f"Driver is already assigned to vehicle {assigned_vehicle.rc_number}",
+                        error_code="DRIVER_ALREADY_ASSIGNED",
+                    ),
+                )
+
 
         # ✅ Create vehicle record
         db_obj = Vehicle(
