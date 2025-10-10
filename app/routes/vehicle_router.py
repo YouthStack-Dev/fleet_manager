@@ -610,7 +610,7 @@ def get_storage_info(
            response_class=FileResponse)
 def get_file(
     file_path: str,
-    download: Optional[bool] = Query(False, description="Force download instead of inline display"),
+    download: Optional[bool] = Query(True, description="Force download instead of inline display"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vehicle.read"], check_tenant=True)),
 ):
@@ -678,49 +678,43 @@ def get_file(
         if not content_type:
             content_type = "application/octet-stream"
         
-        # For local filesystem, serve the file directly
-        if file_url.startswith("file://"):
-            local_path = file_url.replace("file://", "")
+        # Get temporary file path for serving (works for both local and cloud storage)
+        try:
+            temp_file_path = storage_service.get_temp_file_path(file_path)
             
-            if not os.path.exists(local_path):
-                logger.warning(f"[FileAccess] Local file not found: {local_path}")
+            if not temp_file_path or not os.path.exists(temp_file_path):
+                logger.warning(f"[FileAccess] Failed to prepare file for serving: {file_path}")
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=ResponseWrapper.error("File not found on disk", "FILE_NOT_FOUND"),
+                    detail=ResponseWrapper.error("File not found", "FILE_NOT_FOUND"),
                 )
             
-            logger.info(f"[FileAccess] Serving local file: {local_path} to user_id={user_id}")
-            print(f"[FileAccess] Serving local file: {local_path} to user_id={user_id}")
+            logger.info(f"[FileAccess] Serving file: {file_path} to user_id={user_id} via temp: {temp_file_path}")
             
+            # Determine filename for download
+            filename = os.path.basename(file_path)
+            
+            # Create proper headers
+            headers = {}
+            if download:
+                headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+            else:
+                headers["Content-Disposition"] = f'inline; filename="{filename}"'
+            
+            # Return FileResponse with proper headers
             return FileResponse(
-                path=local_path,
-                media_type=content_type
+                path=temp_file_path,
+                media_type=content_type,
+                headers=headers,
+                filename=filename
             )
-        else:
-            # For cloud storage, download to temp file and serve via FileResponse
-            try:
-                file_content = storage_service.get_file_content(file_path)
                 
-                # Create temporary file
-                file_extension = os.path.splitext(file_path)[1]
-                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_extension)
-                temp_file.write(file_content)
-                temp_file.close()
-                
-                logger.info(f"[FileAccess] Serving cloud file via temp: {file_url} to user_id={user_id} ({len(file_content)} bytes)")
-                
-                # Return FileResponse with temp file
-                return FileResponse(
-                    path=temp_file.name,
-                    media_type=content_type
-                )
-                
-            except Exception as e:
-                logger.error(f"[FileAccess] Error reading file {file_url}: {e}")
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=ResponseWrapper.error("Error reading file from storage", "FILE_READ_ERROR"),
-                )
+        except Exception as e:
+            logger.error(f"[FileAccess] Error preparing file {file_path}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error("Error preparing file for download", "FILE_PREPARE_ERROR"),
+            )
         
     except HTTPException:
         raise
