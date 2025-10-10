@@ -302,7 +302,7 @@ async def update_driver(
     medical_verify_status: Optional[VerificationStatusEnum] = None,
     training_verify_status: Optional[VerificationStatusEnum] = None,
     eye_verify_status: Optional[VerificationStatusEnum] = None,
-    # File uploads (optional)
+    # File uploads
     photo: Optional[UploadFile] = None,
     license_file: Optional[UploadFile] = None,
     badge_file: Optional[UploadFile] = None,
@@ -313,14 +313,12 @@ async def update_driver(
     training_file: Optional[UploadFile] = None,
     eye_file: Optional[UploadFile] = None,
     induction_file: Optional[UploadFile] = None,
-
-
-
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["driver.update"])),
 ):
     """
-    Update driver details including optional files and verification statuses.
+    Update driver details, including optional files and verification statuses.
+    Handles old file deletion automatically.
     """
     try:
         logger.info(f"[UPDATE DRIVER] Updating driver_id={driver_id} for vendor_id={vendor_id} by user={user_data.get('user_id')}")
@@ -338,35 +336,36 @@ async def update_driver(
             )
 
         allowed_docs = ["image/jpeg", "image/png", "application/pdf"]
-
-        # Validate and save files if provided
-        file_mapping = {
-            "photo": (photo, 5),
-            "license_file": (license_file, 5),
-            "badge_file": (badge_file, 5),
-            "alt_govt_id_file": (alt_govt_id_file, 5),
-            "bgv_file": (bgv_file, 10),
-            "police_file": (police_file, 5),
-            "medical_file": (medical_file, 5),
-            "training_file": (training_file, 5),
-            "eye_file": (eye_file, 5),
-            "induction_file": (induction_file, 5),
+        file_fields = {
+            "photo": photo,
+            "license_file": license_file,
+            "badge_file": badge_file,
+            "alt_govt_id_file": alt_govt_id_file,
+            "bgv_file": bgv_file,
+            "police_file": police_file,
+            "medical_file": medical_file,
+            "training_file": training_file,
+            "eye_file": eye_file,
+            "induction_file": induction_file,
         }
 
-        file_urls = {}
-        for key, (file_obj, size_mb) in file_mapping.items():
-            validated_file = await file_size_validator(file_obj, allowed_docs, size_mb, required=False)
-            if validated_file:
-                file_urls[key] = save_file(validated_file, vendor_id, db_obj.code, key)
+        for key, file_obj in file_fields.items():
+            if file_obj and await file_size_validator(file_obj, allowed_docs, 10, required=False):
+                db_field = key.replace("_file", "_url")
+                old_url = getattr(db_obj, db_field)
+                if old_url:
+                    storage_service.delete_file(old_url)
+                new_url = storage_service.save_file(file_obj, vendor_id, db_obj.code, key.replace("_file", ""))
+                setattr(db_obj, db_field, new_url)
 
-        # Prepare update payload
-        update_data = {
+        # --- Update other fields ---
+        update_fields = {
             "name": name,
             "code": code,
             "email": email,
             "phone": phone,
             "gender": gender,
-            "password": password,
+            "password": hash_password(password) if password else None,
             "date_of_birth": date_of_birth,
             "date_of_joining": date_of_joining,
             "permanent_address": permanent_address,
@@ -383,30 +382,18 @@ async def update_driver(
             "medical_verify_status": medical_verify_status,
             "training_verify_status": training_verify_status,
             "eye_verify_status": eye_verify_status,
-            # File URLs
-            "photo_url": file_urls.get("photo"),
-            "license_url": file_urls.get("license_file"),
-            "badge_url": file_urls.get("badge_file"),
-            "alt_govt_id_url": file_urls.get("alt_govt_id_file"),
-            "bg_verify_url": file_urls.get("bgv_file"),
-            "police_verify_url": file_urls.get("police_file"),
-            "medical_verify_url": file_urls.get("medical_file"),
-            "training_verify_url": file_urls.get("training_file"),
-            "eye_verify_url": file_urls.get("eye_file"),
-            "induction_url": file_urls.get("induction_file"),
         }
 
-        # Remove None values
-        update_data = {k: v for k, v in update_data.items() if v is not None}
+        for key, value in update_fields.items():
+            if value is not None:
+                setattr(db_obj, key, value)
 
-        # Update driver
-        updated_driver = driver_crud.update_with_vendor(db, driver_id=driver_id, obj_in=update_data)
         db.commit()
-        db.refresh(updated_driver)
-
+        db.refresh(db_obj)
         logger.info(f"[UPDATE DRIVER] Driver {driver_id} updated successfully")
+
         return ResponseWrapper.success(
-            data={"driver": DriverResponse.model_validate(updated_driver, from_attributes=True)},
+            data={"driver": DriverResponse.model_validate(db_obj, from_attributes=True)},
             message="Driver updated successfully"
         )
 
@@ -422,6 +409,7 @@ async def update_driver(
         db.rollback()
         logger.error(f"[UPDATE DRIVER] Unexpected error: {e}")
         raise handle_http_error(e)
+
 @router.patch("/vendor/{vendor_id}/{driver_id}/toggle-active", response_model=dict)
 def toggle_driver_active(
     vendor_id: int,
