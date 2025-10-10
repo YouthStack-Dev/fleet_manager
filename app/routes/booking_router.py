@@ -250,28 +250,49 @@ def get_bookings(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True)),
     booking_date: Optional[date] = Query(None, description="Filter by booking date"),
-    tenant_id: str = Path(..., description="Tenant ID"),
+    tenant_id: Optional[str] = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=100),
 ):
     try:
+        # --- Determine effective tenant ---
+        user_type = user_data.get("user_type")
+        if user_type == "admin":
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Admin must provide tenant_id",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+            effective_tenant_id = tenant_id
+        elif user_type == "employee":
+            effective_tenant_id = user_data.get("tenant_id")
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to view bookings",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
         # Normalize skip/limit
         skip = max(skip, 0)
         limit = max(min(limit, 100), 1)
 
         logger.info(
-            f"Fetching bookings for tenant_id={user_data['tenant_id']} "
+            f"Fetching bookings: user_type={user_type}, effective_tenant_id={effective_tenant_id}, "
             f"date_filter={booking_date}, skip={skip}, limit={limit}"
         )
 
-        # Admins can query any tenant, employees limited to their own
-        effective_tenant_id = tenant_id if user_data["user_type"] == "admin" else user_data["tenant_id"]
-        logger.info(f"Fetching bookings for tenant_id={effective_tenant_id}, date={booking_date}, skip={skip}, limit={limit}")
-
+        # --- Build query ---
         query = db.query(Booking).filter(Booking.tenant_id == effective_tenant_id)
         if booking_date:
             query = query.filter(Booking.booking_date == booking_date)
 
+        # --- Pagination ---
         total, items = paginate_query(query, skip, limit)
 
         return ResponseWrapper.paginated(
