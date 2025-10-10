@@ -20,9 +20,10 @@ from app.utils.pagination import paginate_query
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
-
+from app.utils.validition import validate_future_dates
 logger = get_logger(__name__)
 router = APIRouter(prefix="/vehicles", tags=["vehicles"])
+
 
 
 
@@ -32,20 +33,20 @@ async def create_vehicle(
     vendor_id: Optional[int] = Form(None),
     rc_number: str = Form(...),
     driver_id: Optional[int] = Form(None),
-    rc_expiry_date: Optional[date] = Form(None),
+    rc_expiry_date: date = Form(...),
     description: Optional[str] = Form(None),
-    puc_expiry_date: Optional[date] = Form(None),
-    fitness_expiry_date: Optional[date] = Form(None),
-    tax_receipt_date: Optional[date] = Form(None),
-    insurance_expiry_date: Optional[date] = Form(None),
-    permit_expiry_date: Optional[date] = Form(None),
-    
+    puc_expiry_date: date = Form(...),
+    fitness_expiry_date: date = Form(...),
+    tax_receipt_date: date = Form(...),
+    insurance_expiry_date: date = Form(...),
+    permit_expiry_date: date = Form(...),
+
     # --- File uploads ---
-    puc_file: Optional[UploadFile] = None,
-    fitness_file: Optional[UploadFile] = None,
-    tax_receipt_file: Optional[UploadFile] = None,
-    insurance_file: Optional[UploadFile] = None,
-    permit_file: Optional[UploadFile] = None,
+    puc_file: UploadFile = Form(...),
+    fitness_file: UploadFile = Form(...),
+    tax_receipt_file: UploadFile = Form(...),
+    insurance_file: UploadFile = Form(...),
+    permit_file: UploadFile = Form(...),
 
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vehicle.create"], check_tenant=False)),
@@ -53,11 +54,27 @@ async def create_vehicle(
     """
     Create a new vehicle with optional file uploads.
     """
+    today = date.today()
+
+    # collect all date fields for validation
+    expiry_fields = {
+        "rc_expiry_date": rc_expiry_date,
+        "puc_expiry_date": puc_expiry_date,
+        "fitness_expiry_date": fitness_expiry_date,
+        "tax_receipt_date": tax_receipt_date,
+        "insurance_expiry_date": insurance_expiry_date,
+        "permit_expiry_date": permit_expiry_date,
+    }
+
+    # validate each expiry date
+    validate_future_dates(expiry_fields, context="vehicle")
+
     try:
         # --- Vendor & Admin logic remains the same ---
         user_type = user_data.get("user_type")
         if user_type == "vendor":
             vendor_id = user_data.get("vendor_id")
+            logger.info(f"[VehicleCreate] Vendor ID={vendor_id} creating vehicle by user_id={user_data.get('user_id')}")
             if not vendor_id:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -69,6 +86,7 @@ async def create_vehicle(
 
         # --- Admin role ---
         elif user_type in {"admin"}:
+            logger.info(f"[VehicleCreate] Admin creating vehicle for vendor_id={vendor_id} by user_id={user_data.get('user_id')}")
             if not vendor_id:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -317,6 +335,15 @@ async def update_vehicle(
         - Vehicle type belongs to vendor
         - Driver belongs to vendor (if provided)
     """
+    expiry_fields = {
+        "rc_expiry_date": rc_expiry_date,
+        "puc_expiry_date": puc_expiry_date,
+        "fitness_expiry_date": fitness_expiry_date,
+        "tax_receipt_date": tax_receipt_date,
+        "insurance_expiry_date": insurance_expiry_date,
+        "permit_expiry_date": permit_expiry_date,
+    }
+    validate_future_dates(expiry_fields, context="update_vehicle")
     try:
         user_id = user_data.get("user_id")
         user_type = user_data.get("user_type")
@@ -362,7 +389,7 @@ async def update_vehicle(
             )
             if not valid_vehicle_type:
                 logger.warning(
-                    f"[VehicleUpdate] Invalid vehicle_type_id={vehicle_update.vehicle_type_id} "
+                    f"[VehicleUpdate] Invalid vehicle_type_id={vehicle_type_id} "
                     f"for vendor_id={vendor_id}"
                 )
                 raise HTTPException(
@@ -372,12 +399,29 @@ async def update_vehicle(
 
         # --- Validate driver if provided ---
         if driver_id not in [None, 0, "0", ""]:
+            # Check driver exists for this vendor
             valid_driver = driver_crud.get_by_id_and_vendor(db, driver_id=driver_id, vendor_id=vendor_id)
             if not valid_driver:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ResponseWrapper.error("Driver not found for this vendor", "INVALID_DRIVER"),
                 )
+
+            # Check driver is not assigned to another active vehicle
+            assigned_vehicle = db.query(Vehicle).filter(
+                Vehicle.driver_id == driver_id,
+                Vehicle.vehicle_id != vehicle_id,  # exclude current vehicle
+                Vehicle.is_active == True
+            ).first()
+            if assigned_vehicle:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        f"Driver is inactive or already assigned to active vehicle {assigned_vehicle.rc_number}",
+                        "DRIVER_ALREADY_ASSIGNED"
+                    ),
+                )
+
 
         # --- Save files using new storage service ---
         allowed_types = ["image/jpeg", "image/png", "application/pdf"]
@@ -411,7 +455,6 @@ async def update_vehicle(
         # --- Update other fields ---
         update_fields = {
             "vehicle_type_id": vehicle_type_id,
-            "vendor_id": vendor_id,
             "rc_number": rc_number,
             "driver_id": driver_id,
             "rc_expiry_date": rc_expiry_date,
@@ -567,7 +610,7 @@ def get_storage_info(
            response_class=FileResponse)
 def get_file(
     file_path: str,
-    download: Optional[bool] = Query(False, description="Force download instead of inline display"),
+    download: Optional[bool] = Query(True, description="Force download instead of inline display"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vehicle.read"], check_tenant=True)),
 ):
@@ -635,49 +678,43 @@ def get_file(
         if not content_type:
             content_type = "application/octet-stream"
         
-        # For local filesystem, serve the file directly
-        if file_url.startswith("file://"):
-            local_path = file_url.replace("file://", "")
+        # Get temporary file path for serving (works for both local and cloud storage)
+        try:
+            temp_file_path = storage_service.get_temp_file_path(file_path)
             
-            if not os.path.exists(local_path):
-                logger.warning(f"[FileAccess] Local file not found: {local_path}")
+            if not temp_file_path or not os.path.exists(temp_file_path):
+                logger.warning(f"[FileAccess] Failed to prepare file for serving: {file_path}")
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=ResponseWrapper.error("File not found on disk", "FILE_NOT_FOUND"),
+                    detail=ResponseWrapper.error("File not found", "FILE_NOT_FOUND"),
                 )
             
-            logger.info(f"[FileAccess] Serving local file: {local_path} to user_id={user_id}")
-            print(f"[FileAccess] Serving local file: {local_path} to user_id={user_id}")
+            logger.info(f"[FileAccess] Serving file: {file_path} to user_id={user_id} via temp: {temp_file_path}")
             
+            # Determine filename for download
+            filename = os.path.basename(file_path)
+            
+            # Create proper headers
+            headers = {}
+            if download:
+                headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+            else:
+                headers["Content-Disposition"] = f'inline; filename="{filename}"'
+            
+            # Return FileResponse with proper headers
             return FileResponse(
-                path=local_path,
-                media_type=content_type
+                path=temp_file_path,
+                media_type=content_type,
+                headers=headers,
+                filename=filename
             )
-        else:
-            # For cloud storage, download to temp file and serve via FileResponse
-            try:
-                file_content = storage_service.get_file_content(file_path)
                 
-                # Create temporary file
-                file_extension = os.path.splitext(file_path)[1]
-                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_extension)
-                temp_file.write(file_content)
-                temp_file.close()
-                
-                logger.info(f"[FileAccess] Serving cloud file via temp: {file_url} to user_id={user_id} ({len(file_content)} bytes)")
-                
-                # Return FileResponse with temp file
-                return FileResponse(
-                    path=temp_file.name,
-                    media_type=content_type
-                )
-                
-            except Exception as e:
-                logger.error(f"[FileAccess] Error reading file {file_url}: {e}")
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=ResponseWrapper.error("Error reading file from storage", "FILE_READ_ERROR"),
-                )
+        except Exception as e:
+            logger.error(f"[FileAccess] Error preparing file {file_path}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error("Error preparing file for download", "FILE_PREPARE_ERROR"),
+            )
         
     except HTTPException:
         raise
