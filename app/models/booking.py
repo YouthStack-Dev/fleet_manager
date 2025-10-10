@@ -12,7 +12,7 @@ class BookingStatusEnum(str, PyEnum):
     CONFIRMED = "Confirmed"
     ONGOING = "Ongoing"
     COMPLETED = "Completed"
-    CANCELED = "Canceled"
+    CANCELLED = "Cancelled"
     NO_SHOW = "No-Show"
 
 

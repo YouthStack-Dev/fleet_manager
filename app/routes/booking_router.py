@@ -497,17 +497,6 @@ def cancel_booking(
             )
         logger.info(f"Employee record found: employee_id={employee.employee_id}, tenant_id={employee.tenant_id}")
 
-        # Validate booking belongs to this employee
-        if booking.employee_id != employee.employee_id:
-            logger.warning(f"Employee {employee.employee_id} tried to cancel booking {booking_id} for tenant {booking.tenant_id}")
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=ResponseWrapper.error(
-                    message="You cannot cancel this booking",
-                    error_code="FORBIDDEN",
-                ),
-            )
-        logger.info(f"Tenant and employee validation passed for booking_id={booking.booking_id}")
 
         # Check if booking is in the past
         if booking.booking_date < date.today():
@@ -522,7 +511,7 @@ def cancel_booking(
         logger.info(f"Booking is in future: booking_date={booking.booking_date}")
 
         # Check if already cancelled
-        if booking.status.lower() == "cancelled":
+        if booking.status.lower() == "Cancelled":
             logger.warning(f"Booking already cancelled: booking_id={booking.booking_id}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

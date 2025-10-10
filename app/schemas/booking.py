@@ -9,7 +9,7 @@ class BookingStatusEnum(str, Enum):
     CONFIRMED = "Confirmed"
     ONGOING = "Ongoing"
     COMPLETED = "Completed"
-    CANCELED = "Canceled"
+    CANCELLED = "Cancelled"
     NO_SHOW = "No-Show"
 
 
