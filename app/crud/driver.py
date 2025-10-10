@@ -8,6 +8,11 @@ from app.schemas.driver import DriverCreate, DriverUpdate
 from app.models.vendor import Vendor
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from app.crud.base import CRUDBase
+from app.core.logging_config import get_logger
+from fastapi.encoders import jsonable_encoder
+
+logger = get_logger(__name__)
+
 
 
 class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
@@ -55,6 +60,7 @@ class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
         self, db: Session, *, vendor_id: int, obj_in: DriverCreate
     ) -> Driver:
         """Create a driver under a vendor with proper relationship and uniqueness checks."""
+        
         # ✅ Validate vendor
         vendor_exists = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
         if not vendor_exists:
@@ -65,68 +71,78 @@ class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
                     error_code="INVALID_VENDOR",
                 ),
             )
-
-        # ✅ Create new driver strictly according to model fields
+        logger.info(f"Driver creation obj_in: {jsonable_encoder(obj_in)}")
+        # ✅ Create driver object
         db_obj = Driver(
-        vendor_id=vendor_id,
-        name=obj_in.name.strip(),
-        code=obj_in.code.strip(),
-        email=obj_in.email.strip(),
-        phone=obj_in.phone.strip(),
-        gender=obj_in.gender,
-        password=obj_in.password,
-        date_of_birth=obj_in.date_of_birth,
-        date_of_joining=obj_in.date_of_joining,
-        permanent_address=obj_in.permanent_address,
-        current_address=obj_in.current_address,
-        
-        # FILE URLS
-        photo_url=obj_in.photo_url,
-        license_url=obj_in.license_url,
-        badge_url=obj_in.badge_url,
-        alt_govt_id_url=obj_in.alt_govt_id_url,
-        bg_verify_url=obj_in.bg_verify_url,
-        police_verify_url=obj_in.police_verify_url,
-        medical_verify_url=obj_in.medical_verify_url,
-        training_verify_url=obj_in.training_verify_url,
-        eye_verify_url=obj_in.eye_verify_url,
-        induction_url=obj_in.induction_url,
+            vendor_id=vendor_id,
+            name=obj_in.name.strip(),
+            code=obj_in.code.strip(),
+            email=obj_in.email.strip(),
+            phone=obj_in.phone.strip(),
+            gender=obj_in.gender,
+            password=obj_in.password,
+            date_of_birth=obj_in.date_of_birth,
+            date_of_joining=obj_in.date_of_joining,
+            permanent_address=obj_in.permanent_address,
+            current_address=obj_in.current_address,
 
-        # Verification statuses
-        bg_verify_status=obj_in.bg_verify_status,
-        police_verify_status=obj_in.police_verify_status,
-        medical_verify_status=obj_in.medical_verify_status,
-        training_verify_status=obj_in.training_verify_status,
-        eye_verify_status=obj_in.eye_verify_status,
+            # FILE URLS
+            photo_url=obj_in.photo_url,
+            license_url=obj_in.license_url,
+            badge_url=obj_in.badge_url,
+            alt_govt_id_url=obj_in.alt_govt_id_url,
+            bg_verify_url=obj_in.bg_verify_url,
+            police_verify_url=obj_in.police_verify_url,
+            medical_verify_url=obj_in.medical_verify_url,
+            training_verify_url=obj_in.training_verify_url,
+            eye_verify_url=obj_in.eye_verify_url,
+            induction_url=obj_in.induction_url,
 
-        # License info
-        license_number=obj_in.license_number,
-        license_expiry_date=obj_in.license_expiry_date,
+            # Verification statuses
+            bg_verify_status=obj_in.bg_verify_status,
+            police_verify_status=obj_in.police_verify_status,
+            medical_verify_status=obj_in.medical_verify_status,
+            training_verify_status=obj_in.training_verify_status,
+            eye_verify_status=obj_in.eye_verify_status,
 
-        # Badge info
-        badge_number=obj_in.badge_number,
-        badge_expiry_date=obj_in.badge_expiry_date,
+            # Verification expiries ✅ 
+            bg_expiry_date=obj_in.bg_expiry_date,
+            police_expiry_date=obj_in.police_expiry_date,
+            medical_expiry_date=obj_in.medical_expiry_date,
+            training_expiry_date=obj_in.training_expiry_date,
+            eye_expiry_date=obj_in.eye_expiry_date,
 
-        # Alternate govt ID
-        alt_govt_id_number=obj_in.alt_govt_id_number,
-        alt_govt_id_type=obj_in.alt_govt_id_type,
+            # License info
+            license_number=obj_in.license_number,
+            license_expiry_date=obj_in.license_expiry_date,
 
-        # Induction
-        induction_date=obj_in.induction_date,
+            # Badge info
+            badge_number=obj_in.badge_number,
+            badge_expiry_date=obj_in.badge_expiry_date,
 
-        # System flags
-        is_active=obj_in.is_active if obj_in.is_active is not None else True,
-    )
+            # Alternate govt ID
+            alt_govt_id_number=obj_in.alt_govt_id_number,
+            alt_govt_id_type=obj_in.alt_govt_id_type,
 
+            # Induction
+            induction_date=obj_in.induction_date,
 
+            # System flags
+            is_active=True,
+        )
+
+        # ✅ Save
+        logger.info(f"Creating driver: {jsonable_encoder(db_obj)}")
         db.add(db_obj)
         try:
             db.flush()
         except SQLAlchemyError as e:
+            db.rollback()
             raise handle_db_error(e)
         except HTTPException as e:
+            db.rollback()
             raise handle_http_error(e)
-            
+        
         return db_obj
 
     def update_with_vendor(
@@ -156,6 +172,7 @@ class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
         try:
             db.flush()
         except SQLAlchemyError as e:
+            db.rollback()
             raise handle_db_error(e)
         return db_obj
 

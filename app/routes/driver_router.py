@@ -1,22 +1,24 @@
-from fastapi import APIRouter, Depends, UploadFile, Form, HTTPException, status
+from datetime import date
+from app.utils.validition import validate_future_dates
+from common_utils.auth.utils import hash_password
+from fastapi import APIRouter, Depends, UploadFile, Form, HTTPException, status , Query
 from sqlalchemy.orm import Session
 from typing import Optional
 import io
 import shutil
 from sqlalchemy.exc import SQLAlchemyError
 from app.database.session import get_db
-from app.schemas.driver import DriverCreate, DriverPaginationResponse, DriverResponse
+from app.schemas.driver import DriverCreate, DriverPaginationResponse, DriverResponse, GovtIDTypeEnum
 from app.crud.driver import driver_crud
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from app.utils.file_utils import file_size_validator, save_file
-from app.models.driver import VerificationStatusEnum
+from app.models.driver import VerificationStatusEnum ,GenderEnum 
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
-from fastapi import Query
-
+from app.services.storage_service import storage_service
+from fastapi.encoders import jsonable_encoder
 logger = get_logger(__name__)
 router = APIRouter(prefix="/drivers", tags=["drivers"])
-
 
 @router.post("/vendor/{vendor_id}", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_driver(
@@ -25,83 +27,123 @@ async def create_driver(
     code: str = Form(...),
     email: str = Form(...),
     phone: str = Form(...),
-    gender: Optional[str] = Form(None),
+    gender: Optional[GenderEnum] = Form(...),
     password: str = Form(...),
-    date_of_birth: Optional[str] = Form(None),
-    date_of_joining: Optional[str] = Form(None),
-    permanent_address: Optional[str] = Form(None),
-    current_address: Optional[str] = Form(None),
-    license_number: Optional[str] = Form(None),
-    license_expiry_date: Optional[str] = Form(None),
-    badge_number: Optional[str] = Form(None),
-    badge_expiry_date: Optional[str] = Form(None),
-    alt_govt_id_number: Optional[str] = Form(None),
-    alt_govt_id_type: Optional[str] = Form(None),
-    induction_date: Optional[str] = Form(None),
+    date_of_birth: Optional[date] = Form(None),
+    date_of_joining: Optional[date] = Form(None),
+    permanent_address: str = Form(...),
+    current_address: str = Form(...),
 
-    # File uploads (10 total)
-    photo: Optional[UploadFile] = None,
-    license_file: Optional[UploadFile] = None,
-    badge_file: Optional[UploadFile] = None,
-    alt_govt_id_file: Optional[UploadFile] = None,
-    bgv_file: Optional[UploadFile] = None,
-    police_file: Optional[UploadFile] = None,
-    medical_file: Optional[UploadFile] = None,
-    training_file: Optional[UploadFile] = None,
-    eye_file: Optional[UploadFile] = None,
-    induction_file: Optional[UploadFile] = None,
-    bg_verify_status: Optional[VerificationStatusEnum] = VerificationStatusEnum.PENDING,
-    police_verify_status: Optional[VerificationStatusEnum] = VerificationStatusEnum.PENDING,
-    medical_verify_status: Optional[VerificationStatusEnum] = VerificationStatusEnum.PENDING,
-    training_verify_status: Optional[VerificationStatusEnum] = VerificationStatusEnum.PENDING,
-    eye_verify_status: Optional[VerificationStatusEnum] = VerificationStatusEnum.PENDING,
+    # License info
+    license_number: str = Form(...),
+    license_expiry_date: date = Form(...),
+
+    # Badge info
+    badge_number: str = Form(...),
+    badge_expiry_date: date = Form(...),
+
+    # Government ID
+    alt_govt_id_number: str = Form(...),
+    alt_govt_id_type: str = Form(...),  # could use Enum if you have GovtIDTypeEnum
+
+    # Induction info
+    induction_date: date = Form(...),
+
+    # Verification expiries
+    bg_expiry_date: date = Form(...),
+    police_expiry_date: date= Form(...),
+    medical_expiry_date:date = Form(...),
+    training_expiry_date:date = Form(...),
+    eye_expiry_date: date = Form(...),
+
+    # File uploads
+    photo: Optional[UploadFile] = Form(None),
+    license_file: UploadFile = Form(...),
+    badge_file: UploadFile = Form(...),
+    alt_govt_id_file: UploadFile = Form(...),
+    bgv_file:UploadFile = Form(...),
+    police_file: UploadFile = Form(...),
+    medical_file: UploadFile = Form(...),
+    training_file: UploadFile = Form(...),
+    eye_file: UploadFile = Form(...),
+    induction_file: UploadFile = Form(...),
+
+    # Verification statuses (with default)
+    bg_verify_status: VerificationStatusEnum = Form(default=VerificationStatusEnum.PENDING),
+    police_verify_status: VerificationStatusEnum = Form(default=VerificationStatusEnum.PENDING),
+    medical_verify_status: VerificationStatusEnum = Form(default=VerificationStatusEnum.PENDING),
+    training_verify_status: VerificationStatusEnum = Form(default=VerificationStatusEnum.PENDING),
+    eye_verify_status: VerificationStatusEnum = Form(default=VerificationStatusEnum.PENDING),
+
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["driver.create"])),
 ):
-    driver_code = code.strip()
+    """
+    Create a new driver under a vendor.
+    Vendor users → can only create drivers for their own vendor.
+    Admin users → can create for any vendor.
+    """
+    expiry_fields = {
+        "bg_expiry_date": bg_expiry_date,
+        "police_expiry_date": police_expiry_date,
+        "medical_expiry_date": medical_expiry_date,
+        "training_expiry_date": training_expiry_date,
+        "eye_expiry_date": eye_expiry_date,
+        "badge_expiry_date": badge_expiry_date,
+        "license_expiry_date": license_expiry_date,
+
+    }
+    validate_future_dates(expiry_fields, context="driver")
     try:
-        logger.info(f"[CREATE DRIVER] Received files: "
-            f"photo={photo.filename if photo else None}, "
-            f"license_file={license_file.filename if license_file else None}, "
-            f"badge_file={badge_file.filename if badge_file else None}, "
-            f"alt_govt_id_file={alt_govt_id_file.filename if alt_govt_id_file else None}, "
-            f"bgv_file={bgv_file.filename if bgv_file else None}, "
-            f"police_file={police_file.filename if police_file else None}, "
-            f"medical_file={medical_file.filename if medical_file else None}, "
-            f"training_file={training_file.filename if training_file else None}, "
-            f"eye_file={eye_file.filename if eye_file else None}, "
-            f"induction_file={induction_file.filename if induction_file else None})")
-        logger.info(f"Creating driver '{driver_code}' under vendor_id={vendor_id} by user={user_data.get('user_id')}")
+        user_type = user_data.get("user_type")
+        token_vendor_id = user_data.get("vendor_id")
+
+        if user_type == "vendor":
+            vendor_id = token_vendor_id
+        elif user_type not in {"admin", "superadmin"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error("You don't have permission to create drivers", "FORBIDDEN")
+            )
+
+        driver_code = code.strip()
+        logger.info(f"[DriverCreate] Creating driver '{driver_code}' for vendor={vendor_id}")
 
         allowed_docs = ["image/jpeg", "image/png", "application/pdf"]
-        # Validate files
-        photo = await file_size_validator(photo, ["image/jpeg", "image/png"], 5, required=False)
-        license_file = await file_size_validator(license_file, allowed_docs, 5, required=False)
-        badge_file = await file_size_validator(badge_file, allowed_docs, 5, required=False)
-        alt_govt_id_file = await file_size_validator(alt_govt_id_file, allowed_docs, 5, required=False)
-        bgv_file = await file_size_validator(bgv_file, allowed_docs, 10, required=False)
-        police_file = await file_size_validator(police_file, allowed_docs, 5, required=False)
-        medical_file = await file_size_validator(medical_file, allowed_docs, 5, required=False)
-        training_file = await file_size_validator(training_file, allowed_docs, 5, required=False)
-        eye_file = await file_size_validator(eye_file, allowed_docs, 5, required=False)
-        induction_file = await file_size_validator(induction_file, allowed_docs, 5, required=False)
 
-        # Save files
-        photo_url = save_file(photo, vendor_id, driver_code, "photo")
-        license_url = save_file(license_file, vendor_id, driver_code, "license")
-        badge_url = save_file(badge_file, vendor_id, driver_code, "badge")
-        alt_govt_id_url = save_file(alt_govt_id_file, vendor_id, driver_code, "alt_govt_id")
-        bg_verify_url = save_file(bgv_file, vendor_id, driver_code, "bgv")
-        police_verify_url = save_file(police_file, vendor_id, driver_code, "police")
-        medical_verify_url = save_file(medical_file, vendor_id, driver_code, "medical")
-        training_verify_url = save_file(training_file, vendor_id, driver_code, "training")
-        eye_verify_url = save_file(eye_file, vendor_id, driver_code, "eye")
-        induction_url = save_file(induction_file, vendor_id, driver_code, "induction")
+        # --- File validation ---
+        for file in [
+            ("photo", photo),
+            ("license_file", license_file),
+            ("badge_file", badge_file),
+            ("alt_govt_id_file", alt_govt_id_file),
+            ("bgv_file", bgv_file),
+            ("police_file", police_file),
+            ("medical_file", medical_file),
+            ("training_file", training_file),
+            ("eye_file", eye_file),
+            ("induction_file", induction_file),
+        ]:
+            if file[1]:
+                await file_size_validator(file[1], allowed_docs, 10, required=False)
 
-        logger.info(f"Files saved successfully for driver '{driver_code}'")
-        logger.info(f"photo_url: {photo_url}, license_url: {license_url}, badge_url: {badge_url}, alt_govt_id_url: {alt_govt_id_url}, bg_verify_url: {bg_verify_url}, police_verify_url: {police_verify_url}, medical_verify_url: {medical_verify_url}, training_verify_url: {training_verify_url}, eye_verify_url: {eye_verify_url}, induction_url: {induction_url}")
+        # --- Save files ---
+        save = lambda f, name: storage_service.save_file(f, vendor_id, driver_code, name) if f else None
+        photo_url = save(photo, "photo")
+        license_url = save(license_file, "license")
+        badge_url = save(badge_file, "badge")
+        alt_govt_id_url = save(alt_govt_id_file, "alt_govt_id")
+        bg_verify_url = save(bgv_file, "bgv")
+        police_verify_url = save(police_file, "police")
+        medical_verify_url = save(medical_file, "medical")
+        training_verify_url = save(training_file, "training")
+        eye_verify_url = save(eye_file, "eye")
+        induction_url = save(induction_file, "induction")
 
-        # Prepare driver payload
+        # --- Hash password ---
+        hashed_password = hash_password(password)
+        logger.info(f"Hashed password: {hashed_password}")
+        # --- Build payload ---
         driver_in = DriverCreate(
             vendor_id=vendor_id,
             name=name,
@@ -109,54 +151,56 @@ async def create_driver(
             email=email,
             phone=phone,
             gender=gender,
-            password=password,
+            password=hashed_password,
             date_of_birth=date_of_birth,
             date_of_joining=date_of_joining,
             permanent_address=permanent_address,
             current_address=current_address,
-            
-            # FILE URLS
-            photo_url=photo_url,
-            license_url=license_url,
-            badge_url=badge_url,
-            alt_govt_id_url=alt_govt_id_url,
-            bg_verify_url=bg_verify_url,
-            police_verify_url=police_verify_url,
-            medical_verify_url=medical_verify_url,
-            training_verify_url=training_verify_url,
-            eye_verify_url=eye_verify_url,
-            induction_url=induction_url,
-            
-            # Verification statuses
-            bg_verify_status=bg_verify_status,
-            police_verify_status=police_verify_status,
-            medical_verify_status=medical_verify_status,
-            training_verify_status=training_verify_status,
-            eye_verify_status=eye_verify_status,
 
-            # License info
+            # Verification
+            bg_verify_status=bg_verify_status,
+            bg_expiry_date=bg_expiry_date,
+            bg_verify_url=bg_verify_url,
+            police_verify_status=police_verify_status,
+            police_expiry_date=police_expiry_date,
+            police_verify_url=police_verify_url,
+            medical_verify_status=medical_verify_status,
+            medical_expiry_date=medical_expiry_date,
+            medical_verify_url=medical_verify_url,
+            training_verify_status=training_verify_status,
+            training_expiry_date=training_expiry_date,
+            training_verify_url=training_verify_url,
+            eye_verify_status=eye_verify_status,
+            eye_expiry_date=eye_expiry_date,
+            eye_verify_url=eye_verify_url,
+
+            # License & badge
             license_number=license_number,
             license_expiry_date=license_expiry_date,
-
-            # Badge info
+            license_url=license_url,
             badge_number=badge_number,
             badge_expiry_date=badge_expiry_date,
+            badge_url=badge_url,
 
-            # Alternate govt ID
+            # Govt ID
             alt_govt_id_number=alt_govt_id_number,
             alt_govt_id_type=alt_govt_id_type,
+            alt_govt_id_url=alt_govt_id_url,
 
             # Induction
             induction_date=induction_date,
+            induction_url=induction_url,
+
+            photo_url=photo_url,
         )
 
-
-        # Persist to DB
+        # --- Persist ---
+        logger.info(f"Driver creation obj_in: {jsonable_encoder(driver_in)}")
         db_obj = driver_crud.create_with_vendor(db, vendor_id=vendor_id, obj_in=driver_in)
         db.commit()
         db.refresh(db_obj)
 
-        logger.info(f"Driver '{driver_code}' created successfully with ID={db_obj.driver_id}")
+        logger.info(f"✅ Driver '{driver_code}' created successfully (ID={db_obj.driver_id})")
         return ResponseWrapper.success(
             data={"driver": DriverResponse.model_validate(db_obj, from_attributes=True)},
             message="Driver created successfully"
@@ -265,12 +309,18 @@ async def update_driver(
     alt_govt_id_number: Optional[str] = Form(None),
     alt_govt_id_type: Optional[str] = Form(None),
     induction_date: Optional[str] = Form(None),
-    bg_verify_status: Optional[VerificationStatusEnum] = None,
-    police_verify_status: Optional[VerificationStatusEnum] = None,
-    medical_verify_status: Optional[VerificationStatusEnum] = None,
-    training_verify_status: Optional[VerificationStatusEnum] = None,
-    eye_verify_status: Optional[VerificationStatusEnum] = None,
-    # File uploads (optional)
+    bg_expiry_date: Optional[date] = Form(None),
+    police_expiry_date: Optional[date] = Form(None),
+    medical_expiry_date: Optional[date] = Form(None),
+    training_expiry_date: Optional[date] = Form(None),
+    eye_expiry_date: Optional[date] = Form(None),
+
+    bg_verify_status: Optional[VerificationStatusEnum] = Form(None),
+    police_verify_status: Optional[VerificationStatusEnum] = Form(None),
+    medical_verify_status: Optional[VerificationStatusEnum] = Form(None),
+    training_verify_status: Optional[VerificationStatusEnum] = Form(None),
+    eye_verify_status: Optional[VerificationStatusEnum] = Form(None),
+    # File uploads
     photo: Optional[UploadFile] = None,
     license_file: Optional[UploadFile] = None,
     badge_file: Optional[UploadFile] = None,
@@ -281,15 +331,24 @@ async def update_driver(
     training_file: Optional[UploadFile] = None,
     eye_file: Optional[UploadFile] = None,
     induction_file: Optional[UploadFile] = None,
-
-
-
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["driver.update"])),
 ):
     """
-    Update driver details including optional files and verification statuses.
+    Update driver details, including optional files and verification statuses.
+    Handles old file deletion automatically.
     """
+    expiry_fields = {
+        "bg_expiry_date": bg_expiry_date,
+        "police_expiry_date": police_expiry_date,
+        "medical_expiry_date": medical_expiry_date,
+        "training_expiry_date": training_expiry_date,
+        "eye_expiry_date": eye_expiry_date,
+        "badge_expiry_date": badge_expiry_date,
+        "license_expiry_date": license_expiry_date,
+    }
+
+    validate_future_dates(expiry_fields, context="driver")
     try:
         logger.info(f"[UPDATE DRIVER] Updating driver_id={driver_id} for vendor_id={vendor_id} by user={user_data.get('user_id')}")
 
@@ -306,35 +365,37 @@ async def update_driver(
             )
 
         allowed_docs = ["image/jpeg", "image/png", "application/pdf"]
-
-        # Validate and save files if provided
-        file_mapping = {
-            "photo": (photo, 5),
-            "license_file": (license_file, 5),
-            "badge_file": (badge_file, 5),
-            "alt_govt_id_file": (alt_govt_id_file, 5),
-            "bgv_file": (bgv_file, 10),
-            "police_file": (police_file, 5),
-            "medical_file": (medical_file, 5),
-            "training_file": (training_file, 5),
-            "eye_file": (eye_file, 5),
-            "induction_file": (induction_file, 5),
+        file_fields = {
+            "photo": photo,
+            "license_file": license_file,
+            "badge_file": badge_file,
+            "alt_govt_id_file": alt_govt_id_file,
+            "bgv_file": bgv_file,
+            "police_file": police_file,
+            "medical_file": medical_file,
+            "training_file": training_file,
+            "eye_file": eye_file,
+            "induction_file": induction_file,
         }
 
-        file_urls = {}
-        for key, (file_obj, size_mb) in file_mapping.items():
-            validated_file = await file_size_validator(file_obj, allowed_docs, size_mb, required=False)
-            if validated_file:
-                file_urls[key] = save_file(validated_file, vendor_id, db_obj.code, key)
+        # Save files if provided and delete old ones
+        for key, file_obj in file_fields.items():
+            if file_obj and await file_size_validator(file_obj, allowed_docs, 10, required=False):
+                db_field = key.replace("_file", "_url")
+                old_url = getattr(db_obj, db_field)
+                if old_url:
+                    storage_service.delete_file(old_url)
+                new_url = storage_service.save_file(file_obj, vendor_id, db_obj.code, key.replace("_file", ""))
+                setattr(db_obj, db_field, new_url)
 
-        # Prepare update payload
-        update_data = {
+        # --- Update other fields ---
+        update_fields = {
             "name": name,
             "code": code,
             "email": email,
             "phone": phone,
             "gender": gender,
-            "password": password,
+            "password": hash_password(password) if password else None,
             "date_of_birth": date_of_birth,
             "date_of_joining": date_of_joining,
             "permanent_address": permanent_address,
@@ -346,35 +407,40 @@ async def update_driver(
             "alt_govt_id_number": alt_govt_id_number,
             "alt_govt_id_type": alt_govt_id_type,
             "induction_date": induction_date,
-            "bg_verify_status": bg_verify_status,
-            "police_verify_status": police_verify_status,
-            "medical_verify_status": medical_verify_status,
-            "training_verify_status": training_verify_status,
-            "eye_verify_status": eye_verify_status,
-            # File URLs
-            "photo_url": file_urls.get("photo"),
-            "license_url": file_urls.get("license_file"),
-            "badge_url": file_urls.get("badge_file"),
-            "alt_govt_id_url": file_urls.get("alt_govt_id_file"),
-            "bg_verify_url": file_urls.get("bgv_file"),
-            "police_verify_url": file_urls.get("police_file"),
-            "medical_verify_url": file_urls.get("medical_file"),
-            "training_verify_url": file_urls.get("training_file"),
-            "eye_verify_url": file_urls.get("eye_file"),
-            "induction_url": file_urls.get("induction_file"),
         }
 
-        # Remove None values
-        update_data = {k: v for k, v in update_data.items() if v is not None}
+        # Update normal fields
+        for key, value in update_fields.items():
+            if value is not None:
+                setattr(db_obj, key, value)
 
-        # Update driver
-        updated_driver = driver_crud.update_with_vendor(db, driver_id=driver_id, obj_in=update_data)
+        # --- Handle verification status enums separately ---
+        enum_fields = [
+            "bg_verify_status",
+            "police_verify_status",
+            "medical_verify_status",
+            "training_verify_status",
+            "eye_verify_status",
+        ]
+        for key in enum_fields:
+            value = locals().get(key)
+            if value is not None:
+                if isinstance(value, str):
+                    try:
+                        value = VerificationStatusEnum(value)
+                    except ValueError:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=ResponseWrapper.error(f"Invalid value for {key}", "INVALID_ENUM")
+                        )
+                setattr(db_obj, key, value)
+
         db.commit()
-        db.refresh(updated_driver)
-
+        db.refresh(db_obj)
         logger.info(f"[UPDATE DRIVER] Driver {driver_id} updated successfully")
+
         return ResponseWrapper.success(
-            data={"driver": DriverResponse.model_validate(updated_driver, from_attributes=True)},
+            data={"driver": DriverResponse.model_validate(db_obj, from_attributes=True)},
             message="Driver updated successfully"
         )
 
@@ -390,6 +456,7 @@ async def update_driver(
         db.rollback()
         logger.error(f"[UPDATE DRIVER] Unexpected error: {e}")
         raise handle_http_error(e)
+
 @router.patch("/vendor/{vendor_id}/{driver_id}/toggle-active", response_model=dict)
 def toggle_driver_active(
     vendor_id: int,
