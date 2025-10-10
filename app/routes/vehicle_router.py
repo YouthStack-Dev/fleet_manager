@@ -30,8 +30,11 @@ def validate_future_dates(fields: dict, context: str = "vehicle"):
         if value and value <= today:
             field_label = name.replace("_", " ").title()
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"[{context}] {field_label} must be a future date."
+                status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="{field_label} must be a future date".format(field_label=field_label),
+                        error_code="INVALID_DATE",
+                    ),
             )
 
 
@@ -407,12 +410,29 @@ async def update_vehicle(
 
         # --- Validate driver if provided ---
         if driver_id not in [None, 0, "0", ""]:
+            # Check driver exists for this vendor
             valid_driver = driver_crud.get_by_id_and_vendor(db, driver_id=driver_id, vendor_id=vendor_id)
             if not valid_driver:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ResponseWrapper.error("Driver not found for this vendor", "INVALID_DRIVER"),
                 )
+
+            # Check driver is not assigned to another active vehicle
+            assigned_vehicle = db.query(Vehicle).filter(
+                Vehicle.driver_id == driver_id,
+                Vehicle.vehicle_id != vehicle_id,  # exclude current vehicle
+                Vehicle.is_active == True
+            ).first()
+            if assigned_vehicle:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        f"Driver is inactive or already assigned to active vehicle {assigned_vehicle.rc_number}",
+                        "DRIVER_ALREADY_ASSIGNED"
+                    ),
+                )
+
 
         # --- Save files using new storage service ---
         allowed_types = ["image/jpeg", "image/png", "application/pdf"]
@@ -446,7 +466,6 @@ async def update_vehicle(
         # --- Update other fields ---
         update_fields = {
             "vehicle_type_id": vehicle_type_id,
-            "vendor_id": vendor_id,
             "rc_number": rc_number,
             "driver_id": driver_id,
             "rc_expiry_date": rc_expiry_date,
