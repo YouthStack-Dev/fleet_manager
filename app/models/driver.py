@@ -46,23 +46,23 @@ class Driver(Base):
 
     # Verification statuses
     bg_verify_status = Column(Enum(VerificationStatusEnum, native_enum=False))
-    bg_verify_date = Column(Date)
+    bg_expiry_date = Column(Date)
     bg_verify_url = Column(Text)
 
     police_verify_status = Column(Enum(VerificationStatusEnum, native_enum=False))
-    police_verify_date = Column(Date)
+    police_expiry_date = Column(Date)
     police_verify_url = Column(Text)
 
     medical_verify_status = Column(Enum(VerificationStatusEnum, native_enum=False))
-    medical_verify_date = Column(Date)
+    medical_expiry_date = Column(Date)
     medical_verify_url = Column(Text)
 
     training_verify_status = Column(Enum(VerificationStatusEnum, native_enum=False))
-    training_verify_date = Column(Date)
+    training_expiry_date = Column(Date)
     training_verify_url = Column(Text)
 
     eye_verify_status = Column(Enum(VerificationStatusEnum, native_enum=False))
-    eye_verify_date = Column(Date)
+    eye_expiry_date = Column(Date)
     eye_verify_url = Column(Text)
 
     # License info
