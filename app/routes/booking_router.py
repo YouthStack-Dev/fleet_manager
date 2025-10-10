@@ -21,6 +21,17 @@ from app.core.logging_config import get_logger
 logger = get_logger(__name__)
 router = APIRouter(prefix="/bookings", tags=["bookings"])
 
+def booking_validate_future_dates(dates: list[date], context: str = "dates"):
+    today = date.today()
+    for d in dates:
+        if d <= today:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message=f"{context} must contain only future dates (invalid: {d})",
+                    error_code="INVALID_DATE",
+                ),
+            )
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
@@ -104,8 +115,10 @@ def create_booking(
         created_bookings = []
         weekday_map = {0: "monday", 1: "tuesday", 2: "wednesday", 3: "thursday",
                        4: "friday", 5: "saturday", 6: "sunday"}
-
-        for booking_date in booking.booking_dates:
+        booking_validate_future_dates(booking.booking_dates, context="dates")
+        unique_dates = sorted(set(booking.booking_dates))
+        for booking_date in unique_dates:
+            
             weekday = booking_date.weekday()
 
             # 1️⃣ Weekoff validation
@@ -191,6 +204,7 @@ def create_booking(
                 status="Pending",
             )
             db.add(db_booking)
+            db.flush()
             created_bookings.append(db_booking)
 
         db.commit()
