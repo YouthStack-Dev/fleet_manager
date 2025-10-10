@@ -30,10 +30,31 @@ def create_booking(
     user_data=Depends(PermissionChecker(["booking.create"], check_tenant=True)),
 ):
     try:
+        user_type = user_data.get("user_type")
         logger.info(
             f"Attempting to create booking for employee_id={booking.employee_id} "
             f"on date={booking.booking_date} by user_id={user_data.get('user_id')}"
         )
+        if user_type == "admin":
+            tenant_id = booking.tenant_id
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Admin must provide tenant_id to create drivers",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+        elif user_type == "employee":
+            tenant_id = user_data.get("tenant_id")
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to create drivers",
+                    error_code="FORBIDDEN",
+                ),
+            )
 
         # --- 1️⃣ Check employee ---
         employee = (

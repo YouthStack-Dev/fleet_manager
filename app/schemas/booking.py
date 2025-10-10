@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from datetime import date, datetime
 from typing import Optional, List
 from enum import Enum
@@ -32,11 +32,15 @@ class BookingBase(BaseModel):
 
 
 class BookingCreate(BaseModel):
-    tenant_id: str = Field(..., max_length=50)
+    tenant_id: Optional[str] = None
     employee_id: int
     booking_date: date
-    shift_id: Optional[int] = None
-
+    shift_id: int
+    @field_validator("booking_date")
+    def validate_booking_date_not_past(cls, v):
+        if v < date.today():
+            raise ValueError("Booking date cannot be in the past")
+        return v
 
 class BookingUpdate(BaseModel):
     status: Optional[BookingStatusEnum] = None
