@@ -4,7 +4,7 @@ from app.models.employee import Employee
 from app.models.shift import Shift
 from app.models.tenant import Tenant
 from app.models.weekoff_config import WeekoffConfig
-from fastapi import APIRouter, Depends, HTTPException, Path, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, status, Query,Body
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from datetime import date, datetime, datetime
@@ -44,8 +44,8 @@ def create_booking(
         user_type = user_data.get("user_type")
 
 
-        user_id = user_data.get("user_id")
-        logger.info(f"Attempting to create bookings for employee_id={booking.employee_id} by user_id={user_id}")
+        # employee_id = user_data.get("user_id")
+        logger.info(f"Attempting to create bookings for employee_id={booking.employee_id} ")
         logger.info(f"booking: {booking.booking_dates}")
         # --- Tenant validation ---
         if user_type == "admin":
@@ -435,31 +435,40 @@ def get_booking_by_id(
         raise handle_http_error(e)
 
 
-
-from fastapi import Body, Path
-
 # ============================================================
-# 4️⃣ Update booking by booking_id
+# 4️⃣ cancel booking by booking_id
 # ============================================================
-@router.put("/{booking_id}", response_model=BaseResponse[BookingResponse])
-def update_booking(
-    booking_id: int = Path(..., description="Booking ID to update"),
-    booking_update: BookingUpdate = Body(...),
+@router.patch("/cancel/{booking_id}", response_model=BaseResponse[BookingResponse])
+def cancel_booking(
+    booking_id: int = Path(..., description="Booking ID to cancel"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["booking.update"], check_tenant=True)),
 ):
+    """
+    Employee can cancel a booking.
+    - Only the employee who owns the booking can cancel it.
+    - Only future bookings can be cancelled.
+    """
     try:
         user_type = user_data.get("user_type")
-        tenant_id = user_data.get("tenant_id")
+        employee_tenant_id = user_data.get("tenant_id")
+        employee_id = user_data.get("user_id")  # This is employee_id stored in token
 
-        logger.info(f"Updating booking_id={booking_id} by user_id={user_data.get('user_id')}")
+        logger.info(f"Attempting to cancel booking_id={booking_id} by employee_id={employee_id}, user_type={user_type}")
 
-        # Fetch the booking
-        query = db.query(Booking).filter(Booking.booking_id == booking_id)
-        if user_type != "admin":
-            query = query.filter(Booking.tenant_id == tenant_id)
+        # Only employees can cancel
+        if user_type != "employee":
+            logger.warning(f"Unauthorized cancellation attempt by employee_id={employee_id}, user_type={user_type}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Only employees can cancel their bookings",
+                    error_code="FORBIDDEN",
+                ),
+            )
 
-        booking = query.first()
+        # Fetch booking
+        booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
         if not booking:
             logger.warning(f"Booking not found: booking_id={booking_id}")
             raise HTTPException(
@@ -469,59 +478,83 @@ def update_booking(
                     error_code="BOOKING_NOT_FOUND",
                 ),
             )
+        logger.info(f"Booking fetched successfully: booking_id={booking.booking_id}, status={booking.status}")
 
-        # Only allow certain roles to update bookings
-        if user_type in {"vendor", "driver"}:
-            logger.warning(f"Unauthorized update attempt by user_type={user_type}")
+        # Map token employee_id to Employee.employee_id
+        employee = db.query(Employee).filter(
+            Employee.employee_id == employee_id,
+            Employee.tenant_id == employee_tenant_id,
+            Employee.is_active.is_(True)
+        ).first()
+        if not employee:
+            logger.warning(f"No active employee found for employee_id={employee_id} in tenant={employee_tenant_id}")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
-                    message="You don't have permission to update bookings",
+                    message="Invalid employee",
                     error_code="FORBIDDEN",
                 ),
             )
+        logger.info(f"Employee record found: employee_id={employee.employee_id}, tenant_id={employee.tenant_id}")
 
-        # Apply updates
-        updated_fields = []
-        if booking_update.status is not None:
-            booking.status = booking_update.status
-            updated_fields.append("status")
-        if booking_update.reason is not None:
-            booking.reason = booking_update.reason
-            updated_fields.append("reason")
-        
+        # Validate booking belongs to this employee
+        if booking.employee_id != employee.employee_id:
+            logger.warning(f"Employee {employee.employee_id} tried to cancel booking {booking_id} for tenant {booking.tenant_id}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You cannot cancel this booking",
+                    error_code="FORBIDDEN",
+                ),
+            )
+        logger.info(f"Tenant and employee validation passed for booking_id={booking.booking_id}")
 
-        if not updated_fields:
-            logger.warning(f"No fields provided to update for booking_id={booking_id}")
+        # Check if booking is in the past
+        if booking.booking_date < date.today():
+            logger.warning(f"Attempted cancellation for past booking: booking_id={booking.booking_id}, date={booking.booking_date}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ResponseWrapper.error(
-                    message="No valid fields provided for update",
-                    error_code="NO_UPDATE_FIELDS",
+                    message="Cannot cancel past bookings",
+                    error_code="PAST_BOOKING",
                 ),
             )
+        logger.info(f"Booking is in future: booking_date={booking.booking_date}")
 
-        # Commit changes
+        # Check if already cancelled
+        if booking.status.lower() == "cancelled":
+            logger.warning(f"Booking already cancelled: booking_id={booking.booking_id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Booking is already cancelled",
+                    error_code="ALREADY_CANCELLED",
+                ),
+            )
+        logger.info(f"Booking is not yet cancelled, proceeding to cancel: booking_id={booking.booking_id}")
+
+        # Cancel booking
+        booking.status = "Cancelled"
         db.commit()
         db.refresh(booking)
-
-        logger.info(f"Booking updated successfully: booking_id={booking_id}, fields={updated_fields}")
+        logger.info(f"Booking cancelled successfully: booking_id={booking.booking_id}, employee_id={employee.employee_id}")
 
         return ResponseWrapper.success(
             data=BookingResponse.model_validate(booking, from_attributes=True),
-            message="Booking updated successfully"
+            message="Booking successfully cancelled"
         )
 
     except SQLAlchemyError as e:
         db.rollback()
-        logger.exception("Database error occurred while updating booking")
+        logger.exception(f"Database error occurred while cancelling booking_id={booking_id}")
         raise handle_db_error(e)
     except HTTPException as e:
         db.rollback()
+        logger.warning(f"HTTPException during cancellation of booking_id={booking_id}: {e.detail}")
         raise handle_http_error(e)
     except Exception as e:
         db.rollback()
-        logger.exception("Unexpected error occurred while updating booking")
+        logger.exception(f"Unexpected error occurred while cancelling booking_id={booking_id}")
         raise HTTPException(
             status_code=500,
             detail=ResponseWrapper.error(message="Internal Server Error", error_code="INTERNAL_ERROR")
