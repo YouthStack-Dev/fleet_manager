@@ -24,6 +24,15 @@ from app.core.logging_config import get_logger
 logger = get_logger(__name__)
 router = APIRouter(prefix="/vehicles", tags=["vehicles"])
 
+def validate_future_dates(fields: dict, context: str = "vehicle"):
+    today = date.today()
+    for name, value in fields.items():
+        if value and value <= today:
+            field_label = name.replace("_", " ").title()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"[{context}] {field_label} must be a future date."
+            )
 
 
 @router.post("/", response_model=dict, status_code=status.HTTP_201_CREATED)
@@ -32,20 +41,20 @@ async def create_vehicle(
     vendor_id: Optional[int] = Form(None),
     rc_number: str = Form(...),
     driver_id: Optional[int] = Form(None),
-    rc_expiry_date: Optional[date] = Form(None),
+    rc_expiry_date: date = Form(...),
     description: Optional[str] = Form(None),
-    puc_expiry_date: Optional[date] = Form(None),
-    fitness_expiry_date: Optional[date] = Form(None),
-    tax_receipt_date: Optional[date] = Form(None),
-    insurance_expiry_date: Optional[date] = Form(None),
-    permit_expiry_date: Optional[date] = Form(None),
-    
+    puc_expiry_date: date = Form(...),
+    fitness_expiry_date: date = Form(...),
+    tax_receipt_date: date = Form(...),
+    insurance_expiry_date: date = Form(...),
+    permit_expiry_date: date = Form(...),
+
     # --- File uploads ---
-    puc_file: Optional[UploadFile] = None,
-    fitness_file: Optional[UploadFile] = None,
-    tax_receipt_file: Optional[UploadFile] = None,
-    insurance_file: Optional[UploadFile] = None,
-    permit_file: Optional[UploadFile] = None,
+    puc_file: UploadFile = Form(...),
+    fitness_file: UploadFile = Form(...),
+    tax_receipt_file: UploadFile = Form(...),
+    insurance_file: UploadFile = Form(...),
+    permit_file: UploadFile = Form(...),
 
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vehicle.create"], check_tenant=False)),
@@ -53,6 +62,21 @@ async def create_vehicle(
     """
     Create a new vehicle with optional file uploads.
     """
+    today = date.today()
+
+    # collect all date fields for validation
+    expiry_fields = {
+        "rc_expiry_date": rc_expiry_date,
+        "puc_expiry_date": puc_expiry_date,
+        "fitness_expiry_date": fitness_expiry_date,
+        "tax_receipt_date": tax_receipt_date,
+        "insurance_expiry_date": insurance_expiry_date,
+        "permit_expiry_date": permit_expiry_date,
+    }
+
+    # validate each expiry date
+    validate_future_dates(expiry_fields, context="vehicle")
+
     try:
         # --- Vendor & Admin logic remains the same ---
         user_type = user_data.get("user_type")
@@ -317,6 +341,15 @@ async def update_vehicle(
         - Vehicle type belongs to vendor
         - Driver belongs to vendor (if provided)
     """
+    expiry_fields = {
+        "rc_expiry_date": rc_expiry_date,
+        "puc_expiry_date": puc_expiry_date,
+        "fitness_expiry_date": fitness_expiry_date,
+        "tax_receipt_date": tax_receipt_date,
+        "insurance_expiry_date": insurance_expiry_date,
+        "permit_expiry_date": permit_expiry_date,
+    }
+    validate_future_dates(expiry_fields, context="update_vehicle")
     try:
         user_id = user_data.get("user_id")
         user_type = user_data.get("user_type")
@@ -362,7 +395,7 @@ async def update_vehicle(
             )
             if not valid_vehicle_type:
                 logger.warning(
-                    f"[VehicleUpdate] Invalid vehicle_type_id={vehicle_update.vehicle_type_id} "
+                    f"[VehicleUpdate] Invalid vehicle_type_id={vehicle_type_id} "
                     f"for vendor_id={vendor_id}"
                 )
                 raise HTTPException(

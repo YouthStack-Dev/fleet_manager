@@ -114,6 +114,7 @@ class CRUDVehicle(CRUDBase[Vehicle, VehicleCreate, VehicleUpdate]):
             vehicle_type_id=obj_in.vehicle_type_id, 
             driver_id=driver_id,
             rc_number=obj_in.rc_number.strip(),
+            rc_expiry_date=obj_in.rc_expiry_date,
             description=obj_in.description,
             puc_expiry_date=obj_in.puc_expiry_date,
             puc_url=obj_in.puc_url,
