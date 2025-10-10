@@ -278,7 +278,6 @@ def get_bookings(
                 ),
             )
 
-        # Normalize skip/limit
         skip = max(skip, 0)
         limit = max(min(limit, 100), 1)
 
@@ -292,7 +291,13 @@ def get_bookings(
         if booking_date:
             query = query.filter(Booking.booking_date == booking_date)
 
-        # --- Pagination ---
+        # 🔹 Log total filtered records before pagination
+        filtered_count = query.count()
+        logger.info(
+            f"Filtered bookings count for tenant_id={effective_tenant_id} "
+            f"with date={booking_date}: {filtered_count}"
+        )
+
         total, items = paginate_query(query, skip, limit)
 
         return ResponseWrapper.paginated(
@@ -311,6 +316,7 @@ def get_bookings(
     except Exception as e:
         logger.exception("Unexpected error occurred while fetching bookings")
         raise handle_http_error(e)
+
 
 
 # ============================================================
