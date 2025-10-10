@@ -251,6 +251,7 @@ def get_bookings(
     user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True)),
     booking_date: Optional[date] = Query(None, description="Filter by booking date"),
     tenant_id: Optional[str] = None,
+    status_filter: Optional[BookingStatusEnum] = Query(None, description="Filter by booking status"),
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=100),
 ):
@@ -290,6 +291,8 @@ def get_bookings(
         query = db.query(Booking).filter(Booking.tenant_id == effective_tenant_id)
         if booking_date:
             query = query.filter(Booking.booking_date == booking_date)
+        if status_filter:
+            query = query.filter(Booking.status == status_filter)
 
         # 🔹 Log total filtered records before pagination
         filtered_count = query.count()
@@ -327,6 +330,7 @@ def get_bookings_by_employee(
     employee_id: Optional[int] = Query(None, description="Employee ID"),
     employee_code: Optional[str] = Query(None, description="Employee code"),
     booking_date: Optional[date] = Query(None, description="Optional booking date filter"),
+    status_filter: Optional[BookingStatusEnum] = Query(None, description="Filter by booking status"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True)),
     skip: int = Query(0, ge=0),
@@ -367,6 +371,8 @@ def get_bookings_by_employee(
 
         if booking_date:
             query = query.filter(Booking.booking_date == booking_date)
+        if status_filter:        
+            query = query.filter(Booking.status == status_filter)
 
         # Tenant enforcement for non-admin employees
         if user_type != "admin":
