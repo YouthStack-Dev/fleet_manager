@@ -20,7 +20,7 @@ from fastapi.encoders import jsonable_encoder
 logger = get_logger(__name__)
 router = APIRouter(prefix="/drivers", tags=["drivers"])
 
-@router.post("/vendor/{vendor_id}", response_model=dict, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_driver(
     vendor_id: int,
     name: str = Form(...),
@@ -223,10 +223,10 @@ async def create_driver(
 # --------------------------
 # GET single driver
 # --------------------------
-@router.get("/vendor/{vendor_id}/{driver_id}", response_model=dict)
+@router.get("/", response_model=dict)
 def get_driver(
-    vendor_id: int,
     driver_id: int,
+    vendor_id: Optional[int] = None,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["driver.read"]))
 ):
@@ -255,15 +255,23 @@ def get_driver(
         logger.info(f"[GET DRIVER] Driver fetched successfully: driver_id={driver.driver_id}")
         return ResponseWrapper.success(data={"driver": DriverResponse.model_validate(driver, from_attributes=True)})
 
-    except Exception as e:
-        logger.error(f"[GET DRIVER] Unexpected error: {e}")
+    except HTTPException as e:
+        logger.warning(f"Driver creation failed (HTTPException) for driver '{driver_id}': {e.detail}")
+        raise
+    except SQLAlchemyError as e:
+        logger.error(f"Database error creating driver '{driver_id}': {e}")
         raise handle_db_error(e)
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Unexpected error creating driver '{driver_id}': {e}")
+        raise handle_http_error(e)
+    
 
 
 # --------------------------
 # GET all drivers for vendor with filters
 # --------------------------
-@router.get("/vendor/{vendor_id}", response_model=dict)
+@router.get("/vendor", response_model=dict)
 def get_drivers(
     vendor_id: int,
     active_only: Optional[bool] = Query(None, description="Filter by active/inactive drivers"),
@@ -304,11 +312,17 @@ def get_drivers(
             data=DriverPaginationResponse(total=len(driver_list), items=driver_list).dict()
         )
 
-    except Exception as e:
-        logger.error(f"[GET DRIVERS] Unexpected error: {e}")
+    except HTTPException as e:
+        logger.warning(f"Driver creation failed (HTTPException) for driver : {e.detail}")
+        raise
+    except SQLAlchemyError as e:
+        logger.error(f"Database error creating driver : {e}")
         raise handle_db_error(e)
+    except Exception as e:
+        logger.error(f"Unexpected error creating driver : {e}")
+        raise handle_http_error(e)
     
-@router.put("/vendor/{vendor_id}/{driver_id}", response_model=dict)
+@router.put("/", response_model=dict)
 async def update_driver(
     vendor_id: int,
     driver_id: int,
@@ -487,10 +501,10 @@ async def update_driver(
         logger.error(f"[UPDATE DRIVER] Unexpected error: {e}")
         raise handle_http_error(e)
 
-@router.patch("/vendor/{vendor_id}/{driver_id}/toggle-active", response_model=dict)
+@router.patch("/{driver_id}/toggle-active", response_model=dict)
 def toggle_driver_active(
-    vendor_id: int,
     driver_id: int,
+    vendor_id: Optional[int] = None,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["driver.update"]))
 ):
