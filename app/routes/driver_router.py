@@ -231,6 +231,16 @@ def get_driver(
     user_data=Depends(PermissionChecker(["driver.read"]))
 ):
     try:
+        user_type = user_data.get("user_type")
+        token_vendor_id = user_data.get("vendor_id")
+
+        if user_type == "vendor":
+            vendor_id = token_vendor_id
+        elif user_type not in {"admin", "superadmin"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error("You don't have permission to create drivers", "FORBIDDEN")
+            )
         logger.info(f"[GET DRIVER] Fetching driver_id={driver_id} for vendor_id={vendor_id} by user={user_data.get('user_id')}")
         driver = driver_crud.get_by_id_and_vendor(db, driver_id=driver_id, vendor_id=vendor_id)
         if not driver:
@@ -263,6 +273,16 @@ def get_drivers(
     user_data=Depends(PermissionChecker(["driver.read"]))
 ):
     try:
+        user_type = user_data.get("user_type")
+        token_vendor_id = user_data.get("vendor_id")
+
+        if user_type == "vendor":
+            vendor_id = token_vendor_id
+        elif user_type not in {"admin", "superadmin"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error("You don't have permission to create drivers", "FORBIDDEN")
+            )
         logger.info(f"[GET DRIVERS] Fetching drivers for vendor_id={vendor_id} by user={user_data.get('user_id')}, "
                     f"filters: active_only={active_only}, license_number={license_number}, search={search}")
 
@@ -350,6 +370,16 @@ async def update_driver(
 
     validate_future_dates(expiry_fields, context="driver")
     try:
+        user_type = user_data.get("user_type")
+        token_vendor_id = user_data.get("vendor_id")
+
+        if user_type == "vendor":
+            vendor_id = token_vendor_id
+        elif user_type not in {"admin", "superadmin"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error("You don't have permission to create drivers", "FORBIDDEN")
+            )
         logger.info(f"[UPDATE DRIVER] Updating driver_id={driver_id} for vendor_id={vendor_id} by user={user_data.get('user_id')}")
 
         # Fetch existing driver
@@ -468,6 +498,16 @@ def toggle_driver_active(
     Toggle the active status of a driver (soft activate/deactivate).
     """
     try:
+        user_type = user_data.get("user_type")
+        token_vendor_id = user_data.get("vendor_id")
+
+        if user_type == "vendor":
+            vendor_id = token_vendor_id
+        elif user_type not in {"admin", "superadmin"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error("You don't have permission to create drivers", "FORBIDDEN")
+            )
         logger.info(f"[TOGGLE DRIVER ACTIVE] User {user_data.get('user_id')} toggling active status for driver_id={driver_id} vendor_id={vendor_id}")
 
         driver = driver_crud.get_by_id_and_vendor(db, driver_id=driver_id, vendor_id=vendor_id)
