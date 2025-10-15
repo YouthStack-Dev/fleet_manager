@@ -22,7 +22,7 @@ router = APIRouter(prefix="/drivers", tags=["drivers"])
 
 @router.post("/", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_driver(
-    vendor_id: int,
+    vendor_id: Optional[int] = None,
     name: str = Form(...),
     code: str = Form(...),
     email: str = Form(...),
@@ -100,6 +100,12 @@ async def create_driver(
 
         if user_type == "vendor":
             vendor_id = token_vendor_id
+        elif user_type == "admin" and  vendor_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error("please don't provide vendor_id", "NOT_FOUND"),
+            )
+
         elif user_type not in {"admin", "superadmin"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -273,7 +279,7 @@ def get_driver(
 # --------------------------
 @router.get("/vendor", response_model=dict)
 def get_drivers(
-    vendor_id: int,
+    vendor_id: Optional[int] = None,
     active_only: Optional[bool] = Query(None, description="Filter by active/inactive drivers"),
     license_number: Optional[str] = Query(None, description="Filter by license number"),
     search: Optional[str] = Query(None, description="Search by name, email, phone, badge, license"),
@@ -286,6 +292,11 @@ def get_drivers(
 
         if user_type == "vendor":
             vendor_id = token_vendor_id
+        elif user_type == "admin" and  vendor_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error("please don't provide vendor_id", "NOT_FOUND"),
+            )
         elif user_type not in {"admin", "superadmin"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -324,8 +335,8 @@ def get_drivers(
     
 @router.put("/", response_model=dict)
 async def update_driver(
-    vendor_id: int,
     driver_id: int,
+    vendor_id: Optional[int] = Form(None),
     name: Optional[str] = Form(None),
     code: Optional[str] = Form(None),
     email: Optional[str] = Form(None),
@@ -389,6 +400,11 @@ async def update_driver(
 
         if user_type == "vendor":
             vendor_id = token_vendor_id
+        elif user_type == "admin" and  vendor_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error("please don't provide vendor_id", "NOT_FOUND"),
+            )
         elif user_type not in {"admin", "superadmin"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -517,6 +533,11 @@ def toggle_driver_active(
 
         if user_type == "vendor":
             vendor_id = token_vendor_id
+        elif user_type == "admin" and  vendor_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error("please don't provide vendor_id", "NOT_FOUND"),
+            )
         elif user_type not in {"admin", "superadmin"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
