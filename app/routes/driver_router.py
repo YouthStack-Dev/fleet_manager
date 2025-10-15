@@ -20,9 +20,9 @@ from fastapi.encoders import jsonable_encoder
 logger = get_logger(__name__)
 router = APIRouter(prefix="/drivers", tags=["drivers"])
 
-@router.post("/", response_model=dict, status_code=status.HTTP_201_CREATED)
+@router.post("/create", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_driver(
-    vendor_id: int,
+    vendor_id: Optional[int] = Form(None),
     name: str = Form(...),
     code: str = Form(...),
     email: str = Form(...),
@@ -100,6 +100,13 @@ async def create_driver(
 
         if user_type == "vendor":
             vendor_id = token_vendor_id
+        elif user_type == "admin":
+            vendor_id = vendor_id
+            if not vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error("Vendor ID is required", "BAD_REQUEST"),
+                )
         elif user_type not in {"admin", "superadmin"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -223,7 +230,7 @@ async def create_driver(
 # --------------------------
 # GET single driver
 # --------------------------
-@router.get("/", response_model=dict)
+@router.get("/get", response_model=dict)
 def get_driver(
     driver_id: int,
     vendor_id: Optional[int] = None,
@@ -236,6 +243,14 @@ def get_driver(
 
         if user_type == "vendor":
             vendor_id = token_vendor_id
+        elif user_type == "driver":
+            vendor_id = vendor_id
+            if not vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error("vendor_id is required", "bad request")
+                )
+
         elif user_type not in {"admin", "superadmin"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -322,10 +337,10 @@ def get_drivers(
         logger.error(f"Unexpected error creating driver : {e}")
         raise handle_http_error(e)
     
-@router.put("/", response_model=dict)
+@router.put("/update", response_model=dict)
 async def update_driver(
-    vendor_id: int,
     driver_id: int,
+    vendor_id: Optional[int] = Form(None),
     name: Optional[str] = Form(None),
     code: Optional[str] = Form(None),
     email: Optional[str] = Form(None),
@@ -389,6 +404,13 @@ async def update_driver(
 
         if user_type == "vendor":
             vendor_id = token_vendor_id
+        elif user_type == "admin":
+            vendor_id = vendor_id
+            if not vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error("vendor_id is required", "bad request")
+                )
         elif user_type not in {"admin", "superadmin"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -517,6 +539,7 @@ def toggle_driver_active(
 
         if user_type == "vendor":
             vendor_id = token_vendor_id
+
         elif user_type not in {"admin", "superadmin"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
