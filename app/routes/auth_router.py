@@ -21,6 +21,7 @@ from app.schemas.auth import (
     AdminLoginRequest, AdminLoginResponse, LoginRequest, TokenResponse, RefreshTokenRequest, LoginResponse, PasswordResetRequest
 )
 from app.schemas.driver import DriverResponse
+from app.schemas.tenant import TenantResponse
 from app.schemas.vendor_user import VendorUserResponse
 from common_utils.auth.utils import (
     create_access_token, create_refresh_token, 
@@ -738,6 +739,7 @@ async def driver_login(
             "token_type": "bearer",
             "user": {
                 "driver": DriverResponse.model_validate(driver),
+                "tenant": TenantResponse.model_validate(tenant)
             }
         }
 
