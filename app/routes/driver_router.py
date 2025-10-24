@@ -20,9 +20,10 @@ from fastapi.encoders import jsonable_encoder
 logger = get_logger(__name__)
 router = APIRouter(prefix="/drivers", tags=["drivers"])
 
-@router.post("/", response_model=dict, status_code=status.HTTP_201_CREATED)
+@router.post("/create", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_driver(
-    vendor_id: Optional[int] = None,
+
+    vendor_id: Optional[int] = Form(None),
     name: str = Form(...),
     code: str = Form(...),
     email: str = Form(...),
@@ -100,12 +101,13 @@ async def create_driver(
 
         if user_type == "vendor":
             vendor_id = token_vendor_id
-        elif user_type == "admin" and  vendor_id is not None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=ResponseWrapper.error("please don't provide vendor_id", "NOT_FOUND"),
-            )
-
+        elif user_type == "admin":
+            vendor_id = vendor_id
+            if not vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error("Vendor ID is required", "BAD_REQUEST"),
+                )
         elif user_type not in {"admin", "superadmin"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -229,7 +231,7 @@ async def create_driver(
 # --------------------------
 # GET single driver
 # --------------------------
-@router.get("/", response_model=dict)
+@router.get("/get", response_model=dict)
 def get_driver(
     driver_id: int,
     vendor_id: Optional[int] = None,
@@ -242,6 +244,14 @@ def get_driver(
 
         if user_type == "vendor":
             vendor_id = token_vendor_id
+        elif user_type == "driver":
+            vendor_id = vendor_id
+            if not vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error("vendor_id is required", "bad request")
+                )
+
         elif user_type not in {"admin", "superadmin"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -333,7 +343,7 @@ def get_drivers(
         logger.error(f"Unexpected error creating driver : {e}")
         raise handle_http_error(e)
     
-@router.put("/", response_model=dict)
+@router.put("/update", response_model=dict)
 async def update_driver(
     driver_id: int,
     vendor_id: Optional[int] = Form(None),
@@ -400,11 +410,13 @@ async def update_driver(
 
         if user_type == "vendor":
             vendor_id = token_vendor_id
-        elif user_type == "admin" and  vendor_id is not None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=ResponseWrapper.error("please don't provide vendor_id", "NOT_FOUND"),
-            )
+        elif user_type == "admin":
+            vendor_id = vendor_id
+            if not vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error("vendor_id is required", "bad request")
+                )
         elif user_type not in {"admin", "superadmin"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -425,28 +437,28 @@ async def update_driver(
             )
 
         allowed_docs = ["image/jpeg", "image/png", "application/pdf"]
-        file_fields = {
-            "photo": photo,
-            "license_file": license_file,
-            "badge_file": badge_file,
-            "alt_govt_id_file": alt_govt_id_file,
-            "bgv_file": bgv_file,
-            "police_file": police_file,
-            "medical_file": medical_file,
-            "training_file": training_file,
-            "eye_file": eye_file,
-            "induction_file": induction_file,
+        file_field_mapping = {
+            "photo": "photo_url",
+            "license_file": "license_url",
+            "badge_file": "badge_url",
+            "alt_govt_id_file": "alt_govt_id_url",
+            "bgv_file": "bg_verify_url",
+            "police_file": "police_verify_url",
+            "medical_file": "medical_verify_url",
+            "training_file": "training_verify_url",
+            "eye_file": "eye_verify_url",
+            "induction_file": "induction_url",
         }
 
-        # Save files if provided and delete old ones
-        for key, file_obj in file_fields.items():
-            if file_obj and await file_size_validator(file_obj, allowed_docs, 10, required=False):
-                db_field = key.replace("_file", "_url")
-                old_url = getattr(db_obj, db_field)
+        for field, file_obj in file_field_mapping.items():
+            upload = locals()[field]
+            if upload and await file_size_validator(upload, allowed_docs, 10, required=False):
+                old_url = getattr(db_obj, file_obj)
                 if old_url:
                     storage_service.delete_file(old_url)
-                new_url = storage_service.save_file(file_obj, vendor_id, db_obj.code, key.replace("_file", ""))
-                setattr(db_obj, db_field, new_url)
+                new_url = storage_service.save_file(upload, vendor_id, db_obj.code, field.replace("_file", ""))
+                setattr(db_obj, file_obj, new_url)
+
 
         # --- Update other fields ---
         update_fields = {
@@ -467,6 +479,12 @@ async def update_driver(
             "alt_govt_id_number": alt_govt_id_number,
             "alt_govt_id_type": alt_govt_id_type,
             "induction_date": induction_date,
+            "bg_expiry_date": bg_expiry_date,
+            "police_expiry_date": police_expiry_date,
+            "medical_expiry_date": medical_expiry_date,
+            "training_expiry_date": training_expiry_date,
+            "eye_expiry_date": eye_expiry_date,
+
         }
 
         # Update normal fields
@@ -533,11 +551,7 @@ def toggle_driver_active(
 
         if user_type == "vendor":
             vendor_id = token_vendor_id
-        elif user_type == "admin" and  vendor_id is not None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=ResponseWrapper.error("please don't provide vendor_id", "NOT_FOUND"),
-            )
+
         elif user_type not in {"admin", "superadmin"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

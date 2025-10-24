@@ -625,7 +625,7 @@ def get_file(
     """
     try:
         user_type = user_data.get("user_type")
-        token_vendor_id = user_data.get("vendor_id")
+        token_vendor_id = int(user_data.get("vendor_id"))
         user_id = user_data.get("user_id")
         
         print("Inside get file route")
