@@ -599,3 +599,56 @@ async def get_all_routes(
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving routes: {str(e)}")
+
+@router.get("/routes/{route_id}", response_model=RouteWithEstimations)
+async def get_route_by_id(
+    route_id: str,
+    tenant_id: str = Query(..., description="Tenant ID"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get details of a specific route by its ID.
+    """
+    try:
+        # Query the route
+        route = db.query(RouteManagement).filter(
+            RouteManagement.route_id == route_id,
+            RouteManagement.tenant_id == tenant_id,
+            RouteManagement.is_active == True
+        ).first()
+        
+        if not route:
+            raise HTTPException(status_code=404, detail=f"Route {route_id} not found")
+        
+        # Get route bookings
+        route_bookings = db.query(RouteManagementBooking).filter(
+            RouteManagementBooking.route_id == route_id
+        ).order_by(RouteManagementBooking.stop_order).all()
+        
+        booking_ids = [rb.booking_id for rb in route_bookings]
+        bookings = get_bookings_by_ids(booking_ids, db) if booking_ids else []
+        
+        # Create estimations
+        estimations = RouteEstimations(
+            total_distance_km=route.total_distance_km or 0.0,
+            total_time_minutes=route.total_time_minutes or 0.0,
+            estimated_pickup_times={
+                rb.booking_id: rb.estimated_pickup_time 
+                for rb in route_bookings if rb.estimated_pickup_time
+            },
+            estimated_drop_times={
+                rb.booking_id: rb.estimated_drop_time 
+                for rb in route_bookings if rb.estimated_drop_time
+            }
+        )
+        
+        return RouteWithEstimations(
+            route_id=route.route_id,
+            bookings=bookings,
+            estimations=estimations
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving route: {str(e)}")
