@@ -46,5 +46,4 @@ class Shift(Base):
     # Relationships
     tenant = relationship("Tenant", back_populates="shifts")
     bookings = relationship("Booking", back_populates="shift")
-    routes = relationship("Route", back_populates="shift")
 

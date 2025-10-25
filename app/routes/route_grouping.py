@@ -8,8 +8,11 @@ from pydantic import BaseModel
 import math
 
 from app.database.session import get_db
-from app.models import Booking, Shift
-# from app.services.clustering_algorithm import group_rides
+from app.models.booking import Booking
+from app.models.shift import Shift
+from app.models.route_management import RouteManagement, RouteManagementBooking
+from app.schemas.route import RouteWithEstimations, RouteEstimations
+from app.schemas.booking import BookingResponse
 from app.services.geodesic import group_rides
 
 router = APIRouter(
@@ -53,6 +56,32 @@ class OptimalRoute(BaseModel):
     total_distance_km: float
     estimated_time_minutes: float
     start_location: Optional[Dict[str, float]] = None
+
+class RouteResponse(BaseModel):
+    route_id: str
+    bookings: List[BookingInput]
+    estimations: RouteEstimations
+
+class RequestItem(BaseModel):
+    group_id: int
+    bookings: List[int]  # List of booking IDs
+
+class SaveConfirmRequest(BaseModel):
+    groups: List[RequestItem]
+
+class MergeRequest(BaseModel):
+    route_ids: List[str]
+
+class SplitRequest(BaseModel):
+    route_id: str
+    groups: List[List[int]]  # List of booking ID groups - [[b1,b2], [b3,b4]]
+
+class UpdateRequest(BaseModel):
+    route_id: str
+    bookings: List[int]  # List of booking IDs
+
+class DeleteRequest(BaseModel):
+    route_id: str
 
 @router.get("/bookings")
 async def get_bookings_by_date_and_shift(
@@ -102,14 +131,11 @@ async def get_bookings_by_date_and_shift(
         for booking in bookings:
             # Use correct attribute names based on sample data
             ride = {
-                'booking_id': booking.booking_id,
-                'user': booking.employee_id,
-                'employee_code': booking.employee_code,
                 'lat': getattr(booking, lat),
                 'lon': getattr(booking, long),
-                'pickup_location': booking.pickup_location,
-                'drop_location': booking.drop_location,
             }
+
+            ride.update(booking.__dict__)
             
             rides.append(ride)
         
@@ -126,17 +152,23 @@ async def get_bookings_by_date_and_shift(
         # Determine clustering strategy based on pickup locations
         clusters = group_rides(rides, radius, group_size, strict_grouping)
 
+        cluster_id = 1
+        cluster_updated = []
+        for cluster in clusters:
+            for booking in cluster:
+                _ = booking.pop("lat")
+                _ = booking.pop("lon")
+            cluster_ = {
+                "cluster_id": cluster_id,
+                "bookings": cluster
+            }
+            cluster_updated.append(cluster_)
 
-        # clustering_strategy = determine_clustering_strategy(valid_rides)
-        
-        # # Generate route clusters based on the determined strategy
-        # route_clusters = generate_route_clusters(valid_rides, num_clusters, clustering_strategy)
-        
+            cluster_id += 1
+
         return {
-            # "bookings": bookings,
-            "route_clusters": clusters,
+            "route_clusters": cluster_updated,
             "total_bookings": len(bookings),
-            # "clustered_bookings": sum(clusters),
             "total_clusters": len(clusters),
         }
     
@@ -146,526 +178,424 @@ async def get_bookings_by_date_and_shift(
             detail=f"Error retrieving bookings and generating clusters: {str(e)}"
         )
 
+def get_bookings_by_ids(booking_ids: List[int], db: Session) -> List[Dict]:
+    """
+    Retrieve bookings by their IDs and convert to dictionary format.
+    """
+    bookings = db.query(Booking).filter(Booking.booking_id.in_(booking_ids)).all()
+    return [
+        {
+            "booking_id": booking.booking_id,
+            "tenant_id": booking.tenant_id,
+            "employee_id": booking.employee_id,
+            "employee_code": booking.employee_code,
+            "shift_id": booking.shift_id,
+            "team_id": booking.team_id,
+            "booking_date": booking.booking_date,
+            "pickup_latitude": booking.pickup_latitude,
+            "pickup_longitude": booking.pickup_longitude,
+            "pickup_location": booking.pickup_location,
+            "drop_latitude": booking.drop_latitude,
+            "drop_longitude": booking.drop_longitude,
+            "drop_location": booking.drop_location,
+            "status": booking.status.value if booking.status else None,
+            "reason": booking.reason,
+            "is_active": getattr(booking, 'is_active', True),
+            "created_at": booking.created_at,
+            "updated_at": booking.updated_at
+        }
+        for booking in bookings
+    ]
 
-@router.post("/split-cluster")
-async def split_cluster(
-    booking_date: date = Query(..., description="Date for the bookings (YYYY-MM-DD)"),
-    shift_id: int = Query(..., description="Shift ID to filter bookings"),
-    cluster_id: int = Query(..., description="Cluster ID to split"),
-    num_splits: int = Query(2, description="Number of sub-clusters to create"),
+def calculate_route_estimations(bookings: List[Dict], shift_type: str = "OUT") -> RouteEstimations:
+    """
+    Calculate route estimations including distance, time, and pickup/drop times.
+    """
+    # Simple estimation logic - replace with actual calculation
+    total_distance = len(bookings) * 5.0  # 5km per booking as example
+    total_time = len(bookings) * 15.0     # 15 minutes per booking as example
+    
+    estimated_pickup_times = {}
+    estimated_drop_times = {}
+    
+    base_time = 480  # 8:00 AM in minutes
+    for i, booking in enumerate(bookings):
+        pickup_time = base_time + (i * 15)
+        drop_time = pickup_time + 10
+        
+        estimated_pickup_times[booking["booking_id"]] = f"{pickup_time//60:02d}:{pickup_time%60:02d}"
+        estimated_drop_times[booking["booking_id"]] = f"{drop_time//60:02d}:{drop_time%60:02d}"
+    
+    return RouteEstimations(
+        total_distance_km=total_distance,
+        total_time_minutes=total_time,
+        estimated_pickup_times=estimated_pickup_times,
+        estimated_drop_times=estimated_drop_times
+    )
+
+def save_route_to_db(route_id: str, booking_ids: List[int], estimations: RouteEstimations, tenant_id: str, db: Session) -> RouteManagement:
+    """
+    Save route and its bookings to database.
+    """
+    # Create route
+    route = RouteManagement(
+        route_id=route_id,
+        tenant_id=tenant_id,
+        route_code=f"ROUTE-{route_id}",
+        total_distance_km=estimations.total_distance_km,
+        total_time_minutes=estimations.total_time_minutes,
+        is_active=True  # Explicitly set is_active to True
+    )
+    db.add(route)
+    db.flush()
+    
+    # Create route bookings
+    for i, booking_id in enumerate(booking_ids):
+        route_booking = RouteManagementBooking(
+            route_id=route_id,
+            booking_id=booking_id,
+            stop_order=i + 1,
+            estimated_pickup_time=estimations.estimated_pickup_times.get(booking_id),
+            estimated_drop_time=estimations.estimated_drop_times.get(booking_id),
+            distance_from_previous=5.0 if i > 0 else 0.0,
+            cumulative_distance=(i + 1) * 5.0
+        )
+        db.add(route_booking)
+    
+    db.commit()
+    return route
+
+@router.post("/save-confirm", response_model=List[RouteWithEstimations])
+async def save_confirm_routes(
+    request: SaveConfirmRequest,
+    tenant_id: str = Query(..., description="Tenant ID"),
     db: Session = Depends(get_db)
 ):
     """
-    Split a specific cluster into smaller sub-clusters.
-    
-    Args:
-        booking_date: The date to filter bookings
-        shift_id: The shift ID to filter bookings
-        cluster_id: The cluster ID to split
-        num_splits: Number of sub-clusters to create
-        db: Database session
-    
-    Returns:
-        Dictionary containing the split clusters
+    Save/Confirm route groups and generate optimal routes with estimations.
     """
     try:
-        # First get all clusters for the date and shift
-        bookings = db.query(Booking).filter(
-            Booking.booking_date == booking_date,
-            Booking.shift_id == shift_id
-        ).all()
+        routes = []
+        
+        for group in request.groups:
+            # Get bookings for this group
+            bookings = get_bookings_by_ids(group.bookings, db)
+            
+            if not bookings:
+                continue
+            
+            # Calculate estimations
+            estimations = calculate_route_estimations(bookings)
+            
+            # Save to database
+            route_id = str(group.group_id)
+            saved_route = save_route_to_db(route_id, group.bookings, estimations, tenant_id, db)
+            
+            # Create route response
+            route = RouteWithEstimations(
+                route_id=route_id,
+                bookings=bookings,
+                estimations=estimations
+            )
+            routes.append(route)
+        
+        return routes
+    
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error saving/confirming routes: {str(e)}"
+        )
+
+@router.post("/merge", response_model=RouteWithEstimations)
+async def merge_routes(
+    request: MergeRequest,
+    tenant_id: str = Query(..., description="Tenant ID"),
+    db: Session = Depends(get_db)
+):
+    """
+    Merge multiple routes into a single optimized route.
+    """
+    try:
+        # Get all booking IDs from the routes to be merged
+        all_booking_ids = []
+        routes_to_delete = []
+        
+        for route_id in request.route_ids:
+            # Query each route individually
+            route = db.query(RouteManagement).filter(
+                RouteManagement.route_id == route_id,
+                RouteManagement.tenant_id == tenant_id,
+                RouteManagement.is_active == True
+            ).first()
+            
+            if not route:
+                raise HTTPException(status_code=404, detail=f"Route {route_id} not found")
+            
+            route_bookings = db.query(RouteManagementBooking).filter(
+                RouteManagementBooking.route_id == route_id
+            ).all()
+            
+            all_booking_ids.extend([rb.booking_id for rb in route_bookings])
+            routes_to_delete.append(route)
+        
+        # Remove duplicates while preserving order
+        all_booking_ids = list(dict.fromkeys(all_booking_ids))
+        
+        # Get all bookings
+        bookings = get_bookings_by_ids(all_booking_ids, db)
         
         if not bookings:
-            raise HTTPException(
-                status_code=404, 
-                detail=f"No bookings found for date {booking_date} and shift ID {shift_id}"
+            raise HTTPException(status_code=404, detail="No valid bookings found for the provided route IDs")
+        
+        # Calculate new estimations
+        estimations = calculate_route_estimations(bookings)
+        
+        # Generate new merged route ID using timestamp to ensure uniqueness
+        import time
+        merged_route_id = f"merged-{int(time.time())}"
+        
+        # Save merged route
+        save_route_to_db(merged_route_id, all_booking_ids, estimations, tenant_id, db)
+        
+        # Deactivate original routes
+        for route in routes_to_delete:
+            route.is_active = False
+        
+        db.commit()
+        
+        return RouteWithEstimations(
+            route_id=merged_route_id,
+            bookings=bookings,
+            estimations=estimations
+        )
+    
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error merging routes: {str(e)}")
+
+@router.post("/split", response_model=List[RouteWithEstimations])
+async def split_route(
+    request: SplitRequest,
+    tenant_id: str = Query(..., description="Tenant ID"),
+    db: Session = Depends(get_db)
+):
+    """
+    Split a route into multiple routes based on provided booking ID groups.
+    Input format: {"route_id": "1", "groups": [[b1,b2], [b3,b4]]}
+    where b1, b2, etc. are booking IDs
+    """
+    try:
+        # Check if original route exists
+        original_route = db.query(RouteManagement).filter(
+            RouteManagement.route_id == request.route_id, 
+            RouteManagement.is_active == True
+        ).first()
+        
+        if not original_route:
+            raise HTTPException(status_code=404, detail=f"Route {request.route_id} not found")
+        
+        routes = []
+        
+        for i, booking_ids_group in enumerate(request.groups):
+            # Get bookings for this split group
+            bookings = get_bookings_by_ids(booking_ids_group, db)
+            
+            if not bookings:
+                continue
+            
+            # Calculate estimations
+            estimations = calculate_route_estimations(bookings)
+            
+            # Create split route
+            split_route_id = f"{request.route_id}-split-{i+1}"
+            save_route_to_db(split_route_id, booking_ids_group, estimations, tenant_id, db)
+            
+            route = RouteWithEstimations(
+                route_id=split_route_id,
+                bookings=bookings,
+                estimations=estimations
             )
+            routes.append(route)
         
-        # Convert bookings to rides format
-        rides = []
-        for booking in bookings:
-            ride = {
-                'booking_id': booking.booking_id,
-                'user': booking.employee_id,
-                'employee_code': booking.employee_code,
-                'lat': booking.drop_latitude,
-                'lon': booking.drop_longitude,
-                'drop_location': booking.drop_location,
-                'pickup_location': booking.pickup_location,
-                'pickup_lat': booking.pickup_latitude,
-                'pickup_lon': booking.pickup_longitude,
-                'status': booking.status,
-            }
-            rides.append(ride)
+        # Deactivate original route
+        original_route.is_active = False
+        db.commit()
         
-        # Generate initial clusters to find the target cluster
-        valid_rides = [r for r in rides if r['lat'] is not None and r['lon'] is not None]
-        clustering_strategy = determine_clustering_strategy(valid_rides)
-        initial_clusters = generate_route_clusters(valid_rides, 10, clustering_strategy)  # Generate more clusters initially
+        return routes
+    
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error splitting route: {str(e)}")
+
+@router.put("/update", response_model=RouteWithEstimations)
+async def update_route(
+    request: UpdateRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Update a route by extending it with new booking assignments.
+    """
+    try:
+        # Check if route exists
+        route = db.query(RouteManagement).filter(
+            RouteManagement.route_id == request.route_id, 
+            RouteManagement.is_active == True
+        ).first()
         
-        # Find the target cluster
-        target_cluster = None
-        for cluster in initial_clusters:
-            if cluster['cluster_id'] == cluster_id:
-                target_cluster = cluster
-                break
+        if not route:
+            raise HTTPException(status_code=404, detail=f"Route {request.route_id} not found")
         
-        if not target_cluster:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Cluster with ID {cluster_id} not found"
+        # Get existing booking IDs from the route
+        existing_route_bookings = db.query(RouteManagementBooking).filter(
+            RouteManagementBooking.route_id == request.route_id
+        ).all()
+        
+        existing_booking_ids = [rb.booking_id for rb in existing_route_bookings]
+        
+        # Combine existing and new booking IDs, removing duplicates while preserving order
+        all_booking_ids = existing_booking_ids.copy()
+        for booking_id in request.bookings:
+            if booking_id not in all_booking_ids:
+                all_booking_ids.append(booking_id)
+        
+        # Get all bookings (existing + new)
+        bookings = get_bookings_by_ids(all_booking_ids, db)
+        
+        if not bookings:
+            raise HTTPException(status_code=404, detail="No valid bookings found")
+        
+        # Calculate new estimations for the extended route
+        estimations = calculate_route_estimations(bookings)
+        
+        # Update route with new estimations
+        route.total_distance_km = estimations.total_distance_km
+        route.total_time_minutes = estimations.total_time_minutes
+        
+        # Delete existing route bookings
+        db.query(RouteManagementBooking).filter(
+            RouteManagementBooking.route_id == request.route_id
+        ).delete()
+        
+        # Create new route bookings with updated order
+        for i, booking_id in enumerate(all_booking_ids):
+            route_booking = RouteManagementBooking(
+                route_id=request.route_id,
+                booking_id=booking_id,
+                stop_order=i + 1,
+                estimated_pickup_time=estimations.estimated_pickup_times.get(booking_id),
+                estimated_drop_time=estimations.estimated_drop_times.get(booking_id),
+                distance_from_previous=5.0 if i > 0 else 0.0,
+                cumulative_distance=(i + 1) * 5.0
             )
+            db.add(route_booking)
         
-        # Split the target cluster
-        cluster_bookings = target_cluster['bookings']
-        if len(cluster_bookings) <= num_splits:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot split cluster with {len(cluster_bookings)} bookings into {num_splits} sub-clusters"
-            )
+        db.commit()
         
-        # Generate sub-clusters
-        sub_clusters = generate_route_clusters(cluster_bookings, num_splits, clustering_strategy)
+        return RouteWithEstimations(
+            route_id=request.route_id,
+            bookings=bookings,
+            estimations=estimations
+        )
+    
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error updating route: {str(e)}")
+
+@router.delete("/delete/{route_id}")
+async def delete_route(
+    route_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Delete a route by its ID.
+    """
+    try:
+        # Check if route exists
+        route = db.query(RouteManagement).filter(
+            RouteManagement.route_id == route_id, 
+            RouteManagement.is_active == True
+        ).first()
         
-        # Update cluster IDs to be unique
-        for i, sub_cluster in enumerate(sub_clusters):
-            sub_cluster['cluster_id'] = f"{cluster_id}.{i + 1}"
-            sub_cluster['parent_cluster_id'] = cluster_id
+        if not route:
+            raise HTTPException(status_code=404, detail=f"Route {route_id} not found")
+        
+        # Soft delete route bookings first
+        route_bookings = db.query(RouteManagementBooking).filter(
+            RouteManagementBooking.route_id == route_id
+        ).all()
+        
+        for rb in route_bookings:
+            db.delete(rb)
+        
+        # Soft delete the route by setting is_active to False
+        route.is_active = False
+        db.commit()
         
         return {
-            "original_cluster": target_cluster,
-            "sub_clusters": sub_clusters,
-            "total_sub_clusters": len(sub_clusters),
-            "clustering_strategy": clustering_strategy
+            "message": f"Route {route_id} deleted successfully",
+            "deleted_route_id": route_id
         }
     
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error splitting cluster: {str(e)}"
-        )
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error deleting route: {str(e)}")
 
-
-@router.post("/generate-clusters")
-async def generate_clusters_from_bookings(
-    request: ClusterGenerationRequest
+@router.get("/routes")
+async def get_all_routes(
+    tenant_id: str = Query(..., description="Tenant ID"),
+    db: Session = Depends(get_db)
 ):
     """
-    Generate clusters from a provided list of bookings.
-    
-    Args:
-        request: ClusterGenerationRequest containing bookings list and cluster count
-    
-    Returns:
-        Dictionary containing generated route clusters
+    Get all active routes with their details.
     """
     try:
-        if not request.bookings:
-            raise HTTPException(
-                status_code=400,
-                detail="No bookings provided"
-            )
+        routes = db.query(RouteManagement).filter(
+            RouteManagement.tenant_id == tenant_id, 
+            RouteManagement.is_active == True
+        ).all()
         
-        # Convert input bookings to rides format
-        rides = []
-        for booking_input in request.bookings:
-            ride = {
-                'booking_id': booking_input.booking_id,
-                'user': booking_input.employee_id,
-                'employee_code': booking_input.employee_code,
-                'lat': booking_input.drop_latitude,
-                'lon': booking_input.drop_longitude,
-                'drop_location': booking_input.drop_location,
-                'pickup_location': booking_input.pickup_location,
-                'pickup_lat': booking_input.pickup_latitude,
-                'pickup_lon': booking_input.pickup_longitude,
-                'status': booking_input.status,
-            }
-            rides.append(ride)
-        
-        # Filter out rides without valid coordinates
-        valid_rides = [r for r in rides if r['lat'] is not None and r['lon'] is not None]
-        
-        if not valid_rides:
+        if not routes:
             return {
-                "route_clusters": [],
-                "message": "No bookings with valid coordinates found for clustering",
-                "total_bookings": len(rides),
-                "clustered_bookings": 0,
-                "total_clusters": 0
+                "routes": [],
+                "total_routes": 0,
+                "message": f"No active routes found for tenant {tenant_id}"
             }
         
-        # Determine clustering strategy and generate clusters
-        clustering_strategy = determine_clustering_strategy(valid_rides)
-        route_clusters = generate_route_clusters(valid_rides, request.num_clusters, clustering_strategy)
-        
-        return {
-            "route_clusters": route_clusters,
-            "total_bookings": len(rides),
-            "clustered_bookings": len(valid_rides),
-            "total_clusters": len(route_clusters),
-            "clustering_strategy": clustering_strategy
-        }
-    
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error generating clusters from bookings: {str(e)}"
-        )
-
-
-@router.post("/optimize-route")
-async def optimize_route(
-    request: RouteOptimizationRequest
-):
-    """
-    Generate optimal route for given bookings using nearest neighbor algorithm.
-    
-    Args:
-        request: RouteOptimizationRequest containing bookings and route preferences
-    
-    Returns:
-        Dictionary containing optimized route with stops, distances, and time estimates
-    """
-    try:
-        if not request.bookings:
-            raise HTTPException(
-                status_code=400,
-                detail="No bookings provided for route optimization"
-            )
-        
-        # Convert input bookings to route points
-        route_points = []
-        for booking_input in request.bookings:
-            # Use drop location as the destination for route optimization
-            if booking_input.drop_latitude and booking_input.drop_longitude:
-                route_point = {
-                    'booking_id': booking_input.booking_id,
-                    'employee_code': booking_input.employee_code,
-                    'lat': booking_input.drop_latitude,
-                    'lon': booking_input.drop_longitude,
-                    'location_name': booking_input.drop_location
-                }
-                route_points.append(route_point)
-        
-        if not route_points:
-            raise HTTPException(
-                status_code=400,
-                detail="No valid coordinates found in provided bookings"
-            )
-        
-        # Set start location (office or first booking pickup location)
-        start_location = request.start_location
-        if not start_location and request.bookings[0].pickup_latitude and request.bookings[0].pickup_longitude:
-            start_location = {
-                "lat": request.bookings[0].pickup_latitude,
-                "lon": request.bookings[0].pickup_longitude
-            }
-        
-        # Generate optimal route
-        optimal_route = generate_optimal_route(
-            route_points, 
-            start_location, 
-            request.return_to_start
-        )
-        
-        return {
-            "optimal_route": optimal_route,
-            "total_stops": len(optimal_route.route_stops),
-            "optimization_method": "nearest_neighbor"
-        }
-    
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error optimizing route: {str(e)}"
-        )
-
-
-def determine_clustering_strategy(rides: List[Dict]) -> str:
-    """
-    Determine whether to cluster by pickup or drop locations based on location patterns.
-    
-    Args:
-        rides: List of ride dictionaries with pickup and drop coordinates
-    
-    Returns:
-        String indicating clustering strategy: "drop" or "pickup"
-    """
-    if not rides:
-        return "drop"
-    
-    # Get unique pickup locations (with some tolerance for GPS variations)
-    pickup_locations = set()
-    for ride in rides:
-        if ride['pickup_lat'] is not None and ride['pickup_lon'] is not None:
-            # Round to 4 decimal places (~11m precision) to group nearby locations
-            pickup_key = (round(ride['pickup_lat'], 4), round(ride['pickup_lon'], 4))
-            pickup_locations.add(pickup_key)
-    
-    # If most rides share the same pickup location, cluster by drop locations
-    if len(pickup_locations) <= max(1, len(rides) * 0.2):  # 20% or less unique pickup locations
-        return "drop"
-    else:
-        return "pickup"
-
-
-def generate_route_clusters(rides: List[Dict], num_clusters: int, strategy: str = "drop") -> List[Dict[str, Any]]:
-    """
-    Generate route clusters from ride data using KMeans clustering.
-    
-    Args:
-        rides: List of ride dictionaries with lat, lon info
-        num_clusters: Number of clusters to generate
-        strategy: "drop" to cluster by drop locations, "pickup" to cluster by pickup locations
-    
-    Returns:
-        List of route clusters with grouped bookings
-    """
-    
-    if len(rides) <= 1:
-        coords = get_coordinates_for_strategy(rides[0], strategy) if rides else (0, 0)
-        return [{
-            "cluster_id": 1,
-            "bookings": rides,
-            "booking_count": len(rides),
-            "center_coordinates": {
-                "lat": coords[0],
-                "lon": coords[1]
-            },
-            "clustering_strategy": strategy
-        }]
-    
-    # Prepare data for clustering based on strategy
-    valid_rides_for_clustering = []
-    X_data = []
-    
-    for ride in rides:
-        coords = get_coordinates_for_strategy(ride, strategy)
-        if coords[0] is not None and coords[1] is not None:
-            valid_rides_for_clustering.append(ride)
-            X_data.append(coords)
-    
-    if not X_data:
-        return [{
-            "cluster_id": 1,
-            "bookings": rides,
-            "booking_count": len(rides),
-            "center_coordinates": {"lat": 0, "lon": 0},
-            "clustering_strategy": strategy
-        }]
-    
-    X = np.array(X_data)
-    
-    # Adjust number of clusters if we have fewer rides than requested clusters
-    effective_clusters = min(num_clusters, len(valid_rides_for_clustering))
-    
-    if effective_clusters == 1:
-        # If only one cluster, return all rides in single cluster
-        center_lat = sum(coord[0] for coord in X_data) / len(X_data)
-        center_lon = sum(coord[1] for coord in X_data) / len(X_data)
-        
-        return [{
-            "cluster_id": 1,
-            "bookings": valid_rides_for_clustering,
-            "booking_count": len(valid_rides_for_clustering),
-            "center_coordinates": {
-                "lat": center_lat,
-                "lon": center_lon
-            },
-            "clustering_strategy": strategy
-        }]
-    
-    # Perform KMeans clustering
-    kmeans = KMeans(n_clusters=effective_clusters, random_state=0, n_init=10).fit(X)
-    labels = kmeans.labels_
-    
-    # Group rides by cluster
-    clusters = [[] for _ in range(effective_clusters)]
-    for label, ride in zip(labels, valid_rides_for_clustering):
-        clusters[label].append(ride)
-    
-    # Create cluster information
-    final_clusters = []
-    cluster_id = 1
-    
-    for cluster in clusters:
-        if cluster:  # Only add non-empty clusters
-            # Calculate cluster center based on strategy
-            coords_list = [get_coordinates_for_strategy(r, strategy) for r in cluster]
-            valid_coords = [c for c in coords_list if c[0] is not None and c[1] is not None]
+        route_responses = []
+        for route in routes:
+            route_bookings = db.query(RouteManagementBooking).filter(
+                RouteManagementBooking.route_id == route.route_id
+            ).order_by(RouteManagementBooking.stop_order).all()
             
-            if valid_coords:
-                center_lat = sum(c[0] for c in valid_coords) / len(valid_coords)
-                center_lon = sum(c[1] for c in valid_coords) / len(valid_coords)
-            else:
-                center_lat, center_lon = 0, 0
+            booking_ids = [rb.booking_id for rb in route_bookings]
+            bookings = get_bookings_by_ids(booking_ids, db) if booking_ids else []
             
-            cluster_info = {
-                "cluster_id": cluster_id,
-                "bookings": cluster,
-                "booking_count": len(cluster),
-                "center_coordinates": {
-                    "lat": center_lat,
-                    "lon": center_lon
+            estimations = RouteEstimations(
+                total_distance_km=route.total_distance_km or 0.0,
+                total_time_minutes=route.total_time_minutes or 0.0,
+                estimated_pickup_times={
+                    rb.booking_id: rb.estimated_pickup_time 
+                    for rb in route_bookings if rb.estimated_pickup_time
                 },
-                "clustering_strategy": strategy
-            }
-            final_clusters.append(cluster_info)
-            cluster_id += 1
-    
-    return final_clusters
-
-
-def get_coordinates_for_strategy(ride: Dict, strategy: str) -> tuple:
-    """
-    Get coordinates based on clustering strategy.
-    
-    Args:
-        ride: Ride dictionary
-        strategy: "drop" or "pickup"
-    
-    Returns:
-        Tuple of (latitude, longitude)
-    """
-    if strategy == "pickup":
-        return (ride['pickup_lat'], ride['pickup_lon'])
-    else:  # default to drop
-        return (ride['lat'], ride['lon'])
-
-
-def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """
-    Calculate the great circle distance between two points on Earth using Haversine formula.
-    
-    Args:
-        lat1, lon1: Latitude and longitude of first point in decimal degrees
-        lat2, lon2: Latitude and longitude of second point in decimal degrees
-    
-    Returns:
-        Distance in kilometers
-    """
-    # Convert decimal degrees to radians
-    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
-    
-    # Haversine formula
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
-    c = 2 * math.asin(math.sqrt(a))
-    
-    # Radius of Earth in kilometers
-    r = 6371
-    
-    return c * r
-
-
-def generate_optimal_route(
-    route_points: List[Dict], 
-    start_location: Optional[Dict[str, float]] = None,
-    return_to_start: bool = True
-) -> OptimalRoute:
-    """
-    Generate optimal route using nearest neighbor algorithm.
-    
-    Args:
-        route_points: List of route points with coordinates
-        start_location: Starting location coordinates
-        return_to_start: Whether to return to starting location
-    
-    Returns:
-        OptimalRoute object with ordered stops and distance calculations
-    """
-    if not route_points:
-        return OptimalRoute(
-            route_stops=[],
-            total_distance_km=0,
-            estimated_time_minutes=0,
-            start_location=start_location
-        )
-    
-    # If no start location provided, use the first route point
-    if not start_location:
-        start_location = {
-            "lat": route_points[0]['lat'],
-            "lon": route_points[0]['lon']
+                estimated_drop_times={
+                    rb.booking_id: rb.estimated_drop_time 
+                    for rb in route_bookings if rb.estimated_drop_time
+                }
+            )
+            
+            route_response = RouteWithEstimations(
+                route_id=route.route_id,
+                bookings=bookings,
+                estimations=estimations
+            )
+            route_responses.append(route_response)
+        
+        return {
+            "routes": route_responses,
+            "total_routes": len(route_responses)
         }
     
-    # Implement nearest neighbor algorithm
-    unvisited = route_points.copy()
-    route_stops = []
-    current_location = start_location
-    total_distance = 0
-    stop_order = 1
-    
-    while unvisited:
-        # Find nearest unvisited point
-        min_distance = float('inf')
-        nearest_point = None
-        nearest_index = -1
-        
-        for i, point in enumerate(unvisited):
-            distance = calculate_distance(
-                current_location['lat'], current_location['lon'],
-                point['lat'], point['lon']
-            )
-            if distance < min_distance:
-                min_distance = distance
-                nearest_point = point
-                nearest_index = i
-        
-        # Add nearest point to route
-        total_distance += min_distance
-        
-        route_stop = RouteStop(
-            booking_id=nearest_point['booking_id'],
-            employee_code=nearest_point['employee_code'],
-            location_name=nearest_point['location_name'],
-            latitude=nearest_point['lat'],
-            longitude=nearest_point['lon'],
-            stop_order=stop_order,
-            distance_from_previous=round(min_distance, 2),
-            cumulative_distance=round(total_distance, 2)
-        )
-        
-        route_stops.append(route_stop)
-        
-        # Update current location and remove visited point
-        current_location = {'lat': nearest_point['lat'], 'lon': nearest_point['lon']}
-        unvisited.pop(nearest_index)
-        stop_order += 1
-    
-    # Add return trip if requested
-    if return_to_start and route_stops:
-        return_distance = calculate_distance(
-            current_location['lat'], current_location['lon'],
-            start_location['lat'], start_location['lon']
-        )
-        total_distance += return_distance
-    
-    # Estimate travel time (assuming average speed of 25 km/h in city traffic)
-    average_speed_kmh = 25
-    estimated_time_minutes = (total_distance / average_speed_kmh) * 60
-    
-    # Add time for stops (assuming 3 minutes per stop)
-    stop_time_minutes = len(route_stops) * 3
-    estimated_time_minutes += stop_time_minutes
-    
-    return OptimalRoute(
-        route_stops=route_stops,
-        total_distance_km=round(total_distance, 2),
-        estimated_time_minutes=round(estimated_time_minutes, 1),
-        start_location=start_location
-    )
-
-
-
-#TODO:
-
-# 1. Estimated pick up time - for employees 
-# 2. Estimated drop time - for employees 
-# 3. Estimated kms - employee to employee
-# 4. Estimated total time -  employee to employee
-# 4. Estimated total kms - beggining to end
-# 5. Estimated total time - including pick up and drop time
-# 6. Geder pick from employee table
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving routes: {str(e)}")

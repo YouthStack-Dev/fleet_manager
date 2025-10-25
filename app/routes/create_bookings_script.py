@@ -17,7 +17,7 @@ def create_bookings_script():
     # Headers (update with actual authorization token)
     headers = {
         "Content-Type": "application/json",
-        "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiMSIsIm9wYXF1ZV90b2tlbiI6ImE1NTQxN2YxOTYzMDBhOGMyNTZmYzQ4NDc0ZGIyZmViIiwidG9rZW5fdHlwZSI6ImFjY2VzcyIsInVzZXJfdHlwZSI6ImFkbWluIiwiZXhwIjoxNzYxNDAxMTU1LCJpYXQiOjE3NjEzMTQ3NTV9.hH5nbZ1-dG8yxMYNOq_a09iLUoC49804hvLuLpRq4S4"
+        "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiMSIsIm9wYXF1ZV90b2tlbiI6IjA3MTMxNTI4N2RiNmI3YThkNTE0NmUwODYyM2NmYjU3IiwidG9rZW5fdHlwZSI6ImFjY2VzcyIsInVzZXJfdHlwZSI6ImFkbWluIiwiZXhwIjoxNzYxNTA1NDc0LCJpYXQiOjE3NjE0MTkwNzR9.uAvtRfCoREQ69oydPf9B2hjNS9riWB9A9-R8rD5lQ3w"
     }
     
     # Office location (drop location for all bookings)

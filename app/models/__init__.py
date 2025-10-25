@@ -10,8 +10,6 @@ from app.models.tenant import Tenant
 from app.models.employee import Employee
 from app.models.shift import Shift
 from app.models.booking import Booking
-from app.models.route import Route
-from app.models.route_booking import RouteBooking
 from app.models.weekoff_config import WeekoffConfig
 from app.models.cutoff import Cutoff
 
@@ -19,3 +17,6 @@ from app.models.cutoff import Cutoff
 from app.models.iam.permission import Permission
 from app.models.iam.policy import Policy, policy_permission
 from app.models.iam.role import Role, role_policy
+
+# DO NOT IMPORT ANY ROUTE-RELATED MODELS HERE
+# The error suggests there's still a conflicting route model being imported

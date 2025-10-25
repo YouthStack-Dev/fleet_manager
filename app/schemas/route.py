@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime
 from enum import Enum
 
@@ -10,51 +10,70 @@ class RouteStatusEnum(str, Enum):
     COMPLETED = "Completed"
     CANCELLED = "Cancelled"
 
-class RouteBase(BaseModel):
-    shift_id: Optional[int] = None
-    route_code: str
-    status: RouteStatusEnum = RouteStatusEnum.PLANNED
-    planned_distance_km: Optional[float] = None
-    planned_duration_minutes: Optional[int] = None
-    actual_distance_km: Optional[float] = None
-    actual_duration_minutes: Optional[int] = None
-    actual_start_time: Optional[datetime] = None
-    actual_end_time: Optional[datetime] = None
-    optimized_polyline: Optional[str] = None
-    assigned_vendor_id: Optional[int] = None
-    assigned_vehicle_id: Optional[int] = None
-    assigned_driver_id: Optional[int] = None
-    is_active: bool = True
-    version: int = 1
+class RouteManagementBookingBase(BaseModel):
+    booking_id: int
+    stop_order: int
+    estimated_pickup_time: Optional[str] = None
+    estimated_drop_time: Optional[str] = None
+    distance_from_previous: Optional[float] = None
+    cumulative_distance: Optional[float] = None
 
-class RouteCreate(RouteBase):
+class RouteManagementBookingCreate(RouteManagementBookingBase):
     pass
 
-class RouteUpdate(BaseModel):
-    shift_id: Optional[int] = None
-    route_code: Optional[str] = None
-    status: Optional[RouteStatusEnum] = None
-    planned_distance_km: Optional[float] = None
-    planned_duration_minutes: Optional[int] = None
-    actual_distance_km: Optional[float] = None
-    actual_duration_minutes: Optional[int] = None
-    actual_start_time: Optional[datetime] = None
-    actual_end_time: Optional[datetime] = None
-    optimized_polyline: Optional[str] = None
-    assigned_vendor_id: Optional[int] = None
-    assigned_vehicle_id: Optional[int] = None
-    assigned_driver_id: Optional[int] = None
-    is_active: Optional[bool] = None
-    version: Optional[int] = None
-
-class RouteResponse(RouteBase):
-    route_id: int
+class RouteManagementBookingResponse(RouteManagementBookingBase):
+    id: int
+    route_id: str
     created_at: datetime
-    updated_at: datetime
 
     class Config:
         from_attributes = True
 
-class RoutePaginationResponse(BaseModel):
-    total: int
-    items: List[RouteResponse]
+class RouteManagementBase(BaseModel):
+    route_id: str
+    tenant_id: str
+    route_code: str
+    total_distance_km: Optional[float] = None
+    total_time_minutes: Optional[float] = None
+
+class RouteManagementCreate(BaseModel):
+    route_id: str
+    tenant_id: str
+    route_code: str
+    bookings: List[RouteManagementBookingCreate]
+
+class RouteManagementUpdate(BaseModel):
+    total_distance_km: Optional[float] = None
+    total_time_minutes: Optional[float] = None
+    bookings: Optional[List[RouteManagementBookingCreate]] = None
+
+class RouteManagementResponse(RouteManagementBase):
+    status: RouteStatusEnum
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    route_management_bookings: List[RouteManagementBookingResponse] = []
+
+    class Config:
+        from_attributes = True
+
+class RouteEstimations(BaseModel):
+    total_distance_km: float
+    total_time_minutes: float
+    estimated_pickup_times: Dict[int, str]  # booking_id -> time
+    estimated_drop_times: Dict[int, str]    # booking_id -> time
+
+# Keep the existing RouteWithEstimations but import BookingResponse properly
+class RouteWithEstimations(BaseModel):
+    route_id: str
+    bookings: List[Dict]  # Use Dict instead of BookingResponse to avoid import issues
+    estimations: RouteEstimations
+
+# Legacy aliases for backward compatibility
+RouteBookingBase = RouteManagementBookingBase
+RouteBookingCreate = RouteManagementBookingCreate
+RouteBookingResponse = RouteManagementBookingResponse
+RouteBase = RouteManagementBase
+RouteCreate = RouteManagementCreate
+RouteUpdate = RouteManagementUpdate
+RouteResponse = RouteManagementResponse

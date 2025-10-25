@@ -58,4 +58,3 @@ class Booking(Base):
     employee = relationship("Employee", back_populates="bookings")
     shift = relationship("Shift", back_populates="bookings")
     team = relationship("Team", back_populates="bookings")
-    route_bookings = relationship("RouteBooking", back_populates="booking", cascade="all, delete-orphan")
