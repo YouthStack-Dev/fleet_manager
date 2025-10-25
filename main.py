@@ -33,6 +33,7 @@ from app.routes import (
     route_router,
     route_booking_router,
     weekoff_config_router,
+    route_grouping,  # Add the route_grouping import
     
     auth_router  # Add the new auth router
 )
@@ -89,6 +90,7 @@ app.include_router(cutoff_router, prefix="/api/v1")
 # app.include_router(route_router, prefix="/api/v1")
 # app.include_router(route_booking_router, prefix="/api/v1")
 app.include_router(weekoff_config_router, prefix="/api/v1")
+app.include_router(route_grouping.router, prefix="/api/v1")  # Add the route_grouping router
 app.include_router(auth_router, prefix="/api/v1")  # Add the auth router
 
 # Include IAM routers
