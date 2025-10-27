@@ -2,7 +2,7 @@
 from sqlalchemy import func
 from app.models.cutoff import Cutoff
 from app.models.employee import Employee
-from app.models.shift import Shift
+from app.models.shift import Shift, ShiftLogTypeEnum
 from app.models.tenant import Tenant
 from app.models.weekoff_config import WeekoffConfig
 from fastapi import APIRouter, Depends, HTTPException, Path, status, Query,Body
@@ -571,6 +571,7 @@ def cancel_booking(
 async def get_bookings_grouped_by_shift(
     tenant_id: str = Path(..., description="Tenant ID (required for admin users)"),
     booking_date: date = Query(..., description="Filter by booking date (YYYY-MM-DD)"),
+    log_type: Optional[ShiftLogTypeEnum] = Query(None, description="Optional shift type filter (e.g., IN, OUT)"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True))
 ):
@@ -605,22 +606,25 @@ async def get_bookings_grouped_by_shift(
         )
 
         # Query join to avoid N+1 problems
-        records = (
-            db.query(Booking, Shift.shift_code, Shift.shift_time)
+        query = (
+            db.query(Booking, Shift.shift_code, Shift.shift_time, Shift.log_type)
             .join(Shift, Shift.shift_id == Booking.shift_id)
             .filter(
                 Booking.tenant_id == effective_tenant_id,
                 func.date(Booking.booking_date) == booking_date
             )
-            .order_by(Shift.shift_time)
-            .all()
         )
 
-        logger.info(f"Fetched {len(records)} bookings")
+        if log_type:
+            query = query.filter(Shift.log_type == log_type)
+
+        records = query.order_by(Shift.shift_time).all()
+
+        logger.info(f"Fetched {len(records)} bookings after applying filters")
 
         grouped = {}
 
-        for booking_obj, shift_code, shift_time in records:
+        for booking_obj, shift_code, shift_time, shift_log_type in records:
             sid = booking_obj.shift_id
 
             if sid not in grouped:
@@ -628,10 +632,10 @@ async def get_bookings_grouped_by_shift(
                     "shift_id": sid,
                     "shift_code": shift_code,
                     "shift_time": shift_time,
+                    "log_type": shift_log_type,       # ✅ Correct source
                     "bookings": []
                 }
 
-            # Serialize full booking using your model
             grouped[sid]["bookings"].append(
                 BookingResponse.model_validate(booking_obj, from_attributes=True)
             )
