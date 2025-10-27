@@ -1,3 +1,4 @@
+import uuid
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status, Depends, Header, Query
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
@@ -70,12 +71,12 @@ def generate_payload(i: int, tenant_id: str, team_id: Optional[int]):
     
     name = f"{random.choice(first_names)} {random.choice(last_names)}"
 
-    email = f"seed{i}@{tenant_id.lower()}.com"
+    email = f"{tenant_id[:3].upper()}{uuid.uuid4().hex[:4].upper()}@gmail.com"
     return {
         "name": name,
         "email": email,
         "phone": f"+91{random.randint(7000000000, 9999999999)}",
-        "employee_code": f"EMP{i:04d}",
+        "employee_code": f"{tenant_id[:3].upper()}{uuid.uuid4().hex[:4].upper()}",
         "password": DEFAULT_PASSWORD,
         "tenant_id": tenant_id,
         "team_id": team_id,
