@@ -33,9 +33,11 @@ from app.routes import (
     route_router,
     route_booking_router,
     weekoff_config_router,
+    route_grouping,  # Add the route_grouping import
     
     auth_router  # Add the new auth router
 )
+from app.seed.seed_api import router as seed_router
 
 # Import the IAM routers
 from app.routes.iam import permission_router, policy_router, role_router
@@ -75,6 +77,7 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(seed_router, prefix="/api/v1")
 app.include_router(employee_router, prefix="/api/v1")
 app.include_router(driver_router, prefix="/api/v1")
 app.include_router(booking_router, prefix="/api/v1")
@@ -89,6 +92,7 @@ app.include_router(cutoff_router, prefix="/api/v1")
 # app.include_router(route_router, prefix="/api/v1")
 # app.include_router(route_booking_router, prefix="/api/v1")
 app.include_router(weekoff_config_router, prefix="/api/v1")
+app.include_router(route_grouping.router, prefix="/api/v1")  # Add the route_grouping router
 app.include_router(auth_router, prefix="/api/v1")  # Add the auth router
 
 # Include IAM routers
