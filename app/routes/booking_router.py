@@ -1,4 +1,5 @@
 
+from sqlalchemy import func
 from app.models.cutoff import Cutoff
 from app.models.employee import Employee
 from app.models.shift import Shift
@@ -252,7 +253,7 @@ def create_booking(
 def get_bookings(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True)),
-    booking_date: Optional[date] = Query(None, description="Filter by booking date"),
+    booking_date: date = Query(..., description="Filter by booking date"),
     tenant_id: Optional[str] = None,
     status_filter: Optional[BookingStatusEnum] = Query(None, description="Filter by booking status"),
     skip: int = Query(0, ge=0),
@@ -262,6 +263,7 @@ def get_bookings(
         # --- Determine effective tenant ---
         user_type = user_data.get("user_type")
         if user_type == "admin":
+            tenant_id = tenant_id
             if not tenant_id:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -293,6 +295,7 @@ def get_bookings(
         # --- Build query ---
         query = db.query(Booking).filter(Booking.tenant_id == effective_tenant_id)
         if booking_date:
+            logger.info(f"Applying date filter: {booking_date}")
             query = query.filter(Booking.booking_date == booking_date)
         if status_filter:
             query = query.filter(Booking.status == status_filter)
@@ -321,7 +324,13 @@ def get_bookings(
         raise handle_http_error(e)
     except Exception as e:
         logger.exception("Unexpected error occurred while fetching bookings")
-        raise handle_http_error(e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message="Unexpected error occurred while fetching bookings",
+                error_code="UNEXPECTED_ERROR",
+            ),
+        )
 
 
 
@@ -373,6 +382,7 @@ def get_bookings_by_employee(
             query = query.filter(Booking.employee_code == employee_code)
 
         if booking_date:
+            logger.info(f"Fetching employee bookings for employee_id={employee_id}, employee_code={employee_code}, date={booking_date}")
             query = query.filter(Booking.booking_date == booking_date)
         if status_filter:        
             query = query.filter(Booking.status == status_filter)
@@ -556,4 +566,98 @@ def cancel_booking(
         raise HTTPException(
             status_code=500,
             detail=ResponseWrapper.error(message="Internal Server Error", error_code="INTERNAL_ERROR")
+        )
+@router.get("/tenant/{tenant_id}/shifts/bookings", status_code=status.HTTP_200_OK)
+async def get_bookings_grouped_by_shift(
+    tenant_id: str = Path(..., description="Tenant ID (required for admin users)"),
+    booking_date: date = Query(..., description="Filter by booking date (YYYY-MM-DD)"),
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True))
+):
+    try:
+        user_type = user_data.get("user_type")
+
+        # Determine tenant context
+        if user_type == "admin":
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Admin must provide tenant_id",
+                        error_code="TENANT_ID_REQUIRED"
+                    ),
+                )
+            effective_tenant_id = tenant_id
+        elif user_type == "employee":
+            effective_tenant_id = user_data.get("tenant_id")
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You are not authorized to view bookings",
+                    error_code="FORBIDDEN"
+                ),
+            )
+
+        logger.info(
+            f"Fetching grouped bookings: user_type={user_type}, "
+            f"tenant_id={effective_tenant_id}, date={booking_date}"
+        )
+
+        # Query join to avoid N+1 problems
+        records = (
+            db.query(Booking, Shift.shift_code, Shift.shift_time)
+            .join(Shift, Shift.shift_id == Booking.shift_id)
+            .filter(
+                Booking.tenant_id == effective_tenant_id,
+                func.date(Booking.booking_date) == booking_date
+            )
+            .order_by(Shift.shift_time)
+            .all()
+        )
+
+        logger.info(f"Fetched {len(records)} bookings")
+
+        grouped = {}
+
+        for booking_obj, shift_code, shift_time in records:
+            sid = booking_obj.shift_id
+
+            if sid not in grouped:
+                grouped[sid] = {
+                    "shift_id": sid,
+                    "shift_code": shift_code,
+                    "shift_time": shift_time,
+                    "bookings": []
+                }
+
+            # Serialize full booking using your model
+            grouped[sid]["bookings"].append(
+                BookingResponse.model_validate(booking_obj, from_attributes=True)
+            )
+
+        result = sorted(grouped.values(), key=lambda x: x["shift_time"])
+
+
+        return ResponseWrapper.success(
+            data={
+                "date": booking_date,
+                "shifts": result
+            },
+            message="Bookings grouped by shift fetched successfully"
+        )
+
+    except SQLAlchemyError as e:
+        logger.exception("Database error occurred while fetching grouped bookings")
+        raise handle_db_error(e)
+    except HTTPException as e:
+        raise handle_http_error(e)
+    except Exception as e:
+        logger.exception("Unexpected error occurred while fetching grouped bookings")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message="Unexpected error occurred while fetching bookings",
+                error_code="UNEXPECTED_ERROR"
+            )
         )
