@@ -37,6 +37,7 @@ from app.routes import (
     
     auth_router  # Add the new auth router
 )
+from app.seed.seed_api import router as seed_router
 
 # Import the IAM routers
 from app.routes.iam import permission_router, policy_router, role_router
@@ -76,6 +77,7 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(seed_router, prefix="/api/v1")
 app.include_router(employee_router, prefix="/api/v1")
 app.include_router(driver_router, prefix="/api/v1")
 app.include_router(booking_router, prefix="/api/v1")
