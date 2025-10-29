@@ -30,8 +30,6 @@ from app.routes import (
     team_router,
     shift_router,
     cutoff_router,
-    route_router,
-    route_booking_router,
     weekoff_config_router,
     route_grouping,  # Add the route_grouping import
     

@@ -14,6 +14,10 @@ from app.models.route_management import RouteManagement, RouteManagementBooking
 from app.schemas.route import RouteWithEstimations, RouteEstimations
 from app.schemas.booking import BookingResponse
 from app.services.geodesic import group_rides
+from common_utils.auth.permission_checker import PermissionChecker
+from app.core.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(
     prefix="/route-grouping",
@@ -90,7 +94,8 @@ async def get_bookings_by_date_and_shift(
     radius: float = Query(1.0, description="Radius in km for clustering"),
     group_size: int = Query(2, description="Number of route clusters to generate"),
     strict_grouping: bool = Query(False, description="Whether to enforce strict grouping by group size or not"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route.read"], check_tenant=True)),
 ):
     """
     Get all bookings for a specific date and shift ID and generate route clusters.
@@ -105,6 +110,7 @@ async def get_bookings_by_date_and_shift(
         Dictionary containing original bookings and generated route clusters
     """
     try:
+        logger.info(f"User info from token: {user_data}")
         shift = db.query(Shift).filter(Shift.shift_id == shift_id).first()
 
         shift_type = shift.log_type if shift else "Unknown"
@@ -269,7 +275,8 @@ def save_route_to_db(route_id: str, booking_ids: List[int], estimations: RouteEs
 async def save_confirm_routes(
     request: SaveConfirmRequest,
     tenant_id: str = Query(..., description="Tenant ID"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route.write"], check_tenant=True)),
 ):
     """
     Save/Confirm route groups and generate optimal routes with estimations.
@@ -312,7 +319,8 @@ async def save_confirm_routes(
 async def merge_routes(
     request: MergeRequest,
     tenant_id: str = Query(..., description="Tenant ID"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route.write"], check_tenant=True)),
 ):
     """
     Merge multiple routes into a single optimized route.
@@ -379,7 +387,8 @@ async def merge_routes(
 async def split_route(
     request: SplitRequest,
     tenant_id: str = Query(..., description="Tenant ID"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route.write"], check_tenant=True)),
 ):
     """
     Split a route into multiple routes based on provided booking ID groups.
@@ -432,7 +441,8 @@ async def split_route(
 @router.put("/update", response_model=RouteWithEstimations)
 async def update_route(
     request: UpdateRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route.update"], check_tenant=True)),
 ):
     """
     Update a route by extending it with new booking assignments.
@@ -506,7 +516,8 @@ async def update_route(
 @router.delete("/delete/{route_id}")
 async def delete_route(
     route_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route.delete"], check_tenant=True)),
 ):
     """
     Delete a route by its ID.
@@ -545,7 +556,8 @@ async def delete_route(
 @router.get("/routes")
 async def get_all_routes(
     tenant_id: str = Query(..., description="Tenant ID"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route.read"], check_tenant=True)),
 ):
     """
     Get all active routes with their details.
@@ -604,7 +616,8 @@ async def get_all_routes(
 async def get_route_by_id(
     route_id: str,
     tenant_id: str = Query(..., description="Tenant ID"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route.read"], check_tenant=True)),
 ):
     """
     Get details of a specific route by its ID.
