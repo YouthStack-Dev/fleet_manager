@@ -30,7 +30,7 @@ class RouteManagementBookingResponse(RouteManagementBookingBase):
         from_attributes = True
 
 class RouteManagementBase(BaseModel):
-    route_id: str
+    route_id: int  # Changed from str to int
     tenant_id: str
     route_code: str
     total_distance_km: Optional[float] = None
@@ -65,7 +65,7 @@ class RouteEstimations(BaseModel):
 
 # Keep the existing RouteWithEstimations but import BookingResponse properly
 class RouteWithEstimations(BaseModel):
-    route_id: str
+    route_id: int  # Changed from str to int
     bookings: List[Dict]  # Use Dict instead of BookingResponse to avoid import issues
     estimations: RouteEstimations
 
