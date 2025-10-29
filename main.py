@@ -31,7 +31,9 @@ from app.routes import (
     shift_router,
     cutoff_router,
     weekoff_config_router,
-    route_grouping,  # Add the route_grouping import
+    route_grouping,  # Keep for backward compatibility
+    grouping,        # Add new grouping router
+    route_management, # Add new route management router
     
     auth_router  # Add the new auth router
 )
@@ -90,7 +92,9 @@ app.include_router(cutoff_router, prefix="/api/v1")
 # app.include_router(route_router, prefix="/api/v1")
 # app.include_router(route_booking_router, prefix="/api/v1")
 app.include_router(weekoff_config_router, prefix="/api/v1")
-app.include_router(route_grouping.router, prefix="/api/v1")  # Add the route_grouping router
+app.include_router(route_grouping.router, prefix="/api/v1")  # Keep for backward compatibility (deprecated)
+app.include_router(grouping.router, prefix="/api/v1")        # Add new grouping router
+app.include_router(route_management.router, prefix="/api/v1") # Add new route management router
 app.include_router(auth_router, prefix="/api/v1")  # Add the auth router
 
 # Include IAM routers
