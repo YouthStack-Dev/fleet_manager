@@ -264,6 +264,32 @@ async def create_routes(
                     ),
                 )
 
+            # ---- Check if any booking is already assigned to another active route ----
+            existing_routes = (
+                db.query(RouteManagement.route_id, RouteManagementBooking.booking_id)
+                .join(RouteManagementBooking, RouteManagement.route_id == RouteManagementBooking.route_id)
+                .filter(
+                    RouteManagementBooking.booking_id.in_(group.booking_ids),
+                    RouteManagement.tenant_id == tenant_id,
+                    RouteManagement.is_active == True,
+                )
+                .all()
+            )
+
+            if existing_routes:
+                existing_route_ids = list({r.route_id for r in existing_routes})
+                already_assigned_bookings = list({r.booking_id for r in existing_routes})
+                raise HTTPException(
+                    status_code=400,
+                    detail=ResponseWrapper.error(
+                        message="Some bookings are already assigned to existing routes",
+                        error_code="BOOKINGS_ALREADY_ASSIGNED",
+                        details={
+                            "already_assigned_bookings": already_assigned_bookings,
+                            "existing_route_ids": existing_route_ids,
+                        },
+                    ),
+                )
             # ---- Strict per-group validations ----
             tenant_ids = {b["tenant_id"] for b in bookings if b.get("tenant_id")}
             booking_dates = {b["booking_date"] for b in bookings if b.get("booking_date")}
