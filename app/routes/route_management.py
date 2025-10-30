@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query ,status
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict
 from pydantic import BaseModel
@@ -46,29 +46,52 @@ class UpdateRouteRequest(BaseModel):
 def get_bookings_by_ids(booking_ids: List[int], db: Session) -> List[Dict]:
     """
     Retrieve bookings by their IDs and convert to dictionary format.
+    Adds detailed logs for traceability.
     """
+    logger.info(f"[get_bookings_by_ids] Raw booking_ids input: {booking_ids}")
+
     if not booking_ids:
+        logger.warning("[get_bookings_by_ids] Empty booking_ids list received.")
         return []
-    
-    # Ensure booking_ids is a flat list of integers
+
+    # ---- Flatten nested IDs if needed ----
     if isinstance(booking_ids[0], (tuple, list)):
-        # If nested, flatten it
         flat_booking_ids = []
         for item in booking_ids:
             if isinstance(item, (tuple, list)):
-                flat_booking_ids.extend([int(x) for x in item if isinstance(x, (int, str)) and str(x).isdigit()])
+                flat_booking_ids.extend(
+                    [int(x) for x in item if isinstance(x, (int, str)) and str(x).isdigit()]
+                )
             else:
                 flat_booking_ids.append(int(item))
         booking_ids = flat_booking_ids
-    
-    # Convert all to integers to ensure type consistency
-    booking_ids = [int(bid) for bid in booking_ids if isinstance(bid, (int, str)) and str(bid).isdigit()]
-    
+        logger.debug(f"[get_bookings_by_ids] Flattened booking_ids: {booking_ids}")
+
+    # ---- Normalize all IDs to integers ----
+    booking_ids = [
+        int(bid) for bid in booking_ids if isinstance(bid, (int, str)) and str(bid).isdigit()
+    ]
+
     if not booking_ids:
+        logger.warning("[get_bookings_by_ids] No valid integer booking_ids after cleanup.")
         return []
-    
+
+    logger.info(f"[get_bookings_by_ids] Final booking_ids to query: {booking_ids}")
+
+    # ---- Query bookings ----
     bookings = db.query(Booking).filter(Booking.booking_id.in_(booking_ids)).all()
-    return [
+    logger.info(f"[get_bookings_by_ids] Retrieved {len(bookings)} bookings from DB")
+
+    # ---- Log detailed booking info ----
+    for b in bookings:
+        logger.debug(
+            f"[get_bookings_by_ids] Booking fetched → "
+            f"id={b.booking_id}, tenant={b.tenant_id}, shift={b.shift_id}, date={b.booking_date}, "
+            f"employee={b.employee_code or b.employee_id}, status={b.status.name if b.status else None}"
+        )
+
+    # ---- Convert to dictionaries ----
+    bookings_dicts = [
         {
             "booking_id": booking.booking_id,
             "tenant_id": booking.tenant_id,
@@ -91,6 +114,11 @@ def get_bookings_by_ids(booking_ids: List[int], db: Session) -> List[Dict]:
         }
         for booking in bookings
     ]
+
+    if not bookings_dicts:
+        logger.warning(f"[get_bookings_by_ids] No matching bookings found for IDs {booking_ids}")
+
+    return bookings_dicts
 
 def calculate_route_estimations(bookings: List[Dict], shift_type: str = "OUT") -> RouteEstimations:
     """
@@ -153,84 +181,208 @@ def save_route_to_db(booking_ids: List[int], estimations: RouteEstimations, tena
 @router.post("/")
 async def create_routes(
     request: CreateRoutesRequest,
-    tenant_id: str = Query(..., description="Tenant ID"),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["route.create"], check_tenant=True)),
 ):
     """
     Create routes from grouped bookings with estimations.
+    Validations:
+      - All booking IDs in a group belong to the same tenant.
+      - All bookings share the same date.
+      - All bookings share the same shift.
     """
     try:
-        logger.info(f"Creating {len(request.groups)} routes for tenant: {tenant_id}, user: {user_data.get('user_id', 'unknown')}")
-        
-        # Validate tenant exists
+        logger.info(f"[create_routes] Received request with {len(request.groups)} group(s) | Raw tenant={tenant_id} | User={user_data.get('user_id')}")
+
+        # ---- Determine effective tenant_id ----
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        if user_type == "employee":
+            tenant_id = token_tenant_id
+        elif user_type == "admin" and not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="tenant_id is required for admin users",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+        else:
+            tenant_id = token_tenant_id
+
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant context not available",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+
+        logger.info(f"[create_routes] Effective tenant resolved: {tenant_id}")
+
+        # ---- Validate tenant exists ----
         tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
         if not tenant:
-            logger.warning(f"Tenant {tenant_id} not found")
             raise HTTPException(
                 status_code=404,
                 detail=ResponseWrapper.error(
                     message=f"Tenant {tenant_id} not found",
                     error_code="TENANT_NOT_FOUND",
-                    details={"tenant_id": tenant_id}
-                )
+                ),
             )
-        
+
         if not request.groups:
             raise HTTPException(
                 status_code=400,
                 detail=ResponseWrapper.error(
                     message="No route groups provided",
-                    error_code="NO_GROUPS_PROVIDED"
-                )
+                    error_code="NO_GROUPS_PROVIDED",
+                ),
             )
-        
+
+        # ---- Collect validations across all groups ----
+        all_booking_dates = set()
+        all_shift_ids = set()
+        all_tenant_ids = set()
+
         routes = []
-        
-        for group in request.groups:
-            # Get bookings for this group
-            bookings = get_bookings_by_ids(group.booking_ids, db)  # Changed from group.bookings to group.booking_ids
-            
+        for idx, group in enumerate(request.groups, start=1):
+            logger.info(f"[create_routes] ─── Processing group #{idx} ({len(group.booking_ids)} bookings) ───")
+
+            bookings = get_bookings_by_ids(group.booking_ids, db)
+            logger.info(f"[create_routes] Retrieved {len(bookings)} booking(s) for group #{idx}: {[b['booking_id'] for b in bookings]}")
+
             if not bookings:
                 raise HTTPException(
                     status_code=404,
                     detail=ResponseWrapper.error(
-                        message=f"No bookings found for group {group.booking_ids}",
+                        message=f"No bookings found for IDs {group.booking_ids}",
                         error_code="NO_BOOKINGS_FOUND",
-                        details={"booking_ids": group.booking_ids}  # Updated details
-                    )
+                    ),
                 )
-            
-            # Calculate estimations
-            estimations = calculate_route_estimations(bookings)
-            
-            # Save to database - route_id will be auto-generated
-            saved_route = save_route_to_db(group.booking_ids, estimations, tenant_id, db)  # Changed from group.bookings to group.booking_ids
-            
-            # Create route response
-            route = RouteWithEstimations(
-                route_id=saved_route.route_id,  # Use the auto-generated route_id
-                bookings=bookings,
-                estimations=estimations
+
+            # ---- Check if any booking is already assigned to another active route ----
+            existing_routes = (
+                db.query(RouteManagement.route_id, RouteManagementBooking.booking_id)
+                .join(RouteManagementBooking, RouteManagement.route_id == RouteManagementBooking.route_id)
+                .filter(
+                    RouteManagementBooking.booking_id.in_(group.booking_ids),
+                    RouteManagement.tenant_id == tenant_id,
+                    RouteManagement.is_active == True,
+                )
+                .all()
             )
-            routes.append(route)
-        
-        logger.info(f"Successfully created {len(routes)} routes")
-        
+
+            if existing_routes:
+                existing_route_ids = list({r.route_id for r in existing_routes})
+                already_assigned_bookings = list({r.booking_id for r in existing_routes})
+                raise HTTPException(
+                    status_code=400,
+                    detail=ResponseWrapper.error(
+                        message="Some bookings are already assigned to existing routes",
+                        error_code="BOOKINGS_ALREADY_ASSIGNED",
+                        details={
+                            "already_assigned_bookings": already_assigned_bookings,
+                            "existing_route_ids": existing_route_ids,
+                        },
+                    ),
+                )
+            # ---- Strict per-group validations ----
+            tenant_ids = {b["tenant_id"] for b in bookings if b.get("tenant_id")}
+            booking_dates = {b["booking_date"] for b in bookings if b.get("booking_date")}
+            shift_ids = {b["shift_id"] for b in bookings if b.get("shift_id")}
+
+            if len(tenant_ids) != 1 or tenant_id not in tenant_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=ResponseWrapper.error(
+                        message="All bookings in a group must belong to the same tenant",
+                        error_code="CROSS_TENANT_BOOKINGS",
+                        details={"expected_tenant": tenant_id, "found_tenants": list(tenant_ids)},
+                    ),
+                )
+
+            if len(booking_dates) != 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail=ResponseWrapper.error(
+                        message="All bookings in a route must have the same booking date",
+                        error_code="MIXED_BOOKING_DATES",
+                        details={"booking_dates": list(booking_dates)},
+                    ),
+                )
+
+            if len(shift_ids) != 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail=ResponseWrapper.error(
+                        message="All bookings in a route must belong to the same shift",
+                        error_code="MIXED_SHIFTS",
+                        details={"shift_ids": list(shift_ids)},
+                    ),
+                )
+
+            # ---- Collect global-level validations ----
+            all_booking_dates.update(booking_dates)
+            all_shift_ids.update(shift_ids)
+            all_tenant_ids.update(tenant_ids)
+
+            booking_date = list(booking_dates)[0]
+            shift_id = list(shift_ids)[0]
+            logger.info(f"[create_routes] ✅ Valid group | Tenant={tenant_id} | Date={booking_date} | Shift={shift_id}")
+
+            estimations = calculate_route_estimations(bookings)
+            saved_route = save_route_to_db(group.booking_ids, estimations, tenant_id, db)
+
+            routes.append(
+                RouteWithEstimations(
+                    route_id=saved_route.route_id,
+                    bookings=bookings,
+                    estimations=estimations,
+                )
+            )
+
+        # ---- Cross-group (global) validations ----
+        if len(all_booking_dates) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail=ResponseWrapper.error(
+                    message="All groups in this request must have bookings from the same date",
+                    error_code="MULTIPLE_BOOKING_DATES_IN_REQUEST",
+                    details={"booking_dates": list(all_booking_dates)},
+                ),
+            )
+
+        if len(all_shift_ids) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail=ResponseWrapper.error(
+                    message="All groups in this request must belong to the same shift",
+                    error_code="MULTIPLE_SHIFTS_IN_REQUEST",
+                    details={"shift_ids": list(all_shift_ids)},
+                ),
+            )
+
+        logger.info(f"[create_routes] ✅ Successfully created {len(routes)} route(s)")
         return ResponseWrapper.success(
-            data=routes,
-            message=f"Successfully created {len(routes)} routes"
+            data={"routes": routes},
+            message=f"Successfully created {len(routes)} route(s)",
         )
-    
+
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
+        logger.exception("[create_routes] Unexpected error")
         return handle_db_error(e)
+
 
 @router.get("/")
 async def get_all_routes(
-    tenant_id: str = Query(..., description="Tenant ID"),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     shift_id: Optional[int] = Query(None, description="Filter by shift ID"),
     booking_date: Optional[date] = Query(None, description="Filter by booking date"),
     db: Session = Depends(get_db),
@@ -240,20 +392,46 @@ async def get_all_routes(
     Get all active routes with their details, optionally filtered by shift and booking date.
     """
     try:
-        logger.info(f"Fetching all routes for tenant: {tenant_id}, shift_id: {shift_id}, booking_date: {booking_date}, user: {user_data.get('user_id', 'unknown')}")
-        
-        # Validate tenant exists
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        if user_type == "employee":
+            tenant_id = token_tenant_id
+        elif user_type == "admin" and not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="tenant_id is required for admin users",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+        else:
+            tenant_id = token_tenant_id
+
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant context not available",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+
+        logger.info(f"[create_routes] Effective tenant resolved: {tenant_id}")
+
+        # ---- Validate tenant exists ----
         tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
         if not tenant:
-            logger.warning(f"Tenant {tenant_id} not found")
             raise HTTPException(
                 status_code=404,
                 detail=ResponseWrapper.error(
                     message=f"Tenant {tenant_id} not found",
                     error_code="TENANT_NOT_FOUND",
-                    details={"tenant_id": tenant_id}
-                )
+                ),
             )
+        logger.info(f"Fetching all routes for tenant: {tenant_id}, shift_id: {shift_id}, booking_date: {booking_date}, user: {user_data.get('user_id', 'unknown')}")
+        
+
         
         # Base query for routes
         if shift_id or booking_date:
@@ -372,7 +550,7 @@ async def get_all_routes(
 @router.get("/{route_id}")
 async def get_route_by_id(
     route_id: int,  # Changed from str to int
-    tenant_id: str = Query(..., description="Tenant ID"),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["route.read"], check_tenant=True)),
 ):
@@ -380,6 +558,30 @@ async def get_route_by_id(
     Get details of a specific route by its ID.
     """
     try:
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        if user_type == "employee":
+            tenant_id = token_tenant_id
+        elif user_type == "admin" and not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="tenant_id is required for admin users",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+        else:
+            tenant_id = token_tenant_id
+
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant context not available",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
         logger.info(f"Fetching route {route_id} for tenant: {tenant_id}, user: {user_data.get('user_id', 'unknown')}")
         
         # Validate tenant exists
