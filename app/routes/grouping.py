@@ -1,12 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
 from datetime import date
 from pydantic import BaseModel
 
+import app
 from app.database.session import get_db
 from app.models.booking import Booking
 from app.models.shift import Shift
+from app.schemas.shift import ShiftResponse
 from app.services.geodesic import group_rides
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
@@ -16,7 +18,7 @@ logger = get_logger(__name__)
 
 router = APIRouter(
     prefix="/grouping",
-    tags=["clusters"]
+    tags=["route-suggestion"],
 )
 
 class BookingInput(BaseModel):
@@ -37,13 +39,14 @@ class ClusterGenerationRequest(BaseModel):
     radius: int = 1
     strict_grouping: bool = False
 
-@router.get("/bookings/cluster-by-date-shift")
-async def cluster_bookings_by_date_and_shift(
+@router.get("/bookings/routesuggestion")
+async def route_suggestion(
     booking_date: date = Query(..., description="Date for the bookings (YYYY-MM-DD)"),
     shift_id: int = Query(..., description="Shift ID to filter bookings"),
     radius: float = Query(1.0, description="Radius in km for clustering"),
     group_size: int = Query(2, description="Number of route clusters to generate"),
     strict_grouping: bool = Query(False, description="Whether to enforce strict grouping by group size or not"),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID for multi-tenant setups"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["route.read"], check_tenant=True)),
 ):
@@ -52,16 +55,48 @@ async def cluster_bookings_by_date_and_shift(
     """
     try:
         logger.info(f"Clustering request for date: {booking_date}, shift: {shift_id}, user: {user_data.get('user_id', 'unknown')}")
-        
-        shift = db.query(Shift).filter(Shift.shift_id == shift_id).first()
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        # ---- Determine effective tenant_id ----
+        if user_type == "employee":
+            tenant_id = token_tenant_id
+        elif user_type == "admin":
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="tenant_id is required for admin users",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+        else:
+            tenant_id = token_tenant_id
+
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant context not available",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+
+        # ---- Validate shift belongs to this tenant ----
+        shift = (
+            db.query(Shift)
+            .filter(Shift.shift_id == shift_id, Shift.tenant_id == tenant_id)
+            .first()
+        )
+
         if not shift:
             logger.warning(f"Shift not found: {shift_id}")
             raise HTTPException(
                 status_code=404,
                 detail=ResponseWrapper.error(
-                    message=f"Shift {shift_id} not found",
-                    error_code="SHIFT_NOT_FOUND"
-                )
+                    message=f"Shift {shift_id} not found or doesn't belong to this tenant",
+                    error_code="SHIFT_NOT_FOUND_OR_UNAUTHORIZED"
+                ),
             )
 
         shift_type = shift.log_type if shift else "Unknown"
@@ -74,8 +109,10 @@ async def cluster_bookings_by_date_and_shift(
 
         bookings = db.query(Booking).filter(
             Booking.booking_date == booking_date,
-            Booking.shift_id == shift_id
+            Booking.shift_id == shift_id,
+            Booking.tenant_id == tenant_id
         ).all()
+
         
         if not bookings:
             logger.info(f"No bookings found for date {booking_date} and shift {shift_id}")
@@ -130,8 +167,10 @@ async def cluster_bookings_by_date_and_shift(
 
         logger.info(f"Successfully generated {len(cluster_updated)} clusters from {len(bookings)} bookings")
         
+        shift_response = ShiftResponse.model_validate(shift, from_attributes=True)
         return ResponseWrapper.success(
             data={
+                "shift": shift_response,
                 "clusters": cluster_updated,
                 "total_bookings": len(bookings),
                 "total_clusters": len(clusters),
