@@ -1019,73 +1019,110 @@ async def update_route(
 
 @router.delete("/{route_id}")
 async def delete_route(
-    route_id: int,  # Changed from str to int
-    tenant_id: str = Query(..., description="Tenant ID"),
+    route_id: int,
+    tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["route.delete"], check_tenant=True)),
 ):
     """
-    Delete a route by its ID.
+    Delete (soft delete) a route by its ID.
     """
     try:
-        logger.info(f"Deleting route {route_id}, user: {user_data.get('user_id', 'unknown')}")
-        
-        # Validate tenant exists
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+        user_id = user_data.get("user_id", "unknown")
+
+        # Determine tenant context
+        if user_type == "employee":
+            tenant_id = token_tenant_id
+        elif user_type == "admin":
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="tenant_id is required for admin users",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+        else:
+            tenant_id = token_tenant_id or tenant_id
+
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant context not available",
+                    error_code="TENANT_ID_MISSING",
+                ),
+            )
+
+        logger.info(f"Attempting to delete route {route_id} for tenant {tenant_id} by user {user_id}")
+
+        # Validate tenant
         tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
         if not tenant:
-            logger.warning(f"Tenant {tenant_id} not found")
             raise HTTPException(
-                status_code=404,
+                status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error(
                     message=f"Tenant {tenant_id} not found",
                     error_code="TENANT_NOT_FOUND",
-                    details={"tenant_id": tenant_id}
-                )
+                    details={"tenant_id": tenant_id},
+                ),
             )
-        
-        # Check if route exists
-        route = db.query(RouteManagement).filter(
-            RouteManagement.route_id == route_id, 
-            RouteManagement.is_active == True
-        ).first()
-        
+
+        # Fetch route
+        route = (
+            db.query(RouteManagement)
+            .filter(
+                RouteManagement.route_id == route_id,
+                RouteManagement.is_active.is_(True),
+            )
+            .first()
+        )
         if not route:
-            raise HTTPException(status_code=404, detail=f"Route {route_id} not found")
-        
-        # Delete route bookings
-        route_bookings = db.query(RouteManagementBooking).filter(
-            RouteManagementBooking.route_id == route_id
-        ).all()
-        
-        for rb in route_bookings:
-            db.delete(rb)
-        
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Route {route_id} not found",
+                    error_code="ROUTE_NOT_FOUND",
+                ),
+            )
+
+        # Delete associated route bookings
+        deleted_bookings_count = (
+            db.query(RouteManagementBooking)
+            .filter(RouteManagementBooking.route_id == route_id)
+            .delete(synchronize_session=False)
+        )
+
         # Soft delete the route
         route.is_active = False
         db.commit()
-        
-        logger.info(f"Successfully deleted route {route_id}")
-        
+
+        logger.info(
+            f"Route {route_id} deleted successfully with {deleted_bookings_count} bookings removed."
+        )
+
         return ResponseWrapper.success(
             data={
-                "deleted_route_id": route_id
+                "deleted_route_id": route_id,
+                "deleted_bookings_count": deleted_bookings_count,
             },
-            message=f"Route {route_id} deleted successfully"
+            message=f"Route {route_id} deleted successfully",
         )
-    
+
     except HTTPException:
+        db.rollback()
         raise
     except Exception as e:
         db.rollback()
-        return handle_db_error(e)
-    except Exception as e:
-        logger.error(f"Error deleting route {route_id}: {str(e)}")
-        db.rollback()
+        logger.error(f"Error deleting route {route_id}: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=ResponseWrapper.error(
                 message=f"Error deleting route {route_id}",
                 error_code="ROUTE_DELETE_ERROR",
-                details={"error": str(e)}
-            )
+                details={"error": str(e)},
+            ),
         )
+
