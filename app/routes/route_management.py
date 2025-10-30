@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query ,status
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict
 from pydantic import BaseModel
@@ -153,7 +153,7 @@ def save_route_to_db(booking_ids: List[int], estimations: RouteEstimations, tena
 @router.post("/")
 async def create_routes(
     request: CreateRoutesRequest,
-    tenant_id: str = Query(..., description="Tenant ID"),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["route.create"], check_tenant=True)),
 ):
@@ -161,9 +161,38 @@ async def create_routes(
     Create routes from grouped bookings with estimations.
     """
     try:
-        logger.info(f"Creating {len(request.groups)} routes for tenant: {tenant_id}, user: {user_data.get('user_id', 'unknown')}")
-        
-        # Validate tenant exists
+        logger.info(f"Creating {len(request.groups)} routes, raw tenant: {tenant_id}, user: {user_data.get('user_id', 'unknown')}")
+
+        # ---- Determine effective tenant_id ----
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        if user_type == "employee":
+            tenant_id = token_tenant_id
+        elif user_type == "admin":
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="tenant_id is required for admin users",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+        else:
+            tenant_id = token_tenant_id
+
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant context not available",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+
+        logger.info(f"Effective tenant ID resolved: {tenant_id}")
+
+        # ---- Validate tenant exists ----
         tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
         if not tenant:
             logger.warning(f"Tenant {tenant_id} not found")
@@ -172,56 +201,57 @@ async def create_routes(
                 detail=ResponseWrapper.error(
                     message=f"Tenant {tenant_id} not found",
                     error_code="TENANT_NOT_FOUND",
-                    details={"tenant_id": tenant_id}
-                )
+                    details={"tenant_id": tenant_id},
+                ),
             )
-        
+
+        # ---- Validate groups ----
         if not request.groups:
             raise HTTPException(
                 status_code=400,
                 detail=ResponseWrapper.error(
                     message="No route groups provided",
-                    error_code="NO_GROUPS_PROVIDED"
-                )
+                    error_code="NO_GROUPS_PROVIDED",
+                ),
             )
-        
+
         routes = []
-        
+
         for group in request.groups:
             # Get bookings for this group
-            bookings = get_bookings_by_ids(group.booking_ids, db)  # Changed from group.bookings to group.booking_ids
-            
+            bookings = get_bookings_by_ids(group.booking_ids, db)
+
             if not bookings:
                 raise HTTPException(
                     status_code=404,
                     detail=ResponseWrapper.error(
                         message=f"No bookings found for group {group.booking_ids}",
                         error_code="NO_BOOKINGS_FOUND",
-                        details={"booking_ids": group.booking_ids}  # Updated details
-                    )
+                        details={"booking_ids": group.booking_ids},
+                    ),
                 )
-            
+
             # Calculate estimations
             estimations = calculate_route_estimations(bookings)
-            
-            # Save to database - route_id will be auto-generated
-            saved_route = save_route_to_db(group.booking_ids, estimations, tenant_id, db)  # Changed from group.bookings to group.booking_ids
-            
-            # Create route response
+
+            # Save route
+            saved_route = save_route_to_db(group.booking_ids, estimations, tenant_id, db)
+
+            # Construct response
             route = RouteWithEstimations(
-                route_id=saved_route.route_id,  # Use the auto-generated route_id
+                route_id=saved_route.route_id,
                 bookings=bookings,
-                estimations=estimations
+                estimations=estimations,
             )
             routes.append(route)
-        
+
         logger.info(f"Successfully created {len(routes)} routes")
-        
+
         return ResponseWrapper.success(
             data=routes,
-            message=f"Successfully created {len(routes)} routes"
+            message=f"Successfully created {len(routes)} routes",
         )
-    
+
     except HTTPException:
         raise
     except Exception as e:
