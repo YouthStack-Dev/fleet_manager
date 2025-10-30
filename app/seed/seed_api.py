@@ -6,6 +6,7 @@ import random
 import requests
 import logging
 import os
+import math
 
 from common_utils.auth.permission_checker import PermissionChecker
 
@@ -72,6 +73,33 @@ def generate_payload(i: int, tenant_id: str, team_id: Optional[int]):
     name = f"{random.choice(first_names)} {random.choice(last_names)}"
 
     email = f"{tenant_id[:3].upper()}{uuid.uuid4().hex[:4].upper()}@gmail.com"
+     # Majestic, Bangalore center coordinates
+    center_lat = 12.9784
+    center_lon = 77.5721
+    radius_km = 20  # radius around Majestic
+
+    # Generate random offset
+    r = radius_km * math.sqrt(random.random())  # random distance
+    theta = random.uniform(0, 2 * math.pi)      # random direction
+    earth_radius = 6371.0                       # Earth radius in km
+    delta = r / earth_radius                    # angular distance
+
+    # Convert center to radians
+    center_lat_rad = math.radians(center_lat)
+    center_lon_rad = math.radians(center_lon)
+
+    # Compute destination point
+    new_lat_rad = math.asin(
+        math.sin(center_lat_rad) * math.cos(delta)
+        + math.cos(center_lat_rad) * math.sin(delta) * math.cos(theta)
+    )
+    new_lon_rad = center_lon_rad + math.atan2(
+        math.sin(theta) * math.sin(delta) * math.cos(center_lat_rad),
+        math.cos(delta) - math.sin(center_lat_rad) * math.sin(new_lat_rad)
+    )
+
+    new_lat = math.degrees(new_lat_rad)
+    new_lon = math.degrees(new_lon_rad)
     return {
         "name": name,
         "email": email,
@@ -81,8 +109,8 @@ def generate_payload(i: int, tenant_id: str, team_id: Optional[int]):
         "tenant_id": tenant_id,
         "team_id": team_id,
         "is_active": True,
-        "latitude": 12.9352 + random.uniform(-0.01, 0.01),
-        "longitude": 77.6245 + random.uniform(-0.01, 0.01),
+        "latitude": round(new_lat, 6),
+        "longitude": round(new_lon, 6),
         "gender": random.choice(["Male", "Female"])
     }
 

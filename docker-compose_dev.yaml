@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+
+  redis_server:
+    image: redis:7.4-alpine
+    container_name: redis_server_dev
+    restart: always
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass redispassword --appendonly yes
+    volumes:
+      - redis_data_dev:/data
+    networks:
+      - fleet-network-dev
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    container_name: fleet_postgres_dev
+    image: postgres:15
+    restart: unless-stopped
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: fleetadmin
+      POSTGRES_PASSWORD: fleetpass
+      POSTGRES_DB: fleet_db_dev
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    networks:
+      - fleet-network-dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fleetadmin -d fleet_db_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  service_manager:
+    image: dheerajkumarp/fleet_service_manager:latest
+    container_name: service_manager_dev
+    restart: always
+    env_file:
+      - ./service.dev.env        # dev server specific env file
+    volumes:
+      # Map dev server storage directory to container
+      - /var/lib/fleet/dev-storage:/var/lib/fleet/dev-storage
+      # Legacy uploads mapping (if needed for backward compatibility)
+      - /var/lib/fleet/uploads:/app/uploaded_files
+    environment:
+      - DATABASE_URL=postgresql://fleetadmin:fleetpass@fleet_postgres_dev:5432/fleet_db_dev
+      - REDIS_HOST=redis_server
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - REDIS_PASSWORD=redispassword
+      - USE_REDIS=1
+      - TOKEN_EXPIRY_HOURS=1
+      
+      # Storage Configuration for Dev Server
+      - ENV=dev-server
+      - STORAGE_TYPE=filesystem
+      - DEV_SERVER_STORAGE_PATH=/var/lib/fleet/dev-storage
+      - MAX_FILE_SIZE_MB=5
+      
+    depends_on:
+      redis_server:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8100:8000"      # public port for service_manager
+    networks:
+      - fleet-network-dev
+
+networks:
+  fleet-network-dev:
+    driver: bridge
+
+volumes:
+  postgres_data_dev:
+  redis_data_dev:

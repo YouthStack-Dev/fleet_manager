@@ -23,7 +23,7 @@ class RouteManagement(Base):
         {"extend_existing": True},
     )
 
-    route_id = Column(String(100), primary_key=True, index=True)
+    route_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     tenant_id = Column(String(50), nullable=False)  # Remove FK constraint temporarily
     shift_id = Column(Integer, nullable=True)  # Remove FK constraint temporarily
     route_code = Column(String(100), nullable=False)
@@ -63,7 +63,7 @@ class RouteManagementBooking(Base):
     )
 
     id = Column(Integer, primary_key=True, index=True)
-    route_id = Column(String(100), ForeignKey("route_management.route_id", ondelete="CASCADE"), nullable=False)
+    route_id = Column(Integer, ForeignKey("route_management.route_id", ondelete="CASCADE"), nullable=False)
     booking_id = Column(Integer, nullable=False)  # Keep as simple integer without FK
 
     # Order and timing
