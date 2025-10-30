@@ -667,7 +667,7 @@ async def get_route_by_id(
 @router.post("/merge")
 async def merge_routes(
     request: MergeRoutesRequest,
-    tenant_id: str = Query(..., description="Tenant ID"),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["route.create"], check_tenant=True)),
 ):
@@ -675,6 +675,30 @@ async def merge_routes(
     Merge multiple routes into a single optimized route.
     """
     try:
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        if user_type == "employee":
+            tenant_id = token_tenant_id
+        elif user_type == "admin" and not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="tenant_id is required for admin users",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+        else:
+            tenant_id = token_tenant_id
+
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant context not available",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
         logger.info(f"Merging {len(request.route_ids)} routes for tenant: {tenant_id}, user: {user_data.get('user_id', 'unknown')}")
         
         # Validate tenant exists
