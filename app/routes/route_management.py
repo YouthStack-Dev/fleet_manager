@@ -157,8 +157,7 @@ def save_route_to_db(booking_ids: List[int], estimations: RouteEstimations, tena
         tenant_id=tenant_id,
         route_code=f"ROUTE-{str(uuid.uuid4())}",  # Use timestamp for unique code
         total_distance_km=estimations.total_distance_km,
-        total_time_minutes=estimations.total_time_minutes,
-        is_active=True
+        total_time_minutes=estimations.total_time_minutes
     )
     db.add(route)
     db.flush()  # This will populate the auto-generated route_id
@@ -271,8 +270,7 @@ async def create_routes(
                 .join(RouteManagementBooking, RouteManagement.route_id == RouteManagementBooking.route_id)
                 .filter(
                     RouteManagementBooking.booking_id.in_(group.booking_ids),
-                    RouteManagement.tenant_id == tenant_id,
-                    RouteManagement.is_active == True,
+                    RouteManagement.tenant_id == tenant_id
                 )
                 .all()
             )
@@ -442,8 +440,7 @@ async def get_all_routes(
             ).join(
                 Booking, RouteManagementBooking.booking_id == Booking.booking_id
             ).filter(
-                RouteManagement.tenant_id == tenant_id,
-                RouteManagement.is_active == True
+                RouteManagement.tenant_id == tenant_id
             )
             
             # Add filters based on provided parameters
@@ -455,8 +452,7 @@ async def get_all_routes(
             routes_query = routes_query.distinct()
         else:
             routes_query = db.query(RouteManagement).filter(
-                RouteManagement.tenant_id == tenant_id, 
-                RouteManagement.is_active == True
+                RouteManagement.tenant_id == tenant_id
             )
         
         routes = routes_query.all()
@@ -608,8 +604,7 @@ async def get_unrouted_bookings(
             db.query(RouteManagementBooking.booking_id)
             .join(RouteManagement, RouteManagement.route_id == RouteManagementBooking.route_id)
             .filter(
-                RouteManagement.tenant_id == tenant_id,
-                RouteManagement.is_active == True,
+                RouteManagement.tenant_id == tenant_id
             )
             .distinct()
             .all()
@@ -707,7 +702,6 @@ async def get_route_by_id(
         route = db.query(RouteManagement).filter(
             RouteManagement.route_id == route_id,
             RouteManagement.tenant_id == tenant_id,
-            RouteManagement.is_active == True
         ).first()
         
         if not route:
@@ -778,11 +772,14 @@ async def merge_routes(
 ):
     """
     Merge multiple routes into a single optimized route.
+    After creating the new merged route, permanently delete the old ones.
     """
     try:
         user_type = user_data.get("user_type")
         token_tenant_id = user_data.get("tenant_id")
+        user_id = user_data.get("user_id", "unknown")
 
+        # --- Tenant Resolution ---
         if user_type == "employee":
             tenant_id = token_tenant_id
         elif user_type == "admin" and not tenant_id:
@@ -794,19 +791,20 @@ async def merge_routes(
                 ),
             )
         else:
-            tenant_id = token_tenant_id
+            tenant_id = tenant_id or token_tenant_id
 
         if not tenant_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
                     message="Tenant context not available",
-                    error_code="TENANT_ID_REQUIRED",
+                    error_code="TENANT_ID_MISSING",
                 ),
             )
-        logger.info(f"Merging {len(request.route_ids)} routes for tenant: {tenant_id}, user: {user_data.get('user_id', 'unknown')}")
-        
-        # Validate tenant exists
+
+        logger.info(f"Merging {len(request.route_ids)} routes for tenant={tenant_id}, user={user_id}")
+
+        # --- Tenant Validation ---
         tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
         if not tenant:
             logger.warning(f"Tenant {tenant_id} not found")
@@ -815,96 +813,111 @@ async def merge_routes(
                 detail=ResponseWrapper.error(
                     message=f"Tenant {tenant_id} not found",
                     error_code="TENANT_NOT_FOUND",
-                    details={"tenant_id": tenant_id}
-                )
+                    details={"tenant_id": tenant_id},
+                ),
             )
-        
+
         if not request.route_ids:
             raise HTTPException(
                 status_code=400,
                 detail=ResponseWrapper.error(
                     message="No route IDs provided for merging",
-                    error_code="NO_ROUTE_IDS_PROVIDED"
-                )
+                    error_code="NO_ROUTE_IDS_PROVIDED",
+                ),
             )
-        
-        # Get all booking IDs from the routes to be merged
+
+        # --- Collect all bookings from the routes to be merged ---
         all_booking_ids = []
-        routes_to_delete = []
-        
+        route_ids_to_delete = []
+
         for route_id in request.route_ids:
-            route = db.query(RouteManagement).filter(
-                RouteManagement.route_id == route_id,
-                RouteManagement.tenant_id == tenant_id,
-                RouteManagement.is_active == True
-            ).first()
-            
+            route = (
+                db.query(RouteManagement)
+                .filter(RouteManagement.route_id == route_id, RouteManagement.tenant_id == tenant_id)
+                .first()
+            )
+
             if not route:
-                
-                raise HTTPException(status_code=404, detail=ResponseWrapper.error(
-                    message=f"Route {route_id} not found",
-                    error_code="ROUTE_NOT_FOUND",
-                    details = "No rount found",
-                ))
-            
-            route_bookings = db.query(RouteManagementBooking).filter(
-                RouteManagementBooking.route_id == route_id
-            ).all()
-            
+                raise HTTPException(
+                    status_code=404,
+                    detail=ResponseWrapper.error(
+                        message=f"Route {route_id} not found",
+                        error_code="ROUTE_NOT_FOUND",
+                        details={"route_id": route_id},
+                    ),
+                )
+
+            route_bookings = (
+                db.query(RouteManagementBooking)
+                .filter(RouteManagementBooking.route_id == route_id)
+                .all()
+            )
+
             all_booking_ids.extend([rb.booking_id for rb in route_bookings])
-            routes_to_delete.append(route)
-        
-        # Remove duplicates while preserving order
+            route_ids_to_delete.append(route_id)
+
+        # Deduplicate booking IDs (preserve order)
         all_booking_ids = list(dict.fromkeys(all_booking_ids))
-        
-        # Get all bookings
+
+        # --- Validate bookings exist ---
         bookings = get_bookings_by_ids(all_booking_ids, db)
-        
         if not bookings:
-            raise HTTPException(status_code=404, detail=ResponseWrapper.error(
-                    message=f"No valid bookings found for provided route ids",
+            raise HTTPException(
+                status_code=404,
+                detail=ResponseWrapper.error(
+                    message="No valid bookings found for provided route IDs",
                     error_code="BOOKINGS_NOT_FOUND",
-                    details="No bookings found"
-                ))
-        
-        # Calculate new estimations
+                ),
+            )
+
+        # --- Compute new estimations ---
         estimations = calculate_route_estimations(bookings)
-        
-        # Save merged route - route_id will be auto-generated
+
+        # --- Create merged route ---
         merged_route = save_route_to_db(all_booking_ids, estimations, tenant_id, db)
-        
-        # Deactivate original routes
-        for route in routes_to_delete:
-            route.is_active = False
-        
+        logger.info(f"Created merged route {merged_route.route_id}")
+
+        # --- Hard delete old routes and related records ---
+        deleted_bookings_count = (
+            db.query(RouteManagementBooking)
+            .filter(RouteManagementBooking.route_id.in_(route_ids_to_delete))
+            .delete(synchronize_session=False)
+        )
+
+        deleted_routes_count = (
+            db.query(RouteManagement)
+            .filter(RouteManagement.route_id.in_(route_ids_to_delete))
+            .delete(synchronize_session=False)
+        )
+
         db.commit()
-        
-        logger.info(f"Successfully merged routes into {merged_route.route_id}")
-        
+        logger.info(
+            f"Merged route {merged_route.route_id} created. "
+            f"Deleted {deleted_routes_count} old routes and {deleted_bookings_count} linked route-booking records."
+        )
+
         return ResponseWrapper.success(
             data=RouteWithEstimations(
-                route_id=merged_route.route_id,  # Use the auto-generated route_id
+                route_id=merged_route.route_id,
                 bookings=bookings,
-                estimations=estimations
+                estimations=estimations,
             ),
-            message=f"Successfully merged {len(request.route_ids)} routes into {merged_route.route_id}"
+            message=f"Successfully merged {len(request.route_ids)} routes into {merged_route.route_id}",
         )
-    
+
     except HTTPException:
+        db.rollback()
         raise
     except Exception as e:
         db.rollback()
-        return handle_db_error(e)
-    except Exception as e:
-        logger.error(f"Error merging routes: {str(e)}")
-        db.rollback()
+        logger.error(f"Error merging routes: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=ResponseWrapper.error(
                 message="Error merging routes",
                 error_code="ROUTE_MERGE_ERROR",
-                details={"error": str(e)}
-            )
+                details={"error": str(e)},
+            ),
         )
 
 @router.post("/{route_id}/split")
@@ -945,8 +958,7 @@ async def split_route(
         
         # Check if original route exists
         original_route = db.query(RouteManagement).filter(
-            RouteManagement.route_id == route_id, 
-            RouteManagement.is_active == True
+            RouteManagement.route_id == route_id
         ).first()
         
         if not original_route:
@@ -1074,8 +1086,7 @@ async def update_route(
         
         # Check if route exists
         route = db.query(RouteManagement).filter(
-            RouteManagement.route_id == route_id, 
-            RouteManagement.is_active == True
+            RouteManagement.route_id == route_id
         ).first()
         
         if not route:
