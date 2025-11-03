@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query ,status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query ,status
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict
 from pydantic import BaseModel
@@ -8,9 +8,10 @@ import time
 
 from app.database.session import get_db
 from app.models.booking import Booking
-from app.models.route_management import RouteManagement, RouteManagementBooking
+from app.models.route_management import RouteManagement, RouteManagementBooking, RouteManagementStatusEnum
 from app.models.shift import Shift  # Add shift model import
 from app.models.tenant import Tenant  # Add tenant model import
+from app.models.vendor import Vendor
 from app.schemas.route import RouteWithEstimations, RouteEstimations
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
@@ -647,6 +648,85 @@ async def get_unrouted_bookings(
         raise
     except Exception as e:
         return handle_db_error(e)
+
+@router.put("/assign-vendor", status_code=status.HTTP_200_OK)
+async def assign_vendor_to_route(
+    route_id: int = Query(..., description="Route ID"),
+    vendor_id: int = Query(..., description="Vendor ID to assign"),
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route.update"], check_tenant=True))
+):
+    """
+    Assign a vendor to a specific route.
+    Ensures both the route and vendor belong to the same tenant.
+    """
+    try:
+        tenant_id = user_data.get("tenant_id")
+        user_id = user_data.get("user_id")
+
+        logger.info(f"[assign_vendor_to_route] User={user_id} | Tenant={tenant_id} | Route={route_id} | Vendor={vendor_id}")
+
+        # ---- Validate route ----
+        route = (
+            db.query(RouteManagement)
+            .filter(RouteManagement.route_id == route_id, RouteManagement.tenant_id == tenant_id)
+            .first()
+        )
+        if not route:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Route not found for this tenant",
+                    error_code="ROUTE_NOT_FOUND",
+                    details={"route_id": route_id, "tenant_id": tenant_id},
+                ),
+            )
+
+        # ---- Validate vendor belongs to the same tenant ----
+        vendor = (
+            db.query(Vendor)
+            .filter(Vendor.vendor_id == vendor_id, Vendor.tenant_id == tenant_id)
+            .first()
+        )
+        if not vendor:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Vendor not found under this tenant",
+                    error_code="VENDOR_NOT_FOUND_OR_MISMATCH",
+                    details={"vendor_id": vendor_id, "tenant_id": tenant_id},
+                ),
+            )
+
+        # ---- Assign vendor ----
+        route.assigned_vendor_id = vendor_id
+
+        if route.status == RouteManagementStatusEnum.PLANNED:
+            route.status = RouteManagementStatusEnum.ASSIGNED
+
+        db.commit()
+        db.refresh(route)
+
+        logger.info(
+            f"[assign_vendor_to_route] Vendor={vendor_id} assigned successfully to Route={route_id} (Tenant={tenant_id})"
+        )
+
+        return ResponseWrapper.success(
+            data={
+                "route_id": route_id,
+                "assigned_vendor_id": vendor_id,
+                "status": route.status,
+            },
+            message="Vendor assigned successfully",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.exception("[assign_vendor_to_route] Unexpected error")
+        raise handle_db_error(e)
+
 
 @router.get("/{route_id}")
 async def get_route_by_id(
