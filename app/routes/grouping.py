@@ -7,6 +7,7 @@ from pydantic import BaseModel
 import app
 from app.database.session import get_db
 from app.models.booking import Booking
+from app.models.route_management import RouteManagement, RouteManagementBooking
 from app.models.shift import Shift
 from app.schemas.shift import ShiftResponse
 from app.services.geodesic import group_rides
@@ -51,27 +52,30 @@ async def route_suggestion(
     user_data=Depends(PermissionChecker(["route.read"], check_tenant=True)),
 ):
     """
-    Get all bookings for a specific date and shift ID and generate clusters for route planning.
+    Generate route clusters (suggestions) for a given shift and date.
+    Only includes bookings NOT already assigned to any route.
     """
     try:
-        logger.info(f"Clustering request for date: {booking_date}, shift: {shift_id}, user: {user_data.get('user_id', 'unknown')}")
+        logger.info(
+            f"Clustering request for date={booking_date}, shift={shift_id}, user={user_data.get('user_id', 'unknown')}"
+        )
+
         user_type = user_data.get("user_type")
         token_tenant_id = user_data.get("tenant_id")
 
-        # ---- Determine effective tenant_id ----
+        # ---- Tenant Resolution ----
         if user_type == "employee":
             tenant_id = token_tenant_id
-        elif user_type == "admin":
-            if not tenant_id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=ResponseWrapper.error(
-                        message="tenant_id is required for admin users",
-                        error_code="TENANT_ID_REQUIRED",
-                    ),
-                )
+        elif user_type == "admin" and not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="tenant_id is required for admin users",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
         else:
-            tenant_id = token_tenant_id
+            tenant_id = tenant_id or token_tenant_id
 
         if not tenant_id:
             raise HTTPException(
@@ -82,7 +86,7 @@ async def route_suggestion(
                 ),
             )
 
-        # ---- Validate shift belongs to this tenant ----
+        # ---- Validate Shift ----
         shift = (
             db.query(Shift)
             .filter(Shift.shift_id == shift_id, Shift.tenant_id == tenant_id)
@@ -99,96 +103,93 @@ async def route_suggestion(
                 ),
             )
 
-        shift_type = shift.log_type if shift else "Unknown"
-        if shift_type == "IN":
-            lat = "pickup_latitude"
-            long = "pickup_longitude"
-        else:
-            lat = "drop_latitude"
-            long = "drop_longitude"
+        # ---- Determine Coordinate Columns ----
+        shift_type = shift.log_type or "Unknown"
+        lat_col = "pickup_latitude" if shift_type == "IN" else "drop_latitude"
+        lon_col = "pickup_longitude" if shift_type == "IN" else "drop_longitude"
 
-        bookings = db.query(Booking).filter(
+        # ---- Fetch Already Routed Booking IDs ----
+        routed_booking_ids = (
+            db.query(RouteManagementBooking.booking_id)
+            .join(RouteManagement, RouteManagement.route_id == RouteManagementBooking.route_id)
+            .filter(RouteManagement.tenant_id == tenant_id)
+            .distinct()
+            .all()
+        )
+        routed_booking_ids = [b.booking_id for b in routed_booking_ids]
+
+        # ---- Fetch Only Unrouted Bookings ----
+        bookings_query = db.query(Booking).filter(
             Booking.booking_date == booking_date,
             Booking.shift_id == shift_id,
-            Booking.tenant_id == tenant_id
-        ).all()
+            Booking.tenant_id == tenant_id,
+        )
+        if routed_booking_ids:
+            bookings_query = bookings_query.filter(~Booking.booking_id.in_(routed_booking_ids))
 
-        
+        bookings = bookings_query.all()
+
         if not bookings:
-            logger.info(f"No bookings found for date {booking_date} and shift {shift_id}")
+            logger.info(f"No unrouted bookings found for tenant={tenant_id}, shift={shift_id} on {booking_date}")
             return ResponseWrapper.success(
-                data={
-                    "clusters": [],
-                    "total_bookings": 0,
-                    "total_clusters": 0,
-                },
-                message=f"No bookings found for date {booking_date} and shift ID {shift_id}"
+                data={"clusters": [], "total_bookings": 0, "total_clusters": 0},
+                message=f"No unrouted bookings found for shift {shift_id} on {booking_date}"
             )
-        
-        # Convert bookings to the format expected by clustering algorithm
+
+        # ---- Prepare Rides for Clustering ----
         rides = []
         for booking in bookings:
             ride = {
-                'lat': getattr(booking, lat),
-                'lon': getattr(booking, long),
+                "lat": getattr(booking, lat_col),
+                "lon": getattr(booking, lon_col),
             }
             ride.update(booking.__dict__)
             rides.append(ride)
-        
-        # Filter out rides without valid coordinates
-        valid_rides = [r for r in rides if r['lat'] is not None and r['lon'] is not None]
-        
+
+        valid_rides = [r for r in rides if r["lat"] is not None and r["lon"] is not None]
+
         if not valid_rides:
-            logger.warning(f"No valid coordinates found for {len(bookings)} bookings")
+            logger.warning(f"No valid coordinates found for {len(bookings)} unrouted bookings")
             return ResponseWrapper.success(
-                data={
-                    "clusters": [],
-                    "total_bookings": len(bookings),
-                    "total_clusters": 0,
-                },
+                data={"clusters": [], "total_bookings": len(bookings), "total_clusters": 0},
                 message="No bookings with valid coordinates found for clustering"
             )
-        
-        # Generate clusters using geodesic grouping
+
+        # ---- Generate Clusters ----
         clusters = group_rides(valid_rides, radius, group_size, strict_grouping)
 
-        cluster_id = 1
-        cluster_updated = []
-        for cluster in clusters:
+        cluster_data = []
+        for idx, cluster in enumerate(clusters, start=1):
             for booking in cluster:
-                _ = booking.pop("lat", None)
-                _ = booking.pop("lon", None)
-            cluster_ = {
-                "cluster_id": cluster_id,
-                "bookings": cluster
-            }
-            cluster_updated.append(cluster_)
-            cluster_id += 1
+                booking.pop("lat", None)
+                booking.pop("lon", None)
+            cluster_data.append({"cluster_id": idx, "bookings": cluster})
 
-        logger.info(f"Successfully generated {len(cluster_updated)} clusters from {len(bookings)} bookings")
-        
+        logger.info(f"Generated {len(cluster_data)} clusters from {len(bookings)} unrouted bookings")
+
+        # ---- Final Response ----
         shift_response = ShiftResponse.model_validate(shift, from_attributes=True)
         return ResponseWrapper.success(
             data={
                 "shift": shift_response,
-                "clusters": cluster_updated,
+                "clusters": cluster_data,
                 "total_bookings": len(bookings),
                 "total_clusters": len(clusters),
             },
-            message="Bookings clustered successfully"
+            message="Successfully generated route suggestions for unrouted bookings"
         )
-    
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error clustering bookings: {str(e)}")
+        logger.error(f"Error generating route suggestions: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=ResponseWrapper.error(
-                message="Error clustering bookings",
-                error_code="CLUSTERING_ERROR",
-                details={"error": str(e)}
-            )
+                message="Error generating route suggestions",
+                error_code="ROUTE_SUGGESTION_ERROR",
+                details={"error": str(e)},
+            ),
         )
 
 @router.post("/bookings/cluster-by-bookings")
