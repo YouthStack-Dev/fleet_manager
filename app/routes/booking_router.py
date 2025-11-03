@@ -2,6 +2,7 @@
 from sqlalchemy import func
 from app.models.cutoff import Cutoff
 from app.models.employee import Employee
+from app.models.route_management import RouteManagement, RouteManagementBooking
 from app.models.shift import Shift, ShiftLogTypeEnum
 from app.models.tenant import Tenant
 from app.models.weekoff_config import WeekoffConfig
@@ -567,6 +568,7 @@ def cancel_booking(
             status_code=500,
             detail=ResponseWrapper.error(message="Internal Server Error", error_code="INTERNAL_ERROR")
         )
+
 @router.get("/tenant/{tenant_id}/shifts/bookings", status_code=status.HTTP_200_OK)
 async def get_bookings_grouped_by_shift(
     tenant_id: str = Path(..., description="Tenant ID (required for admin users)"),
@@ -575,10 +577,13 @@ async def get_bookings_grouped_by_shift(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True))
 ):
+    """
+    Fetch bookings grouped by shift with route/vendor/driver assignment stats.
+    """
     try:
         user_type = user_data.get("user_type")
 
-        # Determine tenant context
+        # ---- Tenant Context Resolution ----
         if user_type == "admin":
             if not tenant_id:
                 raise HTTPException(
@@ -600,12 +605,9 @@ async def get_bookings_grouped_by_shift(
                 ),
             )
 
-        logger.info(
-            f"Fetching grouped bookings: user_type={user_type}, "
-            f"tenant_id={effective_tenant_id}, date={booking_date}"
-        )
+        logger.info(f"[get_bookings_grouped_by_shift] Tenant={effective_tenant_id}, Date={booking_date}")
 
-        # Query join to avoid N+1 problems
+        # ---- Base Query with Join ----
         query = (
             db.query(Booking, Shift.shift_code, Shift.shift_time, Shift.log_type)
             .join(Shift, Shift.shift_id == Booking.shift_id)
@@ -619,49 +621,95 @@ async def get_bookings_grouped_by_shift(
             query = query.filter(Shift.log_type == log_type)
 
         records = query.order_by(Shift.shift_time).all()
+        logger.info(f"Fetched {len(records)} bookings")
 
-        logger.info(f"Fetched {len(records)} bookings after applying filters")
+        if not records:
+            return ResponseWrapper.success(
+                data={"date": booking_date, "shifts": []},
+                message="No bookings found for this date"
+            )
 
+        # ---- Precompute Routed Bookings ----
+        routed_booking_ids = (
+            db.query(RouteManagementBooking.booking_id)
+            .join(RouteManagement, RouteManagement.route_id == RouteManagementBooking.route_id)
+            .filter(RouteManagement.tenant_id == effective_tenant_id)
+            .distinct()
+            .all()
+        )
+        routed_booking_ids = {b.booking_id for b in routed_booking_ids}
+        # ---- Get route count per shift ----
+        route_count = (
+            db.query(RouteManagement.route_id)
+            .join(RouteManagementBooking, RouteManagement.route_id == RouteManagementBooking.route_id)
+            .join(Booking, Booking.booking_id == RouteManagementBooking.booking_id)
+            .filter(
+                RouteManagement.tenant_id == tenant_id,
+                func.date(Booking.booking_date) == booking_date
+            )
+            .distinct()
+            .count()
+        )
+
+
+        # ---- Group and Count ----
         grouped = {}
-
         for booking_obj, shift_code, shift_time, shift_log_type in records:
             sid = booking_obj.shift_id
-
             if sid not in grouped:
                 grouped[sid] = {
                     "shift_id": sid,
                     "shift_code": shift_code,
                     "shift_time": shift_time,
-                    "log_type": shift_log_type,       # ✅ Correct source
-                    "bookings": []
+                    "log_type": shift_log_type,
+                    "bookings": [],
+                    "stats": {
+                        "route_count": route_count,
+                        "total_bookings": 0,
+                        "routed_bookings": 0,
+                        "unrouted_bookings": 0,
+                        "vendor_assigned": 0,
+                        "driver_assigned": 0
+                    }
                 }
 
             grouped[sid]["bookings"].append(
                 BookingResponse.model_validate(booking_obj, from_attributes=True)
             )
 
+            # ---- Count Metrics ----
+            grouped[sid]["stats"]["total_bookings"] += 1
+
+            if booking_obj.booking_id in routed_booking_ids:
+                grouped[sid]["stats"]["routed_bookings"] += 1
+            else:
+                grouped[sid]["stats"]["unrouted_bookings"] += 1
+
+            if getattr(booking_obj, "vendor_id", None):
+                grouped[sid]["stats"]["vendor_assigned"] += 1
+
+            if getattr(booking_obj, "driver_id", None):
+                grouped[sid]["stats"]["driver_assigned"] += 1
+
         result = sorted(grouped.values(), key=lambda x: x["shift_time"])
 
-
         return ResponseWrapper.success(
-            data={
-                "date": booking_date,
-                "shifts": result
-            },
+            data={"date": booking_date, "shifts": result},
             message="Bookings grouped by shift fetched successfully"
         )
 
     except SQLAlchemyError as e:
         logger.exception("Database error occurred while fetching grouped bookings")
         raise handle_db_error(e)
-    except HTTPException as e:
-        raise handle_http_error(e)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Unexpected error occurred while fetching grouped bookings")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=ResponseWrapper.error(
                 message="Unexpected error occurred while fetching bookings",
-                error_code="UNEXPECTED_ERROR"
-            )
+                error_code="UNEXPECTED_ERROR",
+                details={"error": str(e)},
+            ),
         )
