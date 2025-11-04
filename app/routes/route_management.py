@@ -812,7 +812,8 @@ async def assign_vehicle_to_route(
         # ---- Resolve Driver from Vehicle (1:1 mapping) ----
         driver = db.query(Driver).filter(
             Driver.driver_id == vehicle.driver_id,
-            Driver.tenant_id == tenant_id
+            Driver.vendor_id == vehicle.vendor_id,
+            Vendor.tenant_id == tenant_id
         ).first()
         if not driver:
             raise HTTPException(
@@ -854,28 +855,28 @@ async def assign_vehicle_to_route(
                     },
                 ),
             )
-        assigned_conflict = (
-            db.query(RouteManagement)
-            .filter(
-                RouteManagement.assigned_vehicle_id == vehicle.vehicle_id,
-                RouteManagement.route_id != route_id,
-                RouteManagement.tenant_id == tenant_id,
-                RouteManagement.shift_id == route.shift_id,  # example constraint
-                RouteManagement.date == route.date          # depends on your schema
-            ).first()
-        )
-        if assigned_conflict:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=ResponseWrapper.error(
-                    message="Vehicle is already assigned to another route for the same shift and date",
-                    error_code="VEHICLE_ALREADY_ASSIGNED",
-                    details={
-                        "conflicting_route_id": assigned_conflict.route_id,
-                        "vehicle_id": vehicle.vehicle_id,
-                    },
-                ),
-            )
+        # assigned_conflict = (
+        #     db.query(RouteManagement)
+        #     .filter(
+        #         RouteManagement.assigned_vehicle_id == vehicle.vehicle_id,
+        #         RouteManagement.route_id != route_id,
+        #         RouteManagement.tenant_id == tenant_id,
+        #         RouteManagement.shift_id == route.shift_id,  # example constraint
+        #         RouteManagement.date == route.date          # depends on your schema
+        #     ).first()
+        # )
+        # if assigned_conflict:
+        #     raise HTTPException(
+        #         status_code=status.HTTP_409_CONFLICT,
+        #         detail=ResponseWrapper.error(
+        #             message="Vehicle is already assigned to another route for the same shift and date",
+        #             error_code="VEHICLE_ALREADY_ASSIGNED",
+        #             details={
+        #                 "conflicting_route_id": assigned_conflict.route_id,
+        #                 "vehicle_id": vehicle.vehicle_id,
+        #             },
+        #         ),
+        #     )
         # ---- Apply assignment ----
         route.assigned_vehicle_id = vehicle.vehicle_id
         route.assigned_driver_id = driver.driver_id

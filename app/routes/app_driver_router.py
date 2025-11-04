@@ -113,24 +113,22 @@ async def get_upcoming_trips(
         driver_id = ctx["driver_id"]
         require_tenant(db, tenant_id)
 
-        today = date.today()
-        end_date = today + timedelta(days=days_ahead)
-
-        logger.info(f"[driver.upcoming] tenant={tenant_id} driver={driver_id} range={today}..{end_date}")
-
+        now = datetime.utcnow()
+        next_24h = now + timedelta(hours=24)
+        logger.info(f"[driver.upcoming] tenant={tenant_id} driver={driver_id} range={now}..{next_24h}")
         routes = (
             db.query(RouteManagement)
             .filter(
                 RouteManagement.tenant_id == tenant_id,
                 RouteManagement.assigned_driver_id == driver_id,
-                RouteManagement.booking_date >= today,
-                RouteManagement.booking_date <= end_date,
+                RouteManagement.actual_start_time  >= now,
+                RouteManagement.actual_start_time <= next_24h,
                 RouteManagement.status.in_([
                     RouteManagementStatusEnum.PLANNED,
                     RouteManagementStatusEnum.ASSIGNED
                 ])
             )
-            .order_by(RouteManagement.booking_date.asc(), RouteManagement.route_id.asc())
+            .order_by(RouteManagement.actual_start_time.asc())
             .all()
         )
 
