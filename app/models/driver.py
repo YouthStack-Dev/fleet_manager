@@ -30,7 +30,7 @@ class Driver(Base):
 
     driver_id = Column(Integer, primary_key=True, index=True)
     vendor_id = Column(Integer, ForeignKey("vendors.vendor_id", ondelete="CASCADE"), nullable=False)
-
+    role_id = Column(Integer, ForeignKey("iam_roles.role_id", ondelete="CASCADE"), nullable=False)
     # Personal info
     name = Column(String(150), nullable=False)
     code = Column(String(50), nullable=False)
@@ -92,3 +92,4 @@ class Driver(Base):
     # Relationships
     vendor = relationship("app.models.vendor.Vendor", back_populates="drivers")
     vehicles = relationship("app.models.vehicle.Vehicle", back_populates="driver")
+    role = relationship("Role", back_populates="drivers")

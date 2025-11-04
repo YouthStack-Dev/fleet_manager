@@ -22,7 +22,7 @@ router = APIRouter(prefix="/driver", tags=["Driver App"])
 # Dependencies & Utilities
 # ---------------------------
 
-async def DriverAuth(user_data=Depends(PermissionChecker())):
+async def DriverAuth(user_data=Depends(PermissionChecker(["app-driver.read", "app-driver.write"]))):
     """
     Ensures the token belongs to a driver persona and returns (tenant_id, driver_id, user_id).
     """

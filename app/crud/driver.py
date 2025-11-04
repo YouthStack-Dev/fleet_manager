@@ -4,6 +4,8 @@ from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
 from sqlalchemy.exc import SQLAlchemyError
 from app.models.driver import Driver, VerificationStatusEnum, GenderEnum
+from app.models.iam.role import Role
+from app.models.tenant import Tenant
 from app.schemas.driver import DriverCreate, DriverUpdate
 from app.models.vendor import Vendor
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
@@ -57,7 +59,7 @@ class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
         return query.order_by(Driver.created_at.desc()).all()
 
     def create_with_vendor(
-        self, db: Session, *, vendor_id: int, obj_in: DriverCreate
+        self, db: Session, *, vendor_id: int,role_id: Optional[int] = None, obj_in: DriverCreate
     ) -> Driver:
         """Create a driver under a vendor with proper relationship and uniqueness checks."""
         
@@ -73,8 +75,13 @@ class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
             )
         logger.info(f"Driver creation obj_in: {jsonable_encoder(obj_in)}")
         # ✅ Create driver object
+        
+        role_id=role_id or self.get_system_role_id(db, role_name="Driver")
+        if role_id is None:
+            raise ValueError("System role 'Driver' not found in DB")
         db_obj = Driver(
             vendor_id=vendor_id,
+            role_id=role_id,
             name=obj_in.name.strip(),
             code=obj_in.code.strip(),
             email=obj_in.email.strip(),
@@ -193,6 +200,81 @@ class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
         db_obj.is_active = False
         db.flush()
         return True
+    def get_system_role_id(self, db: Session, *, role_name: str) -> Optional[int]:
+        """
+        Fetch the role_id of a system role by its name.
+        Returns None if role not found.
+        """
+        role = db.query(Role).filter(
+            Role.name == role_name,
+            Role.is_system_role == True
+        ).first()
+        return role.role_id if role else None
+    def get_driver_roles_and_permissions(
+        self, db: Session, *, driver_id: int, tenant_id: str
+    ):
+        """Return driver + assigned roles + permissions for this tenant"""
+
+        from app.models.iam.role import Role
+        from app.models.iam.policy import Policy
+
+        # ✅ Load driver with tenant filter
+        driver = (
+            db.query(Driver)
+            .join(Vendor, Vendor.vendor_id == Driver.vendor_id)
+            .join(Tenant, Tenant.tenant_id == Vendor.tenant_id)
+            .filter(
+                Driver.driver_id == driver_id,
+                Tenant.tenant_id == tenant_id,
+                Driver.is_active == True,
+                Vendor.is_active == True,
+                Tenant.is_active == True
+            )
+            .first()
+        )
+
+        if not driver:
+            return None, [], []
+
+        roles = []
+        all_permissions = []
+
+        # ✅ Drivers currently have single role (role_id)
+        if driver.role and (driver.role.tenant_id == tenant_id or driver.role.is_system_role):
+            role_list = [driver.role]
+        else:
+            role_list = []
+
+        for role in role_list:
+            if not role or not role.is_active:
+                continue
+
+            roles.append(role.name)
+
+            # Collect permissions from role policies
+            for policy in role.policies:
+                for permission in policy.permissions:
+                    module = permission.module
+                    action = permission.action
+
+                    # merge if module already exists
+                    existing = next((p for p in all_permissions if p["module"] == module), None)
+
+                    if existing:
+                        if action == "*":
+                            existing["action"] = ["create", "read", "update", "delete", "*"]
+                        elif action not in existing["action"]:
+                            existing["action"].append(action)
+                    else:
+                        actions = (
+                            ["create", "read", "update", "delete", "*"]
+                            if action == "*"
+                            else [action]
+                        )
+                        all_permissions.append({"module": module, "action": actions})
+
+        return driver, roles, all_permissions
+
 
 
 driver_crud = CRUDDriver(Driver)
