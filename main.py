@@ -31,6 +31,7 @@ from app.routes import (
     shift_router,
     cutoff_router,
     weekoff_config_router,
+    app_driver_router,
     route_grouping,  # Keep for backward compatibility
     grouping,        # Add new grouping router
     route_management, # Add new route management router
@@ -77,6 +78,7 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(app_driver_router, prefix="/api/v1")
 app.include_router(seed_router, prefix="/api/v1")
 app.include_router(employee_router, prefix="/api/v1")
 app.include_router(driver_router, prefix="/api/v1")

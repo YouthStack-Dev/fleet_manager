@@ -8,6 +8,7 @@ import time
 
 from app.database.session import get_db
 from app.models.booking import Booking
+from app.models.driver import Driver
 from app.models.route_management import RouteManagement, RouteManagementBooking, RouteManagementStatusEnum
 from app.models.shift import Shift  # Add shift model import
 from app.models.tenant import Tenant  # Add tenant model import
@@ -778,6 +779,7 @@ async def assign_vehicle_to_route(
         route = (
             db.query(RouteManagement)
             .filter(RouteManagement.route_id == route_id, RouteManagement.tenant_id == tenant_id)
+            .with_for_update()  # avoid race conditions
             .first()
         )
         if not route:
@@ -794,6 +796,7 @@ async def assign_vehicle_to_route(
             db.query(Vehicle)
             .join(Vendor, Vendor.vendor_id == Vehicle.vendor_id)
             .filter(Vehicle.vehicle_id == vehicle_id, Vendor.tenant_id == tenant_id)
+            .with_for_update()
             .first()
         )
         if not vehicle:
@@ -805,7 +808,33 @@ async def assign_vehicle_to_route(
                     details={"vehicle_id": vehicle_id, "tenant_id": tenant_id},
                 ),
             )
-
+        
+        # ---- Resolve Driver from Vehicle (1:1 mapping) ----
+        driver = db.query(Driver).filter(
+            Driver.driver_id == vehicle.driver_id,
+            Driver.tenant_id == tenant_id
+        ).first()
+        if not driver:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=ResponseWrapper.error(
+                    message="No driver mapped to this vehicle",
+                    error_code="DRIVER_NOT_LINKED_TO_VEHICLE",
+                    details={"vehicle_id": vehicle.vehicle_id},
+                ),
+            )
+        if vehicle.driver_id != driver.driver_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=ResponseWrapper.error(
+                    message="Vehicle and driver mismatch",
+                    error_code="VEHICLE_DRIVER_MISMATCH",
+                    details={
+                        "vehicle_id": vehicle.vehicle_id,
+                        "driver_id": driver.driver_id,
+                    },
+                ),
+            )   
         # ---- Vendor logic ----
         if not route.assigned_vendor_id:
             # Auto-assign vendor from vehicle if route vendor missing
@@ -825,9 +854,32 @@ async def assign_vehicle_to_route(
                     },
                 ),
             )
-
-        # ---- Assign Vehicle ----
+        assigned_conflict = (
+            db.query(RouteManagement)
+            .filter(
+                RouteManagement.assigned_vehicle_id == vehicle.vehicle_id,
+                RouteManagement.route_id != route_id,
+                RouteManagement.tenant_id == tenant_id,
+                RouteManagement.shift_id == route.shift_id,  # example constraint
+                RouteManagement.date == route.date          # depends on your schema
+            ).first()
+        )
+        if assigned_conflict:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=ResponseWrapper.error(
+                    message="Vehicle is already assigned to another route for the same shift and date",
+                    error_code="VEHICLE_ALREADY_ASSIGNED",
+                    details={
+                        "conflicting_route_id": assigned_conflict.route_id,
+                        "vehicle_id": vehicle.vehicle_id,
+                    },
+                ),
+            )
+        # ---- Apply assignment ----
         route.assigned_vehicle_id = vehicle.vehicle_id
+        route.assigned_driver_id = driver.driver_id
+
         if route.status == RouteManagementStatusEnum.ASSIGNED:
             route.status = RouteManagementStatusEnum.PLANNED  # better status progression
 
