@@ -31,6 +31,7 @@ from common_utils.auth.token_validation import Oauth2AsAccessor, validate_bearer
 from app.schemas.employee import EmployeeResponse
 from app.crud.employee import employee_crud
 from app.crud.admin import admin_crud
+from app.crud.driver import driver_crud
 from app.core.logging_config import get_logger
 from app.utils.response_utils import ResponseWrapper, handle_db_error
 
@@ -635,12 +636,12 @@ async def driver_login(
     db: Session = Depends(get_db)
 ):
     """
-    Authenticate a driver and return access + refresh tokens with roles and permissions.
+    Authenticate a driver and return JWT + opaque token + roles + permissions.
     """
-    logger.info(f"Driver login attempt for user: {form_data.username} in tenant: {form_data.tenant_id}")
+    logger.info(f"Driver login attempt: {form_data.username}, tenant: {form_data.tenant_id}")
 
     try:
-        # Step 1: Fetch driver by email and tenant
+        # Fetch driver based on tenant + email
         driver = (
             db.query(Driver)
             .join(Vendor, Vendor.vendor_id == Driver.vendor_id)
@@ -688,8 +689,23 @@ async def driver_login(
                 )
             )
 
+        # ✅ Fetch driver roles + permissions
+        driver_with_roles, roles, all_permissions = driver_crud.get_driver_roles_and_permissions(
+            db, driver_id=driver.driver_id , tenant_id=tenant.tenant_id
+        )
 
-        # Step 5: Generate token payload
+        if not driver_with_roles:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error(
+                    message="Failed to fetch roles and permissions",
+                    error_code="ROLE_FETCH_ERROR"
+                )
+            )
+
+        logger.info(f"Driver {driver.driver_id} roles={roles}, permissions={len(all_permissions)}")
+
+        # Token payload
         current_time = int(time.time())
         expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
         opaque_token = secrets.token_hex(16)
@@ -698,8 +714,10 @@ async def driver_login(
             "user_id": str(driver.driver_id),
             "tenant_id": str(tenant.tenant_id),
             "vendor_id": str(vendor.vendor_id),
-            "opaque_token": opaque_token,
+            "roles": roles,
+            "permissions": all_permissions,
             "user_type": "driver",
+            "opaque_token": opaque_token,
             "iat": current_time,
             "exp": expiry_time,
         }
@@ -732,19 +750,18 @@ async def driver_login(
 
         logger.info(f"🚀 Login successful for driver {driver.driver_id} ({driver.email}) in tenant {tenant.tenant_id}")
 
-        # Step 8: Prepare response
-        response_data = {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "token_type": "bearer",
-            "user": {
-                "driver": DriverResponse.model_validate(driver),
-                "tenant": TenantResponse.model_validate(tenant)
-            }
-        }
-
         return ResponseWrapper.success(
-            data=response_data,
+            data={
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "token_type": "bearer",
+                "user": {
+                    "driver": DriverResponse.model_validate(driver),
+                    "tenant": TenantResponse.model_validate(tenant),
+                    "roles": roles,
+                    "permissions": all_permissions
+                }
+            },
             message="Driver login successful"
         )
 

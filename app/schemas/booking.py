@@ -11,6 +11,22 @@ class BookingStatusEnum(str, Enum):
     COMPLETED = "Completed"
     CANCELLED = "Cancelled"
     NO_SHOW = "No-Show"
+    BOARDING = "Boarding"
+    EXPIRED = "Expired"
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "PENDING": "Pending",
+                "CONFIRMED": "Confirmed",
+                "ONGOING": "Ongoing",
+                "COMPLETED": "Completed",
+                "CANCELLED": "Cancelled",
+                "NO_SHOW": "No-Show",
+                "BOARDING": "Boarding",
+                "EXPIRED": "Expired",
+            }
+        }
 
 
 class BookingBase(BaseModel):

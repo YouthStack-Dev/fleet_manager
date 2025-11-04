@@ -93,6 +93,7 @@ def seed_iam(db: Session):
     modules = [
         "booking",
         "driver",
+        "app-driver",
         "employee",
         "route-booking",
         "route",
@@ -191,7 +192,7 @@ def seed_iam(db: Session):
             "ShiftPolicy",
             "WeekoffconfigPolicy"
         ],
-        "Driver": ["DriverPolicy", "ShiftPolicy", "BookingPolicy"],
+        "Driver": ["AppdriverPolicy"],
         "VendorAdmin": [
             "DriverPolicy",
             "RoutebookingPolicy",

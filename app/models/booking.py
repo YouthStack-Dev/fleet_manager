@@ -8,12 +8,14 @@ from enum import Enum as PyEnum
 
 
 class BookingStatusEnum(str, PyEnum):
-    PENDING = "Pending"
-    CONFIRMED = "Confirmed"
-    ONGOING = "Ongoing"
+    PENDING = "Pending"          # request raised
+    CONFIRMED = "Confirmed"      # routing done
+    BOARDING = "Boarding"        # waiting to board
+    ONGOING = "Ongoing"          # in vehicle
     COMPLETED = "Completed"
-    CANCELLED = "Cancelled"
+    CANCELLED = "Cancelled"      
     NO_SHOW = "No-Show"
+    EXPIRED = "Expired"          # auto-cancel before planning window
 
 
 class Booking(Base):
