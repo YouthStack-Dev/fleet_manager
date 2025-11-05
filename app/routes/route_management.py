@@ -493,143 +493,115 @@ async def get_all_routes(
         logger.info(f"Fetching all routes for tenant: {tenant_id}, shift_id: {shift_id}, booking_date: {booking_date}, user: {user_data.get('user_id', 'unknown')}")
         
 
-        
-        # Base query for routes
+
+        # --- Query routes ---
+        routes_q = db.query(RouteManagement).filter(RouteManagement.tenant_id == tenant_id)
+
         if shift_id or booking_date:
-            routes_query = (
-                db.query(RouteManagement)
+            routes_q = (
+                routes_q
                 .join(RouteManagementBooking, RouteManagement.route_id == RouteManagementBooking.route_id)
                 .join(Booking, RouteManagementBooking.booking_id == Booking.booking_id)
-                .filter(RouteManagement.tenant_id == tenant_id)
-                .distinct()
             )
-
             if shift_id:
-                routes_query = routes_query.filter(Booking.shift_id == shift_id)
+                routes_q = routes_q.filter(Booking.shift_id == shift_id)
             if booking_date:
-                routes_query = routes_query.filter(Booking.booking_date == booking_date)
-        else:
-            routes_query = db.query(RouteManagement).filter(RouteManagement.tenant_id == tenant_id)
+                routes_q = routes_q.filter(Booking.booking_date == booking_date)
 
-        routes = routes_query.all()
+        routes = routes_q.distinct().all()
 
         if not routes:
             return ResponseWrapper.success(
-                data={"shifts": [], "total_shifts": 0, "total_routes": 0},
-                message=f"No active routes found for tenant {tenant_id}"
-                       f"{f' shift {shift_id}' if shift_id else ''}"
-                       f"{f' date {booking_date}' if booking_date else ''}",
+                {"shifts": [], "total_shifts": 0, "total_routes": 0},
+                "No routes found"
             )
 
-        # ---------- Group Routes by Shift ----------
-        shifts_data = {}
+        # --- Collect IDs ---
+        driver_ids = {r.assigned_driver_id for r in routes if r.assigned_driver_id}
+        vehicle_ids = {r.assigned_vehicle_id for r in routes if r.assigned_vehicle_id}
+        vendor_ids = {r.assigned_vendor_id for r in routes if r.assigned_vendor_id}
+
+        # --- Bulk Load related data ---
+        drivers = (
+            db.query(Driver.driver_id, Driver.name, Driver.phone)
+            .filter(Driver.driver_id.in_(driver_ids))
+            .all() if driver_ids else []
+        )
+        vehicles = (
+            db.query(Vehicle.vehicle_id, Vehicle.rc_number)
+            .filter(Vehicle.vehicle_id.in_(vehicle_ids))
+            .all() if vehicle_ids else []
+        )
+        vendors = (
+            db.query(Vendor.vendor_id, Vendor.name)
+            .filter(Vendor.vendor_id.in_(vendor_ids))
+            .all() if vendor_ids else []
+        )
+
+        driver_map = {d.driver_id: {"id": d.driver_id, "name": d.name, "phone": d.phone} for d in drivers}
+        vehicle_map = {v.vehicle_id: {"id": v.vehicle_id, "rc_number": v.rc_number} for v in vehicles}
+        vendor_map = {v.vendor_id: {"id": v.vendor_id, "name": v.name} for v in vendors}
+
+        shifts = {}
 
         for route in routes:
-            route_bookings = (
-                db.query(RouteManagementBooking)
-                .filter(RouteManagementBooking.route_id == route.route_id)
-                .order_by(RouteManagementBooking.order_id)
-                .all()
-            )
+            rbs = db.query(RouteManagementBooking).filter(
+                RouteManagementBooking.route_id == route.route_id
+            ).order_by(RouteManagementBooking.order_id).all()
 
-            booking_ids = [rb.booking_id for rb in route_bookings]
+            booking_ids = [rb.booking_id for rb in rbs]
             bookings = get_bookings_by_ids(booking_ids, db) if booking_ids else []
 
-            for booking in bookings:
-                sid = booking["shift_id"]
-                if sid and sid not in shifts_data:
-                    shift = db.query(Shift).filter(Shift.shift_id == sid).first()
-                    if shift:
-                        shifts_data[sid] = {
-                            "shift_id": shift.shift_id,
-                            "log_type": shift.log_type.value if shift.log_type else None,
-                            "shift_time": shift.shift_time.strftime("%H:%M:%S") if shift.shift_time else None,
-                            "routes": [],
-                        }
-
-            estimations = RouteEstimations(
-                total_distance_km=(
-                    route.actual_total_distance 
-                    or route.estimated_total_distance 
-                    or 0.0
-                ),
-                total_time_minutes=(
-                    route.actual_total_time 
-                    or route.estimated_total_time 
-                    or 0.0
-                ),
-                estimated_pickup_times={
-                    rb.booking_id: rb.estimated_pick_up_time
-                    for rb in route_bookings if rb.estimated_pick_up_time
-                },
-                estimated_drop_times={
-                    rb.booking_id: rb.estimated_drop_time
-                    for rb in route_bookings if rb.estimated_drop_time
-                },
-            )
-
-
             stops = []
-            for rb in route_bookings:
-                booking = next((b for b in bookings if b["booking_id"] == rb.booking_id), None)
-                if not booking:
-                    continue
-                
-                stops.append({
-                    "order_id": rb.order_id,
-                    "booking_id": rb.booking_id,
-                    "employee_name": booking.get("employee_name"),
-                    "pickup_location": booking.get("pickup_location"),
-                    "pickup_latitude": booking.get("pickup_latitude"),
-                    "pickup_longitude": booking.get("pickup_longitude"),
-                    "drop_location": booking.get("drop_location"),
-                    "drop_latitude": booking.get("drop_latitude"),
-                    "drop_longitude": booking.get("drop_longitude"),
+            for rb in rbs:
+                b = next((x for x in bookings if x["booking_id"] == rb.booking_id), None)
+                if not b: continue
 
+                stops.append({
+                    **b,
+                    "order_id": rb.order_id,
                     "estimated_pick_up_time": rb.estimated_pick_up_time,
                     "estimated_drop_time": rb.estimated_drop_time,
                     "estimated_distance": rb.estimated_distance,
-
                     "actual_pick_up_time": rb.actual_pick_up_time,
                     "actual_drop_time": rb.actual_drop_time,
                     "actual_distance": rb.actual_distance,
                 })
-                
-            route_response = {
-                "route_id": route.route_id,
-                "shift_id": route.shift_id,
-                "route_code": route.route_code,
-                "status": route.status.value if hasattr(route.status, "value") else route.status,
 
+            shift_id_key = route.shift_id
+            if shift_id_key not in shifts:
+                s = db.query(Shift).filter(Shift.shift_id == shift_id_key).first()
+                if s:
+                    shifts[shift_id_key] = {
+                        "shift_id": s.shift_id,
+                        "log_type": s.log_type.value,
+                        "shift_time": s.shift_time.strftime("%H:%M:%S"),
+                        "routes": []
+                    }
+
+            shifts[shift_id_key]["routes"].append({
+                "route_id": route.route_id,
+                "route_code": route.route_code,
+                "status": route.status.value,
+                "driver": driver_map.get(route.assigned_driver_id),
+                "vehicle": vehicle_map.get(route.assigned_vehicle_id),
+                "vendor": vendor_map.get(route.assigned_vendor_id),
                 "stops": stops,
                 "summary": {
-                    "total_distance_km": (
-                        route.actual_total_distance or route.estimated_total_distance or 0.0
-                    ),
-                    "total_time_minutes": (
-                        route.actual_total_time or route.estimated_total_time or 0.0
-                    ),
-                }
-            }
+                    "total_distance_km": route.actual_total_distance or route.estimated_total_distance or 0,
+                    "total_time_minutes": route.actual_total_time or route.estimated_total_time or 0,
+                },
+            })
 
-            for booking in bookings:
-                sid = booking["shift_id"]
-                if sid in shifts_data and not any(r["route_id"] == route.route_id for r in shifts_data[sid]["routes"]):
-                    shifts_data[sid]["routes"].append(route_response)
-                    break
-
-        shifts_list = list(shifts_data.values())
-        total_routes = sum(len(s["routes"]) for s in shifts_list)
-
-        logger.info(f"[get_all_routes] {len(shifts_list)} shifts, {total_routes} routes")
+        shifts_list = list(shifts.values())
 
         return ResponseWrapper.success(
-            data={
+            {
                 "shifts": shifts_list,
                 "total_shifts": len(shifts_list),
-                "total_routes": total_routes,
+                "total_routes": sum(len(s["routes"]) for s in shifts_list)
             },
-            message=f"Successfully retrieved {len(shifts_list)} shifts with {total_routes} routes",
+            "Routes fetched successfully"
         )
 
     except HTTPException:
@@ -900,11 +872,16 @@ async def assign_vehicle_to_route(
             )
         
         # ---- Resolve Driver from Vehicle (1:1 mapping) ----
-        driver = db.query(Driver).filter(
-            Driver.driver_id == vehicle.driver_id,
-            Driver.vendor_id == vehicle.vendor_id,
-            Vendor.tenant_id == tenant_id
-        ).first()
+        driver = (
+            db.query(Driver)
+            .join(Vendor, Vendor.vendor_id == Driver.vendor_id)
+            .filter(
+                Driver.driver_id == vehicle.driver_id,
+                Driver.vendor_id == vehicle.vendor_id,
+                Vendor.tenant_id == tenant_id
+            )
+            .first()
+        )
         if not driver:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -914,6 +891,11 @@ async def assign_vehicle_to_route(
                     details={"vehicle_id": vehicle.vehicle_id},
                 ),
             )
+        if hasattr(driver, "gender") and driver.gender:
+            valid_enums = {"MALE", "FEMALE", "OTHER"}
+            if driver.gender.upper() not in valid_enums:
+                driver.gender = driver.gender.upper()
+
         if vehicle.driver_id != driver.driver_id:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -1056,79 +1038,78 @@ async def get_route_by_id(
         # Fetch route
         route = db.query(RouteManagement).filter(
             RouteManagement.route_id == route_id,
-            RouteManagement.tenant_id == tenant_id,
+            RouteManagement.tenant_id == tenant_id
         ).first()
 
         if not route:
             raise HTTPException(
                 status_code=404,
-                detail=ResponseWrapper.error(
-                    message=f"Route {route_id} not found",
-                    error_code="ROUTE_NOT_FOUND",
-                ),
+                detail=ResponseWrapper.error("Route not found", "ROUTE_NOT_FOUND")
             )
 
-        # Fetch bookings in this route
-        route_bookings = (
-            db.query(RouteManagementBooking)
-            .filter(RouteManagementBooking.route_id == route_id)
-            .order_by(RouteManagementBooking.order_id)
-            .all()
-        )
+        # Get bookings
+        rbs = db.query(RouteManagementBooking).filter(
+            RouteManagementBooking.route_id == route_id
+        ).order_by(RouteManagementBooking.order_id).all()
 
-        booking_ids = [rb.booking_id for rb in route_bookings]
+        booking_ids = [rb.booking_id for rb in rbs]
         bookings = get_bookings_by_ids(booking_ids, db) if booking_ids else []
 
-        # ---- Build stops list same format as listing API ----
-        stops = []
-        for rb in route_bookings:
-            booking = next((b for b in bookings if b["booking_id"] == rb.booking_id), None)
-            if not booking:
-                continue
-            
-            stops.append({
-                "order_id": rb.order_id,
-                "booking_id": rb.booking_id,
-                "employee_name": booking.get("employee_name"),
-                "pickup_location": booking.get("pickup_location"),
-                "pickup_latitude": booking.get("pickup_latitude"),
-                "pickup_longitude": booking.get("pickup_longitude"),
-                "drop_location": booking.get("drop_location"),
-                "drop_latitude": booking.get("drop_latitude"),
-                "drop_longitude": booking.get("drop_longitude"),
+        # ---- Fetch Driver / Vehicle / Vendor ----
+        driver = None
+        vehicle = None
+        vendor = None
 
+        if route.assigned_driver_id:
+            driver = db.query(Driver.driver_id, Driver.name, Driver.phone).filter(
+                Driver.driver_id == route.assigned_driver_id
+            ).first()
+
+        if route.assigned_vehicle_id:
+            vehicle = db.query(Vehicle.vehicle_id, Vehicle.rc_number).filter(
+                Vehicle.vehicle_id == route.assigned_vehicle_id
+            ).first()
+
+        if route.assigned_vendor_id:
+            vendor = db.query(Vendor.vendor_id, Vendor.name).filter(
+                Vendor.vendor_id == route.assigned_vendor_id
+            ).first()
+
+        # Build stops list
+        stops = []
+        for rb in rbs:
+            b = next((x for x in bookings if x["booking_id"] == rb.booking_id), None)
+            if not b: 
+                continue
+
+            stops.append({
+                **b,
+                "order_id": rb.order_id,
                 "estimated_pick_up_time": rb.estimated_pick_up_time,
                 "estimated_drop_time": rb.estimated_drop_time,
                 "estimated_distance": rb.estimated_distance,
-
                 "actual_pick_up_time": rb.actual_pick_up_time,
                 "actual_drop_time": rb.actual_drop_time,
                 "actual_distance": rb.actual_distance,
             })
 
-        # ---- Response same as list API ----
+        # Same response structure as list API ✅
         response = {
             "route_id": route.route_id,
             "shift_id": route.shift_id,
             "route_code": route.route_code,
-            "status": route.status.value if hasattr(route.status, "value") else route.status,
+            "status": route.status.value,
+            "driver": {"id": driver.driver_id, "name": driver.name, "phone": driver.phone} if driver else None,
+            "vehicle": {"id": vehicle.vehicle_id, "rc_number": vehicle.rc_number} if vehicle else None,
+            "vendor": {"id": vendor.vendor_id, "name": vendor.name} if vendor else None,
             "stops": stops,
             "summary": {
-                "total_distance_km": (
-                    route.actual_total_distance or route.estimated_total_distance or 0.0
-                ),
-                "total_time_minutes": (
-                    route.actual_total_time or route.estimated_total_time or 0.0
-                ),
+                "total_distance_km": route.actual_total_distance or route.estimated_total_distance or 0,
+                "total_time_minutes": route.actual_total_time or route.estimated_total_time or 0
             }
         }
 
-        logger.info(f"[get_route_by_id] success route={route_id}, stops={len(stops)}")
-
-        return ResponseWrapper.success(
-            data=response,
-            message=f"Route {route_id} retrieved successfully"
-        )
+        return ResponseWrapper.success(response, "Route fetched successfully")
 
     except HTTPException:
         raise
