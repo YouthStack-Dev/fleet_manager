@@ -53,15 +53,15 @@ def seed_tenants(db: Session):
             "name": "Sample Tenant",
             "tenant_id": "SAM001",
             "address": "123 MG Road, Bangalore",
-            "longitude": 77.5946,
-            "latitude": 12.9716,
+            "longitude": 77.540186,
+            "latitude": 12.933463,
         },
         {
             "name": "Test Tenant",
             "tenant_id": "TST001",
             "address": "456 Residency Road, Bangalore",
-            "longitude": 77.6200,
-            "latitude": 12.9500,
+            "longitude": 77.540186,
+            "latitude": 12.933463,
         },
     ]
 
@@ -308,8 +308,8 @@ def seed_employees(db: Session):
                 "phone": f"9000{random.randint(100000,999999)}",
                 "gender": GenderEnum.MALE,
                 "address": "123 Main Street, Bangalore",
-                "longitude": 12.9716,
-                "latitude": 77.5946
+                "longitude": 77.540188,
+                "latitude": 12.933462
             },
             {
                 "tenant_id": tenant.tenant_id,
@@ -322,8 +322,8 @@ def seed_employees(db: Session):
                 "phone": f"8000{random.randint(100000,999999)}",
                 "gender": GenderEnum.FEMALE,
                 "address": "456 Market Road, Bangalore",
-                "longitude": 12.9716,
-                "latitude": 77.5946
+                "longitude": 77.540184,
+                "latitude": 12.933464
             },
         ]
 

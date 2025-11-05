@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query ,status
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict
 from pydantic import BaseModel
-from datetime import date
+from datetime import date , datetime
 from enum import Enum
 import time
 
@@ -14,11 +14,20 @@ from app.models.shift import Shift  # Add shift model import
 from app.models.tenant import Tenant  # Add tenant model import
 from app.models.vehicle import Vehicle
 from app.models.vendor import Vendor
-from app.schemas.route import RouteWithEstimations, RouteEstimations
+from app.schemas.route import RouteWithEstimations, RouteEstimations, RouteManagementBookingResponse  # Add import for response schema
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
 from app.utils.response_utils import ResponseWrapper, handle_db_error
 
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
+from typing import List, Optional, Dict, Any
+from datetime import date
+from pydantic import BaseModel
+
+from app.schemas.shift import ShiftResponse
+from app.services.geodesic import group_rides
 
 logger = get_logger(__name__)
 
@@ -46,6 +55,15 @@ class RouteOperationEnum(str, Enum):
 class UpdateRouteRequest(BaseModel):
     operation: RouteOperationEnum  # Add operation field
     booking_ids: List[int]  # Changed from bookings to booking_ids for consistency
+
+class RouteUpdate(BaseModel):
+    booking_id: int
+    new_order_id: int
+    estimated_pickup_time: str
+    estimated_drop_time: str
+
+class UpdateBookingOrderRequest(BaseModel):
+    bookings: List[RouteUpdate]  # Each dict contains booking_id, new_order, estimated_pickup_time, estimated_drop_time
 
 def get_bookings_by_ids(booking_ids: List[int], db: Session) -> List[Dict]:
     """
@@ -181,27 +199,48 @@ def save_route_to_db(booking_ids: List[int], estimations: RouteEstimations, tena
     db.commit()
     return route
 
-@router.post("/")
+def datetime_to_minutes(dt_val):
+    """
+    Convert datetime/time string or object to minutes from midnight
+    """
+    # If already datetime or time object
+    if isinstance(dt_val, datetime):
+        return dt_val.hour * 60 + dt_val.minute
+    
+    if isinstance(dt_val, time):
+        return dt_val.hour * 60 + dt_val.minute
+
+    # Else assume it's string
+    if isinstance(dt_val, str):
+        dt = datetime.fromisoformat(dt_val)
+        return dt.hour * 60 + dt.minute
+
+    raise TypeError(f"Unsupported type for datetime_to_minutes: {type(dt_val)}")
+
+@router.post("/" , status_code=status.HTTP_200_OK)
 async def create_routes(
-    request: CreateRoutesRequest,
-    tenant_id: Optional[str] = Query(None, description="Tenant ID"),
+    booking_date: date = Query(..., description="Date for the bookings (YYYY-MM-DD)"),
+    shift_id: int = Query(..., description="Shift ID to filter bookings"),
+    radius: float = Query(1.0, description="Radius in km for clustering"),
+    group_size: int = Query(2, description="Number of route clusters to generate"),
+    strict_grouping: bool = Query(False, description="Whether to enforce strict grouping by group size or not"),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID for multi-tenant setups"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["route.create"], check_tenant=True)),
+    user_data=Depends(PermissionChecker(["route.read"], check_tenant=True)),
 ):
     """
-    Create routes from grouped bookings with estimations.
-    Validations:
-      - All booking IDs in a group belong to the same tenant.
-      - All bookings share the same date.
-      - All bookings share the same shift.
+    Generate route clusters (suggestions) for a given shift and date.
+    Only includes bookings NOT already assigned to any route.
     """
     try:
-        logger.info(f"[create_routes] Received request with {len(request.groups)} group(s) | Raw tenant={tenant_id} | User={user_data.get('user_id')}")
+        logger.info(
+            f"Clustering request for date={booking_date}, shift={shift_id}, user={user_data.get('user_id', 'unknown')}"
+        )
 
-        # ---- Determine effective tenant_id ----
         user_type = user_data.get("user_type")
         token_tenant_id = user_data.get("tenant_id")
 
+        # ---- Tenant Resolution ----
         if user_type == "employee":
             tenant_id = token_tenant_id
         elif user_type == "admin" and not tenant_id:
@@ -213,7 +252,7 @@ async def create_routes(
                 ),
             )
         else:
-            tenant_id = token_tenant_id
+            tenant_id = tenant_id or token_tenant_id
 
         if not tenant_id:
             raise HTTPException(
@@ -224,165 +263,166 @@ async def create_routes(
                 ),
             )
 
-        logger.info(f"[create_routes] Effective tenant resolved: {tenant_id}")
+        # ---- Validate Shift ----
+        shift = (
+            db.query(Shift)
+            .filter(Shift.shift_id == shift_id, Shift.tenant_id == tenant_id)
+            .first()
+        )
 
-        # ---- Validate tenant exists ----
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
-        if not tenant:
+        if not shift:
+            logger.warning(f"Shift not found: {shift_id}")
             raise HTTPException(
                 status_code=404,
                 detail=ResponseWrapper.error(
-                    message=f"Tenant {tenant_id} not found",
-                    error_code="TENANT_NOT_FOUND",
+                    message=f"Shift {shift_id} not found or doesn't belong to this tenant",
+                    error_code="SHIFT_NOT_FOUND_OR_UNAUTHORIZED"
                 ),
             )
 
-        if not request.groups:
-            raise HTTPException(
-                status_code=400,
-                detail=ResponseWrapper.error(
-                    message="No route groups provided",
-                    error_code="NO_GROUPS_PROVIDED",
-                ),
+        # ---- Determine Coordinate Columns ----
+        shift_type = shift.log_type or "Unknown"
+        lat_col = "pickup_latitude" if shift_type == "IN" else "drop_latitude"
+        lon_col = "pickup_longitude" if shift_type == "IN" else "drop_longitude"
+        
+        # ---- Fetch Already Routed Booking IDs ----
+        routed_booking_ids = (
+            db.query(RouteManagementBooking.booking_id)
+            .join(RouteManagement, RouteManagement.route_id == RouteManagementBooking.route_id)
+            .filter(RouteManagement.tenant_id == tenant_id)
+            .distinct()
+            .all()
+        )
+        routed_booking_ids = [b.booking_id for b in routed_booking_ids]
+
+        # ---- Fetch Only Unrouted Bookings ----
+        bookings_query = db.query(Booking).filter(
+            Booking.booking_date == booking_date,
+            Booking.shift_id == shift_id,
+            Booking.tenant_id == tenant_id,
+        )
+        if routed_booking_ids:
+            bookings_query = bookings_query.filter(~Booking.booking_id.in_(routed_booking_ids))
+
+        bookings = bookings_query.all()
+
+        if not bookings:
+            logger.info(f"No unrouted bookings found for tenant={tenant_id}, shift={shift_id} on {booking_date}")
+            return ResponseWrapper.success(
+                data={"clusters": [], "total_bookings": 0, "total_clusters": 0},
+                message=f"No unrouted bookings found for shift {shift_id} on {booking_date}"
             )
 
-        # ---- Collect validations across all groups ----
-        all_booking_dates = set()
-        all_shift_ids = set()
-        all_tenant_ids = set()
+        # ---- Prepare Rides for Clustering ----
+        rides = []
+        for booking in bookings:
+            ride = {
+                "lat": getattr(booking, lat_col),
+                "lon": getattr(booking, lon_col),
+            }
+            ride.update(booking.__dict__)
+            rides.append(ride)
 
-        routes = []
-        for idx, group in enumerate(request.groups, start=1):
-            logger.info(f"[create_routes] ─── Processing group #{idx} ({len(group.booking_ids)} bookings) ───")
+        valid_rides = [r for r in rides if r["lat"] is not None and r["lon"] is not None]
 
-            bookings = get_bookings_by_ids(group.booking_ids, db)
-            logger.info(f"[create_routes] Retrieved {len(bookings)} booking(s) for group #{idx}: {[b['booking_id'] for b in bookings]}")
-
-            if not bookings:
-                raise HTTPException(
-                    status_code=404,
-                    detail=ResponseWrapper.error(
-                        message=f"No bookings found for IDs {group.booking_ids}",
-                        error_code="NO_BOOKINGS_FOUND",
-                    ),
-                )
-
-            # ---- Check if any booking is already assigned to another active route ----
-            existing_routes = (
-                db.query(RouteManagement.route_id, RouteManagementBooking.booking_id)
-                .join(RouteManagementBooking, RouteManagement.route_id == RouteManagementBooking.route_id)
-                .filter(
-                    RouteManagementBooking.booking_id.in_(group.booking_ids),
-                    RouteManagement.tenant_id == tenant_id
-                )
-                .all()
+        if not valid_rides:
+            logger.warning(f"No valid coordinates found for {len(bookings)} unrouted bookings")
+            return ResponseWrapper.success(
+                data={"clusters": [], "total_bookings": len(bookings), "total_clusters": 0},
+                message="No bookings with valid coordinates found for clustering"
             )
 
-            if existing_routes:
-                existing_route_ids = list({r.route_id for r in existing_routes})
-                already_assigned_bookings = list({r.booking_id for r in existing_routes})
-                raise HTTPException(
-                    status_code=400,
-                    detail=ResponseWrapper.error(
-                        message="Some bookings are already assigned to existing routes",
-                        error_code="BOOKINGS_ALREADY_ASSIGNED",
-                        details={
-                            "already_assigned_bookings": already_assigned_bookings,
-                            "existing_route_ids": existing_route_ids,
-                        },
-                    ),
-                )
-            # ---- Strict per-group validations ----
-            tenant_ids = {b["tenant_id"] for b in bookings if b.get("tenant_id")}
-            booking_dates = {b["booking_date"] for b in bookings if b.get("booking_date")}
-            shift_ids = {b["shift_id"] for b in bookings if b.get("shift_id")}
+        # ---- Generate Clusters ----
+        clusters = group_rides(valid_rides, radius, group_size, strict_grouping)
 
-            if len(tenant_ids) != 1 or tenant_id not in tenant_ids:
-                raise HTTPException(
-                    status_code=400,
-                    detail=ResponseWrapper.error(
-                        message="All bookings in a group must belong to the same tenant",
-                        error_code="CROSS_TENANT_BOOKINGS",
-                        details={"expected_tenant": tenant_id, "found_tenants": list(tenant_ids)},
-                    ),
-                )
+        cluster_data = []
+        for idx, cluster in enumerate(clusters, start=1):
+            for booking in cluster:
+                booking.pop("lat", None)
+                booking.pop("lon", None)
+            cluster_data.append({"cluster_id": idx, "bookings": cluster})
 
-            if len(booking_dates) != 1:
-                raise HTTPException(
-                    status_code=400,
-                    detail=ResponseWrapper.error(
-                        message="All bookings in a route must have the same booking date",
-                        error_code="MIXED_BOOKING_DATES",
-                        details={"booking_dates": list(booking_dates)},
-                    ),
+        logger.info(f"Generated {len(cluster_data)} clusters from {len(bookings)} unrouted bookings")
+
+        # ---- Generate optimal route for each cluster ----
+        from app.services.optimal_roiute_generation import generate_optimal_route, generate_drop_route
+
+        for cluster in cluster_data:
+            if shift_type == "IN":
+                optimized_route = generate_optimal_route(
+                    group=cluster["bookings"],
+                    drop_lat=cluster["bookings"][-1]["drop_latitude"],
+                    drop_lng=cluster["bookings"][-1]["drop_longitude"],
+                    drop_address=cluster["bookings"][-1]["drop_location"]
+                )
+            else:
+                optimized_route = generate_drop_route(
+                    group=cluster["bookings"],
+                    start_time_minutes=datetime_to_minutes(shift.shift_time),
+                    office_lat=cluster["bookings"][0]["pickup_latitude"],
+                    office_lng=cluster["bookings"][0]["pickup_longitude"],
+                    office_address=cluster["bookings"][0]["pickup_location"]
                 )
 
-            if len(shift_ids) != 1:
-                raise HTTPException(
-                    status_code=400,
-                    detail=ResponseWrapper.error(
-                        message="All bookings in a route must belong to the same shift",
-                        error_code="MIXED_SHIFTS",
-                        details={"shift_ids": list(shift_ids)},
-                    ),
-                )
+            # Save the optimized route to the database
+            if optimized_route:
+                try:
+                    route = RouteManagement(
+                        tenant_id=tenant_id,
+                        shift_id=shift_id,
+                        route_code=f"Route-{cluster['cluster_id']}",
+                        estimated_total_time=optimized_route[0]["estimated_time"].split()[0],
+                        estimated_total_distance=optimized_route[0]["estimated_distance"].split()[0],
+                        buffer_time=optimized_route[0]["buffer_time"].split()[0],
+                        status="PLANNED",
+                    )
+                    db.add(route)
+                    db.flush()  # Get the route_id
 
-            # ---- Collect global-level validations ----
-            all_booking_dates.update(booking_dates)
-            all_shift_ids.update(shift_ids)
-            all_tenant_ids.update(tenant_ids)
+                    for idx, booking in enumerate(optimized_route[0]["pickup_order"]):
+                        route_booking = RouteManagementBooking(
+                            route_id=route.route_id,
+                            booking_id=booking["booking_id"],
+                            order_id=idx + 1,
+                            estimated_pick_up_time=booking["estimated_pickup_time_formatted"],
+                            estimated_distance=booking["estimated_distance_km"],
+                        )
+                        db.add(route_booking)
 
-            booking_date = list(booking_dates)[0]
-            shift_id = list(shift_ids)[0]
-            logger.info(f"[create_routes] ✅ Valid group | Tenant={tenant_id} | Date={booking_date} | Shift={shift_id}")
+                    db.commit()
+                except SQLAlchemyError as e:
+                    db.rollback()
+                    logger.error(f"Failed to save route to database: {e}")
+                    continue
 
-            estimations = calculate_route_estimations(bookings)
-            saved_route = save_route_to_db(group.booking_ids, estimations, tenant_id, db)
+                cluster["optimized_route"] = optimized_route
 
-            routes.append(
-                RouteWithEstimations(
-                    route_id=saved_route.route_id,
-                    bookings=bookings,
-                    estimations=estimations,
-                )
-            )
-
-        # ---- Cross-group (global) validations ----
-        if len(all_booking_dates) > 1:
-            raise HTTPException(
-                status_code=400,
-                detail=ResponseWrapper.error(
-                    message="All groups in this request must have bookings from the same date",
-                    error_code="MULTIPLE_BOOKING_DATES_IN_REQUEST",
-                    details={"booking_dates": list(all_booking_dates)},
-                ),
-            )
-
-        if len(all_shift_ids) > 1:
-            raise HTTPException(
-                status_code=400,
-                detail=ResponseWrapper.error(
-                    message="All groups in this request must belong to the same shift",
-                    error_code="MULTIPLE_SHIFTS_IN_REQUEST",
-                    details={"shift_ids": list(all_shift_ids)},
-                ),
-            )
-
-        logger.info(f"[create_routes] ✅ Successfully created {len(routes)} route(s)")
+        # ---- Final Response ----
+        shift_response = ShiftResponse.model_validate(shift, from_attributes=True)
         return ResponseWrapper.success(
-            data={"routes": routes},
-            message=f"Successfully created {len(routes)} route(s)",
+            data={
+                "shift": shift_response,
+                "clusters": cluster_data,
+                "total_bookings": len(bookings),
+                "total_clusters": len(clusters),
+            },
+            message="Successfully generated route suggestions for unrouted bookings"
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        db.rollback()
-        logger.exception("[create_routes] Unexpected error")
-        return handle_db_error(e)
+        logger.error(f"Error generating route suggestions: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=ResponseWrapper.error(
+                message="Error generating route suggestions",
+                error_code="ROUTE_SUGGESTION_ERROR",
+                details={"error": str(e)},
+            ),
+        )
 
-
-@router.get("/")
+@router.get("/", status_code=status.HTTP_200_OK)
 async def get_all_routes(
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     shift_id: Optional[int] = Query(None, description="Filter by shift ID"),
@@ -393,23 +433,42 @@ async def get_all_routes(
     """
     Get all active routes with their details, optionally filtered by shift and booking date.
     """
+
     try:
         user_type = user_data.get("user_type")
         token_tenant_id = user_data.get("tenant_id")
 
+        logger.info(
+            f"[get_all_routes] user={user_data.get('user_id')} "
+            f"user_type={user_type}, query_tenant={tenant_id}, token_tenant={token_tenant_id}"
+        )
+
+        # ---------- Tenant Resolution ----------
         if user_type == "employee":
-            tenant_id = token_tenant_id
-        elif user_type == "admin" and not tenant_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="tenant_id is required for admin users",
-                    error_code="TENANT_ID_REQUIRED",
-                ),
-            )
-        else:
+            # Employees always locked to their tenant
             tenant_id = token_tenant_id
 
+        elif user_type == "admin":
+            if token_tenant_id:
+                # Normal admin with tenant in token
+                tenant_id = token_tenant_id
+            else:
+                # SuperAdmin must provide tenant_id explicitly
+                if not tenant_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=ResponseWrapper.error(
+                            message="tenant_id is required for admin users",
+                            error_code="TENANT_ID_REQUIRED",
+                        ),
+                    )
+                # tenant_id from query param stays
+
+        else:
+            # fallback
+            tenant_id = token_tenant_id
+
+        # final safety check
         if not tenant_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -419,9 +478,9 @@ async def get_all_routes(
                 ),
             )
 
-        logger.info(f"[create_routes] Effective tenant resolved: {tenant_id}")
+        logger.info(f"[get_all_routes] resolved tenant: {tenant_id}")
 
-        # ---- Validate tenant exists ----
+        # ---------- Validate Tenant ----------
         tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
         if not tenant:
             raise HTTPException(
@@ -434,114 +493,117 @@ async def get_all_routes(
         logger.info(f"Fetching all routes for tenant: {tenant_id}, shift_id: {shift_id}, booking_date: {booking_date}, user: {user_data.get('user_id', 'unknown')}")
         
 
-        
-        # Base query for routes
+
+        # --- Query routes ---
+        routes_q = db.query(RouteManagement).filter(RouteManagement.tenant_id == tenant_id)
+
         if shift_id or booking_date:
-            # If shift_id or booking_date is provided, filter routes by bookings
-            routes_query = db.query(RouteManagement).join(
-                RouteManagementBooking, RouteManagement.route_id == RouteManagementBooking.route_id
-            ).join(
-                Booking, RouteManagementBooking.booking_id == Booking.booking_id
-            ).filter(
-                RouteManagement.tenant_id == tenant_id
+            routes_q = (
+                routes_q
+                .join(RouteManagementBooking, RouteManagement.route_id == RouteManagementBooking.route_id)
+                .join(Booking, RouteManagementBooking.booking_id == Booking.booking_id)
             )
-            
-            # Add filters based on provided parameters
             if shift_id:
-                routes_query = routes_query.filter(Booking.shift_id == shift_id)
+                routes_q = routes_q.filter(Booking.shift_id == shift_id)
             if booking_date:
-                routes_query = routes_query.filter(Booking.booking_date == booking_date)
-                
-            routes_query = routes_query.distinct()
-        else:
-            routes_query = db.query(RouteManagement).filter(
-                RouteManagement.tenant_id == tenant_id
-            )
-        
-        routes = routes_query.all()
-        
+                routes_q = routes_q.filter(Booking.booking_date == booking_date)
+
+        routes = routes_q.distinct().all()
+
         if not routes:
-            filter_msg = f" and shift {shift_id}" if shift_id else ""
-            filter_msg += f" and date {booking_date}" if booking_date else ""
-            logger.info(f"No active routes found for tenant {tenant_id}{filter_msg}")
             return ResponseWrapper.success(
-                data={
-                    "shifts": [],
-                    "total_shifts": 0,
-                    "total_routes": 0,
-                },
-                message=f"No active routes found for tenant {tenant_id}{filter_msg}"
+                {"shifts": [], "total_shifts": 0, "total_routes": 0},
+                "No routes found"
             )
-        
-        # Group routes by shift
-        shifts_data = {}
-        
+
+        # --- Collect IDs ---
+        driver_ids = {r.assigned_driver_id for r in routes if r.assigned_driver_id}
+        vehicle_ids = {r.assigned_vehicle_id for r in routes if r.assigned_vehicle_id}
+        vendor_ids = {r.assigned_vendor_id for r in routes if r.assigned_vendor_id}
+
+        # --- Bulk Load related data ---
+        drivers = (
+            db.query(Driver.driver_id, Driver.name, Driver.phone)
+            .filter(Driver.driver_id.in_(driver_ids))
+            .all() if driver_ids else []
+        )
+        vehicles = (
+            db.query(Vehicle.vehicle_id, Vehicle.rc_number)
+            .filter(Vehicle.vehicle_id.in_(vehicle_ids))
+            .all() if vehicle_ids else []
+        )
+        vendors = (
+            db.query(Vendor.vendor_id, Vendor.name)
+            .filter(Vendor.vendor_id.in_(vendor_ids))
+            .all() if vendor_ids else []
+        )
+
+        driver_map = {d.driver_id: {"id": d.driver_id, "name": d.name, "phone": d.phone} for d in drivers}
+        vehicle_map = {v.vehicle_id: {"id": v.vehicle_id, "rc_number": v.rc_number} for v in vehicles}
+        vendor_map = {v.vendor_id: {"id": v.vendor_id, "name": v.name} for v in vendors}
+
+        shifts = {}
+
         for route in routes:
-            route_bookings = db.query(RouteManagementBooking).filter(
+            rbs = db.query(RouteManagementBooking).filter(
                 RouteManagementBooking.route_id == route.route_id
-            ).order_by(RouteManagementBooking.stop_order).all()
-            
-            booking_ids = [rb.booking_id for rb in route_bookings]
+            ).order_by(RouteManagementBooking.order_id).all()
+
+            booking_ids = [rb.booking_id for rb in rbs]
             bookings = get_bookings_by_ids(booking_ids, db) if booking_ids else []
-            
-            # Get shift information from bookings
-            for booking in bookings:
-                shift_id_key = booking["shift_id"]
-                if shift_id_key and shift_id_key not in shifts_data:
-                    # Get shift details
-                    shift = db.query(Shift).filter(Shift.shift_id == shift_id_key).first()
-                    if shift:
-                        shifts_data[shift_id_key] = {
-                            "shift_id": shift.shift_id,
-                            "log_type": shift.log_type.value if shift.log_type else None,
-                            "shift_time": shift.shift_time.strftime("%H:%M:%S") if shift.shift_time else None,
-                            "routes": []
-                        }
-            
-            estimations = RouteEstimations(
-                total_distance_km=route.total_distance_km or 0.0,
-                total_time_minutes=route.total_time_minutes or 0.0,
-                estimated_pickup_times={
-                    rb.booking_id: rb.estimated_pickup_time 
-                    for rb in route_bookings if rb.estimated_pickup_time
-                },
-                estimated_drop_times={
-                    rb.booking_id: rb.estimated_drop_time 
-                    for rb in route_bookings if rb.estimated_drop_time
-                }
-            )
-            
-            route_response = {
+
+            stops = []
+            for rb in rbs:
+                b = next((x for x in bookings if x["booking_id"] == rb.booking_id), None)
+                if not b: continue
+
+                stops.append({
+                    **b,
+                    "order_id": rb.order_id,
+                    "estimated_pick_up_time": rb.estimated_pick_up_time,
+                    "estimated_drop_time": rb.estimated_drop_time,
+                    "estimated_distance": rb.estimated_distance,
+                    "actual_pick_up_time": rb.actual_pick_up_time,
+                    "actual_drop_time": rb.actual_drop_time,
+                    "actual_distance": rb.actual_distance,
+                })
+
+            shift_id_key = route.shift_id
+            if shift_id_key not in shifts:
+                s = db.query(Shift).filter(Shift.shift_id == shift_id_key).first()
+                if s:
+                    shifts[shift_id_key] = {
+                        "shift_id": s.shift_id,
+                        "log_type": s.log_type.value,
+                        "shift_time": s.shift_time.strftime("%H:%M:%S"),
+                        "routes": []
+                    }
+
+            shifts[shift_id_key]["routes"].append({
                 "route_id": route.route_id,
-                "bookings": bookings,
-                "estimations": estimations
-            }
-            
-            # Add route to appropriate shift
-            for booking in bookings:
-                shift_id_key = booking["shift_id"]
-                if shift_id_key and shift_id_key in shifts_data:
-                    # Check if route already added to this shift
-                    route_exists = any(r["route_id"] == route.route_id for r in shifts_data[shift_id_key]["routes"])
-                    if not route_exists:
-                        shifts_data[shift_id_key]["routes"].append(route_response)
-                    break
-        
-        # Convert to list format
-        shifts_list = list(shifts_data.values())
-        total_routes = sum(len(shift["routes"]) for shift in shifts_list)
-        
-        logger.info(f"Successfully fetched {len(shifts_list)} shifts with {total_routes} total routes")
-        
+                "route_code": route.route_code,
+                "status": route.status.value,
+                "driver": driver_map.get(route.assigned_driver_id),
+                "vehicle": vehicle_map.get(route.assigned_vehicle_id),
+                "vendor": vendor_map.get(route.assigned_vendor_id),
+                "stops": stops,
+                "summary": {
+                    "total_distance_km": route.actual_total_distance or route.estimated_total_distance or 0,
+                    "total_time_minutes": route.actual_total_time or route.estimated_total_time or 0,
+                },
+            })
+
+        shifts_list = list(shifts.values())
+
         return ResponseWrapper.success(
-            data={
+            {
                 "shifts": shifts_list,
                 "total_shifts": len(shifts_list),
-                "total_routes": total_routes
+                "total_routes": sum(len(s["routes"]) for s in shifts_list)
             },
-            message=f"Successfully retrieved {len(shifts_list)} shifts with {total_routes} routes"
+            "Routes fetched successfully"
         )
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -810,11 +872,16 @@ async def assign_vehicle_to_route(
             )
         
         # ---- Resolve Driver from Vehicle (1:1 mapping) ----
-        driver = db.query(Driver).filter(
-            Driver.driver_id == vehicle.driver_id,
-            Driver.vendor_id == vehicle.vendor_id,
-            Vendor.tenant_id == tenant_id
-        ).first()
+        driver = (
+            db.query(Driver)
+            .join(Vendor, Vendor.vendor_id == Driver.vendor_id)
+            .filter(
+                Driver.driver_id == vehicle.driver_id,
+                Driver.vendor_id == vehicle.vendor_id,
+                Vendor.tenant_id == tenant_id
+            )
+            .first()
+        )
         if not driver:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -824,6 +891,11 @@ async def assign_vehicle_to_route(
                     details={"vehicle_id": vehicle.vehicle_id},
                 ),
             )
+        if hasattr(driver, "gender") and driver.gender:
+            valid_enums = {"MALE", "FEMALE", "OTHER"}
+            if driver.gender.upper() not in valid_enums:
+                driver.gender = driver.gender.upper()
+
         if vehicle.driver_id != driver.driver_id:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -911,7 +983,7 @@ async def assign_vehicle_to_route(
 
 @router.get("/{route_id}")
 async def get_route_by_id(
-    route_id: int,  # Changed from str to int
+    route_id: int,
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["route.read"], check_tenant=True)),
@@ -923,106 +995,126 @@ async def get_route_by_id(
         user_type = user_data.get("user_type")
         token_tenant_id = user_data.get("tenant_id")
 
+        # --- Tenant Resolution ---
         if user_type == "employee":
             tenant_id = token_tenant_id
-        elif user_type == "admin" and not tenant_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="tenant_id is required for admin users",
-                    error_code="TENANT_ID_REQUIRED",
-                ),
-            )
+        elif user_type == "admin":
+            if token_tenant_id:
+                tenant_id = token_tenant_id  # normal admin with tenant scope
+            else:
+                if not tenant_id:  # superadmin case, must pass tenant
+                    raise HTTPException(
+                        status_code=400,
+                        detail=ResponseWrapper.error(
+                            message="tenant_id is required for admin users",
+                            error_code="TENANT_ID_REQUIRED",
+                        ),
+                    )
         else:
             tenant_id = token_tenant_id
 
         if not tenant_id:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
+                status_code=403,
                 detail=ResponseWrapper.error(
                     message="Tenant context not available",
                     error_code="TENANT_ID_REQUIRED",
-                ),
+                )
             )
-        logger.info(f"Fetching route {route_id} for tenant: {tenant_id}, user: {user_data.get('user_id', 'unknown')}")
-        
+
+        logger.info(f"[get_route_by_id] tenant={tenant_id}, route_id={route_id}")
+
         # Validate tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
         if not tenant:
-            logger.warning(f"Tenant {tenant_id} not found")
             raise HTTPException(
                 status_code=404,
                 detail=ResponseWrapper.error(
                     message=f"Tenant {tenant_id} not found",
-                    error_code="TENANT_NOT_FOUND",
-                    details={"tenant_id": tenant_id}
+                    error_code="TENANT_NOT_FOUND"
                 )
             )
-        
-        # Query the route
+
+        # Fetch route
         route = db.query(RouteManagement).filter(
             RouteManagement.route_id == route_id,
-            RouteManagement.tenant_id == tenant_id,
+            RouteManagement.tenant_id == tenant_id
         ).first()
-        
+
         if not route:
-            logger.warning(f"Route {route_id} not found for tenant {tenant_id}")
             raise HTTPException(
                 status_code=404,
-                detail=ResponseWrapper.error(
-                    message=f"Route {route_id} not found",
-                    error_code="ROUTE_NOT_FOUND",
-                    details = "No rount found"
-                )
+                detail=ResponseWrapper.error("Route not found", "ROUTE_NOT_FOUND")
             )
-        
-        # Get route bookings
-        route_bookings = db.query(RouteManagementBooking).filter(
+
+        # Get bookings
+        rbs = db.query(RouteManagementBooking).filter(
             RouteManagementBooking.route_id == route_id
-        ).order_by(RouteManagementBooking.stop_order).all()
-        
-        booking_ids = [rb.booking_id for rb in route_bookings]
+        ).order_by(RouteManagementBooking.order_id).all()
+
+        booking_ids = [rb.booking_id for rb in rbs]
         bookings = get_bookings_by_ids(booking_ids, db) if booking_ids else []
-        
-        # Create estimations
-        estimations = RouteEstimations(
-            total_distance_km=route.total_distance_km or 0.0,
-            total_time_minutes=route.total_time_minutes or 0.0,
-            estimated_pickup_times={
-                rb.booking_id: rb.estimated_pickup_time 
-                for rb in route_bookings if rb.estimated_pickup_time
-            },
-            estimated_drop_times={
-                rb.booking_id: rb.estimated_drop_time 
-                for rb in route_bookings if rb.estimated_drop_time
+
+        # ---- Fetch Driver / Vehicle / Vendor ----
+        driver = None
+        vehicle = None
+        vendor = None
+
+        if route.assigned_driver_id:
+            driver = db.query(Driver.driver_id, Driver.name, Driver.phone).filter(
+                Driver.driver_id == route.assigned_driver_id
+            ).first()
+
+        if route.assigned_vehicle_id:
+            vehicle = db.query(Vehicle.vehicle_id, Vehicle.rc_number).filter(
+                Vehicle.vehicle_id == route.assigned_vehicle_id
+            ).first()
+
+        if route.assigned_vendor_id:
+            vendor = db.query(Vendor.vendor_id, Vendor.name).filter(
+                Vendor.vendor_id == route.assigned_vendor_id
+            ).first()
+
+        # Build stops list
+        stops = []
+        for rb in rbs:
+            b = next((x for x in bookings if x["booking_id"] == rb.booking_id), None)
+            if not b: 
+                continue
+
+            stops.append({
+                **b,
+                "order_id": rb.order_id,
+                "estimated_pick_up_time": rb.estimated_pick_up_time,
+                "estimated_drop_time": rb.estimated_drop_time,
+                "estimated_distance": rb.estimated_distance,
+                "actual_pick_up_time": rb.actual_pick_up_time,
+                "actual_drop_time": rb.actual_drop_time,
+                "actual_distance": rb.actual_distance,
+            })
+
+        # Same response structure as list API ✅
+        response = {
+            "route_id": route.route_id,
+            "shift_id": route.shift_id,
+            "route_code": route.route_code,
+            "status": route.status.value,
+            "driver": {"id": driver.driver_id, "name": driver.name, "phone": driver.phone} if driver else None,
+            "vehicle": {"id": vehicle.vehicle_id, "rc_number": vehicle.rc_number} if vehicle else None,
+            "vendor": {"id": vendor.vendor_id, "name": vendor.name} if vendor else None,
+            "stops": stops,
+            "summary": {
+                "total_distance_km": route.actual_total_distance or route.estimated_total_distance or 0,
+                "total_time_minutes": route.actual_total_time or route.estimated_total_time or 0
             }
-        )
-        
-        logger.info(f"Successfully retrieved route {route_id}")
-        
-        return ResponseWrapper.success(
-            data=RouteWithEstimations(
-                route_id=route.route_id,
-                bookings=bookings,
-                estimations=estimations
-            ),
-            message=f"Route {route_id} retrieved successfully"
-        )
-    
+        }
+
+        return ResponseWrapper.success(response, "Route fetched successfully")
+
     except HTTPException:
         raise
     except Exception as e:
         return handle_db_error(e)
-    except Exception as e:
-        logger.error(f"Error retrieving route {route_id}: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=ResponseWrapper.error(
-                message=f"Error retrieving route {route_id}",
-                error_code="ROUTE_RETRIEVAL_ERROR",
-                details={"error": str(e)}
-            )
-        )
 
 @router.post("/merge")
 async def merge_routes(
@@ -1033,7 +1125,6 @@ async def merge_routes(
 ):
     """
     Merge multiple routes into a single optimized route.
-    After creating the new merged route, permanently delete the old ones.
     """
     try:
         user_type = user_data.get("user_type")
@@ -1051,8 +1142,6 @@ async def merge_routes(
                     error_code="TENANT_ID_REQUIRED",
                 ),
             )
-        else:
-            tenant_id = tenant_id or token_tenant_id
 
         if not tenant_id:
             raise HTTPException(
@@ -1063,107 +1152,130 @@ async def merge_routes(
                 ),
             )
 
-        logger.info(f"Merging {len(request.route_ids)} routes for tenant={tenant_id}, user={user_id}")
-
-        # --- Tenant Validation ---
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
-        if not tenant:
-            logger.warning(f"Tenant {tenant_id} not found")
-            raise HTTPException(
-                status_code=404,
-                detail=ResponseWrapper.error(
-                    message=f"Tenant {tenant_id} not found",
-                    error_code="TENANT_NOT_FOUND",
-                    details={"tenant_id": tenant_id},
-                ),
-            )
+        logger.info(f"[MERGE] tenant={tenant_id}, user={user_id}, route_ids={request.route_ids}")
 
         if not request.route_ids:
             raise HTTPException(
-                status_code=400,
-                detail=ResponseWrapper.error(
-                    message="No route IDs provided for merging",
-                    error_code="NO_ROUTE_IDS_PROVIDED",
-                ),
+                400,
+                ResponseWrapper.error("No route ids provided", "NO_ROUTE_IDS")
             )
 
-        # --- Collect all bookings from the routes to be merged ---
-        all_booking_ids = []
-        route_ids_to_delete = []
+        # --- Load routes & collect bookings ---
+        routes = db.query(RouteManagement).filter(
+            RouteManagement.route_id.in_(request.route_ids),
+            RouteManagement.tenant_id == tenant_id
+        ).all()
 
-        for route_id in request.route_ids:
-            route = (
-                db.query(RouteManagement)
-                .filter(RouteManagement.route_id == route_id, RouteManagement.tenant_id == tenant_id)
-                .first()
-            )
-
-            if not route:
-                raise HTTPException(
-                    status_code=404,
-                    detail=ResponseWrapper.error(
-                        message=f"Route {route_id} not found",
-                        error_code="ROUTE_NOT_FOUND",
-                        details={"route_id": route_id},
-                    ),
-                )
-
-            route_bookings = (
-                db.query(RouteManagementBooking)
-                .filter(RouteManagementBooking.route_id == route_id)
-                .all()
-            )
-
-            all_booking_ids.extend([rb.booking_id for rb in route_bookings])
-            route_ids_to_delete.append(route_id)
-
-        # Deduplicate booking IDs (preserve order)
-        all_booking_ids = list(dict.fromkeys(all_booking_ids))
-
-        # --- Validate bookings exist ---
-        bookings = get_bookings_by_ids(all_booking_ids, db)
-        if not bookings:
+        if not routes:
             raise HTTPException(
-                status_code=404,
-                detail=ResponseWrapper.error(
-                    message="No valid bookings found for provided route IDs",
-                    error_code="BOOKINGS_NOT_FOUND",
-                ),
+                404,
+                ResponseWrapper.error("Routes not found", "ROUTE_NOT_FOUND")
             )
 
-        # --- Compute new estimations ---
-        estimations = calculate_route_estimations(bookings)
+        all_booking_ids = []
+        shift_id = None
 
-        # --- Create merged route ---
-        merged_route = save_route_to_db(all_booking_ids, estimations, tenant_id, db)
-        logger.info(f"Created merged route {merged_route.route_id}")
+        for r in routes:
+            if shift_id and r.shift_id != shift_id:
+                raise HTTPException(
+                    400,
+                    ResponseWrapper.error(
+                        "All routes must belong to same shift",
+                        "SHIFT_MISMATCH"
+                    )
+                )
+            shift_id = r.shift_id
 
-        # --- Hard delete old routes and related records ---
-        deleted_bookings_count = (
-            db.query(RouteManagementBooking)
-            .filter(RouteManagementBooking.route_id.in_(route_ids_to_delete))
-            .delete(synchronize_session=False)
+            rbs = db.query(RouteManagementBooking).filter(
+                RouteManagementBooking.route_id == r.route_id
+            ).all()
+
+            all_booking_ids.extend([b.booking_id for b in rbs])
+
+        all_booking_ids = list(dict.fromkeys(all_booking_ids))  # unique preserve order
+
+        if not all_booking_ids:
+            raise HTTPException(
+                400,
+                ResponseWrapper.error("No bookings in selected routes", "EMPTY_ROUTE_LIST")
+            )
+
+        # --- Pull full booking objects ---
+        bookings = get_bookings_by_ids(all_booking_ids, db)
+
+        shift = db.query(Shift).filter(Shift.shift_id == shift_id).first()
+        if not shift:
+            raise HTTPException(
+                404, ResponseWrapper.error("Shift not found", "SHIFT_NOT_FOUND")
+            )
+
+        # --- Which route generation to call? ---
+        from app.services.optimal_roiute_generation import generate_optimal_route, generate_drop_route
+
+        shift_type = shift.log_type.value if hasattr(shift.log_type, "value") else shift.log_type
+
+        if shift_type == "IN":
+            optimized = generate_optimal_route(
+                group=bookings,
+                drop_lat=bookings[-1]["drop_latitude"],
+                drop_lng=bookings[-1]["drop_longitude"],
+                drop_address=bookings[-1]["drop_location"]
+            )
+        else:
+            optimized = generate_drop_route(
+                group=bookings,
+                start_time_minutes=datetime_to_minutes(shift.shift_time),
+                office_lat=bookings[0]["pickup_latitude"],
+                office_lng=bookings[0]["pickup_longitude"],
+                office_address=bookings[0]["pickup_location"]
+            )
+
+        if not optimized:
+            raise HTTPException(
+                500,
+                ResponseWrapper.error("Route optimization failed", "OPT_FAIL")
+            )
+
+        optimized = optimized[0]  # first candidate
+
+        # --- Create new route ---
+        route = RouteManagement(
+            tenant_id=tenant_id,
+            shift_id=shift_id,
+            # route_code=f"M-{tenant_id}-{shift_id}",
+            estimated_total_time=float(optimized["estimated_time"].split()[0]),
+            estimated_total_distance=float(optimized["estimated_distance"].split()[0]),
+            buffer_time=float(optimized["buffer_time"].split()[0]),
+            status="PLANNED"
         )
 
-        deleted_routes_count = (
-            db.query(RouteManagement)
-            .filter(RouteManagement.route_id.in_(route_ids_to_delete))
-            .delete(synchronize_session=False)
-        )
+        db.add(route)
+        db.flush()
+
+        # --- Insert stops ---
+        for idx, b in enumerate(optimized["pickup_order"]):
+            db.add(RouteManagementBooking(
+                route_id=route.route_id,
+                booking_id=b["booking_id"],
+                order_id=idx + 1,
+                estimated_pick_up_time=b["estimated_pickup_time_formatted"],
+                estimated_distance=b["estimated_distance_km"]
+            ))
+
+        # ---- Delete old routes ----
+        db.query(RouteManagementBooking).filter(
+            RouteManagementBooking.route_id.in_(request.route_ids)
+        ).delete(synchronize_session=False)
+
+        db.query(RouteManagement).filter(
+            RouteManagement.route_id.in_(request.route_ids)
+        ).delete(synchronize_session=False)
 
         db.commit()
-        logger.info(
-            f"Merged route {merged_route.route_id} created. "
-            f"Deleted {deleted_routes_count} old routes and {deleted_bookings_count} linked route-booking records."
-        )
 
         return ResponseWrapper.success(
-            data=RouteWithEstimations(
-                route_id=merged_route.route_id,
-                bookings=bookings,
-                estimations=estimations,
-            ),
-            message=f"Successfully merged {len(request.route_ids)} routes into {merged_route.route_id}",
+            {"route_id": route.route_id},
+            f"Merged routes into {route.route_id}"
         )
 
     except HTTPException:
@@ -1171,14 +1283,10 @@ async def merge_routes(
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"Error merging routes: {e}", exc_info=True)
+        logger.error(f"[MERGE ROUTES] Error: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500,
-            detail=ResponseWrapper.error(
-                message="Error merging routes",
-                error_code="ROUTE_MERGE_ERROR",
-                details={"error": str(e)},
-            ),
+            500,
+            ResponseWrapper.error("Error merging routes", "ROUTE_MERGE_ERROR", {"error": str(e)})
         )
 
 @router.post("/{route_id}/split")
@@ -1294,7 +1402,7 @@ async def update_route(
     user_data=Depends(PermissionChecker(["route.update"], check_tenant=True)),
 ):
     """
-    Update a route by adding or removing booking assignments based on operation.
+    Update a route by adding or removing bookings, then regenerate the optimal route.
     """
     try:
         user_type = user_data.get("user_type")
@@ -1322,7 +1430,7 @@ async def update_route(
                 ),
             )
         logger.info(f"Updating route {route_id} with operation '{request.operation}' for {len(request.booking_ids)} bookings, user: {user_data.get('user_id', 'unknown')}")
-        
+
         # Validate tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
         if not tenant:
@@ -1335,7 +1443,7 @@ async def update_route(
                     details={"tenant_id": tenant_id}
                 )
             )
-        
+
         if not request.booking_ids:
             raise HTTPException(
                 status_code=400,
@@ -1344,33 +1452,35 @@ async def update_route(
                     error_code="NO_BOOKINGS_PROVIDED",
                 )
             )
-        
+
         # Check if route exists
         route = db.query(RouteManagement).filter(
-            RouteManagement.route_id == route_id
+            RouteManagement.route_id == route_id,
+            RouteManagement.tenant_id == tenant_id
         ).first()
-        
+
         if not route:
-            raise HTTPException(status_code=404, detail=f"Route {route_id} not found")
-        
+            raise HTTPException(
+                status_code=404,
+                detail=ResponseWrapper.error(
+                    message=f"Route {route_id} not found",
+                    error_code="ROUTE_NOT_FOUND",
+                )
+            )
+
         # Get existing booking IDs from the route
         existing_route_bookings = db.query(RouteManagementBooking).filter(
             RouteManagementBooking.route_id == route_id
         ).all()
-        
         existing_booking_ids = [rb.booking_id for rb in existing_route_bookings]
-        
+
         # Perform operation based on request
         if request.operation == RouteOperationEnum.ADD:
             # Add new bookings to existing ones, removing duplicates while preserving order
-            all_booking_ids = existing_booking_ids.copy()
-            for booking_id in request.booking_ids:
-                if booking_id not in all_booking_ids:
-                    all_booking_ids.append(booking_id)
+            all_booking_ids = list(set(existing_booking_ids + request.booking_ids))
         elif request.operation == RouteOperationEnum.REMOVE:
             # Remove specified bookings from existing ones
-            all_booking_ids = [booking_id for booking_id in existing_booking_ids if booking_id not in request.booking_ids]
-            
+            all_booking_ids = [bid for bid in existing_booking_ids if bid not in request.booking_ids]
             if not all_booking_ids:
                 raise HTTPException(
                     status_code=400,
@@ -1387,29 +1497,41 @@ async def update_route(
                     error_code="INVALID_OPERATION"
                 )
             )
-        
-        # Get all bookings (final list after operation)
+
+        # Fetch updated bookings
         bookings = get_bookings_by_ids(all_booking_ids, db)
-        
         if not bookings:
-            raise HTTPException(status_code=404, detail=ResponseWrapper.error(
-                    message=f"No valid bookings found for provided route ids",
+            raise HTTPException(
+                status_code=404,
+                detail=ResponseWrapper.error(
+                    message="No valid bookings found for the updated route",
                     error_code="BOOKINGS_NOT_FOUND",
-                    details="No bookings found"
-                ))
-        
-        # Calculate new estimations for the updated route
-        estimations = calculate_route_estimations(bookings)
-        
-        # Update route with new estimations
+                )
+            )
+
+        # Generate optimal route
+        shift = db.query(Shift).filter(Shift.shift_id == route.shift_id).first()
+        if not shift:
+            raise HTTPException(
+                status_code=404,
+                detail=ResponseWrapper.error(
+                    message=f"Shift {route.shift_id} not found",
+                    error_code="SHIFT_NOT_FOUND",
+                )
+            )
+
+        shift_type = shift.log_type or "OUT"
+        estimations = calculate_route_estimations(bookings, shift_type=shift_type)
+
+        # Update route details
         route.total_distance_km = estimations.total_distance_km
         route.total_time_minutes = estimations.total_time_minutes
-        
+
         # Delete existing route bookings
         db.query(RouteManagementBooking).filter(
             RouteManagementBooking.route_id == route_id
         ).delete()
-        
+
         # Create new route bookings with updated order
         for i, booking_id in enumerate(all_booking_ids):
             route_booking = RouteManagementBooking(
@@ -1422,12 +1544,12 @@ async def update_route(
                 cumulative_distance=(i + 1) * 5.0
             )
             db.add(route_booking)
-        
+
         db.commit()
-        
+
         operation_msg = f"added {len(request.booking_ids)} bookings to" if request.operation == RouteOperationEnum.ADD else f"removed {len(request.booking_ids)} bookings from"
         logger.info(f"Successfully {operation_msg} route {route_id}")
-        
+
         return ResponseWrapper.success(
             data=RouteWithEstimations(
                 route_id=route_id,
@@ -1436,12 +1558,140 @@ async def update_route(
             ),
             message=f"Route {route_id} updated successfully: {operation_msg} route"
         )
-    
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error updating route {route_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=ResponseWrapper.error(
+                message="Error updating route",
+                error_code="ROUTE_UPDATE_ERROR",
+                details={"error": str(e)},
+            ),
+        )
+
+@router.put("/{route_id}/update-booking-order", status_code=status.HTTP_200_OK)
+async def update_booking_order(
+    route_id: int,
+    request: UpdateBookingOrderRequest,
+    tenant_id: Optional[str] = Query(None, description="Tenant ID"),
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route.update"], check_tenant=True)),
+):
+    """
+    Update the order of bookings and their estimated times in a route.
+    """
+    try:
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        if user_type == "employee":
+            tenant_id = token_tenant_id
+        elif user_type == "admin" and not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="tenant_id is required for admin users",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+        else:
+            tenant_id = token_tenant_id
+
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant context not available",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+
+        logger.info(f"Updating booking order for route {route_id} by user: {user_data.get('user_id', 'unknown')}")
+
+        # Validate route exists
+        route = db.query(RouteManagement).filter(
+            RouteManagement.route_id == route_id,
+            RouteManagement.tenant_id == tenant_id,
+        ).first()
+
+        if not route:
+            raise HTTPException(
+                status_code=404,
+                detail=ResponseWrapper.error(
+                    message=f"Route {route_id} not found",
+                    error_code="ROUTE_NOT_FOUND",
+                ),
+            )
+
+        # Validate request data
+        if not request.bookings:
+            raise HTTPException(
+                status_code=400,
+                detail=ResponseWrapper.error(
+                    message="No booking data provided for update",
+                    error_code="NO_BOOKINGS_PROVIDED",
+                ),
+            )
+
+        # Update booking order and estimated times
+        for booking_data in request.bookings:
+            route_booking = db.query(RouteManagementBooking).filter(
+                RouteManagementBooking.route_id == route_id,
+                RouteManagementBooking.booking_id == booking_data.booking_id,
+            ).first()
+
+            if not route_booking:
+                raise HTTPException(
+                    status_code=404,
+                    detail=ResponseWrapper.error(
+                        message=f"Booking {booking_data.booking_id} not found in route {route_id}",
+                        error_code="BOOKING_NOT_FOUND_IN_ROUTE",
+                    ),
+                )
+
+            # Update fields
+            route_booking.order_id = booking_data.new_order_id
+            route_booking.estimated_pick_up_time = booking_data.estimated_pickup_time
+            route_booking.estimated_drop_time = booking_data.estimated_drop_time
+
+        # Commit changes
+        db.commit()
+
+        # Fetch updated bookings
+        updated_bookings = db.query(RouteManagementBooking).filter(
+            RouteManagementBooking.route_id == route_id
+        ).order_by(RouteManagementBooking.order_id).all()
+
+        response_data = [
+            RouteManagementBookingResponse.model_validate(booking, from_attributes=True)
+            for booking in updated_bookings
+        ]
+
+        logger.info(f"Successfully updated booking order for route {route_id}")
+
+        return ResponseWrapper.success(
+            data=response_data,
+            message=f"Booking order and estimated times updated successfully for route {route_id}",
+        )
+
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
-        return handle_db_error(e)
+        logger.error(f"Error updating booking order for route {route_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=ResponseWrapper.error(
+                message="Error updating booking order",
+                error_code="UPDATE_BOOKING_ORDER_ERROR",
+                details={"error": str(e)},
+            ),
+        )
 
 @router.delete("/bulk")
 async def bulk_delete_routes(
