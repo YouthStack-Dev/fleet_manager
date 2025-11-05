@@ -9,7 +9,7 @@ from app.models.weekoff_config import WeekoffConfig
 from fastapi import APIRouter, Depends, HTTPException, Path, status, Query,Body
 from sqlalchemy.orm import Session
 from typing import Optional, List
-from datetime import date, datetime, datetime
+from datetime import date, datetime, datetime, timedelta
 from app.database.session import get_db
 from app.models.booking import Booking
 from app.schemas.booking import BookingCreate, BookingUpdate, BookingResponse,  BookingStatusEnum
@@ -25,15 +25,18 @@ router = APIRouter(prefix="/bookings", tags=["bookings"])
 
 def booking_validate_future_dates(dates: list[date], context: str = "dates"):
     today = date.today()
+    yesterday = today - timedelta(days=1)
+
     for d in dates:
-        if d <= today:
+        # Allow today, block only <= yesterday
+        if d <= yesterday:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ResponseWrapper.error(
-                    message=f"{context} must contain only future dates (invalid: {d})",
+                    message=f"{context} must contain only today or future dates (invalid: {d})",
                     error_code="INVALID_DATE",
                 ),
-            )
+            )   
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
