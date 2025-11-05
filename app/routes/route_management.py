@@ -569,10 +569,47 @@ async def get_all_routes(
             )
 
 
+            stops = []
+            for rb in route_bookings:
+                booking = next((b for b in bookings if b["booking_id"] == rb.booking_id), None)
+                if not booking:
+                    continue
+                
+                stops.append({
+                    "order_id": rb.order_id,
+                    "booking_id": rb.booking_id,
+                    "employee_name": booking.get("employee_name"),
+                    "pickup_location": booking.get("pickup_location"),
+                    "pickup_latitude": booking.get("pickup_latitude"),
+                    "pickup_longitude": booking.get("pickup_longitude"),
+                    "drop_location": booking.get("drop_location"),
+                    "drop_latitude": booking.get("drop_latitude"),
+                    "drop_longitude": booking.get("drop_longitude"),
+
+                    "estimated_pick_up_time": rb.estimated_pick_up_time,
+                    "estimated_drop_time": rb.estimated_drop_time,
+                    "estimated_distance": rb.estimated_distance,
+
+                    "actual_pick_up_time": rb.actual_pick_up_time,
+                    "actual_drop_time": rb.actual_drop_time,
+                    "actual_distance": rb.actual_distance,
+                })
+                
             route_response = {
                 "route_id": route.route_id,
-                "bookings": bookings,
-                "estimations": estimations,
+                "shift_id": route.shift_id,
+                "route_code": route.route_code,
+                "status": route.status.value if hasattr(route.status, "value") else route.status,
+
+                "stops": stops,
+                "summary": {
+                    "total_distance_km": (
+                        route.actual_total_distance or route.estimated_total_distance or 0.0
+                    ),
+                    "total_time_minutes": (
+                        route.actual_total_time or route.estimated_total_time or 0.0
+                    ),
+                }
             }
 
             for booking in bookings:
@@ -964,7 +1001,7 @@ async def assign_vehicle_to_route(
 
 @router.get("/{route_id}")
 async def get_route_by_id(
-    route_id: int,  # Changed from str to int
+    route_id: int,
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["route.read"], check_tenant=True)),
@@ -976,106 +1013,127 @@ async def get_route_by_id(
         user_type = user_data.get("user_type")
         token_tenant_id = user_data.get("tenant_id")
 
+        # --- Tenant Resolution ---
         if user_type == "employee":
             tenant_id = token_tenant_id
-        elif user_type == "admin" and not tenant_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="tenant_id is required for admin users",
-                    error_code="TENANT_ID_REQUIRED",
-                ),
-            )
+        elif user_type == "admin":
+            if token_tenant_id:
+                tenant_id = token_tenant_id  # normal admin with tenant scope
+            else:
+                if not tenant_id:  # superadmin case, must pass tenant
+                    raise HTTPException(
+                        status_code=400,
+                        detail=ResponseWrapper.error(
+                            message="tenant_id is required for admin users",
+                            error_code="TENANT_ID_REQUIRED",
+                        ),
+                    )
         else:
             tenant_id = token_tenant_id
 
         if not tenant_id:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
+                status_code=403,
                 detail=ResponseWrapper.error(
                     message="Tenant context not available",
                     error_code="TENANT_ID_REQUIRED",
-                ),
+                )
             )
-        logger.info(f"Fetching route {route_id} for tenant: {tenant_id}, user: {user_data.get('user_id', 'unknown')}")
-        
+
+        logger.info(f"[get_route_by_id] tenant={tenant_id}, route_id={route_id}")
+
         # Validate tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
         if not tenant:
-            logger.warning(f"Tenant {tenant_id} not found")
             raise HTTPException(
                 status_code=404,
                 detail=ResponseWrapper.error(
                     message=f"Tenant {tenant_id} not found",
-                    error_code="TENANT_NOT_FOUND",
-                    details={"tenant_id": tenant_id}
+                    error_code="TENANT_NOT_FOUND"
                 )
             )
-        
-        # Query the route
+
+        # Fetch route
         route = db.query(RouteManagement).filter(
             RouteManagement.route_id == route_id,
             RouteManagement.tenant_id == tenant_id,
         ).first()
-        
+
         if not route:
-            logger.warning(f"Route {route_id} not found for tenant {tenant_id}")
             raise HTTPException(
                 status_code=404,
                 detail=ResponseWrapper.error(
                     message=f"Route {route_id} not found",
                     error_code="ROUTE_NOT_FOUND",
-                    details = "No rount found"
-                )
+                ),
             )
-        
-        # Get route bookings
-        route_bookings = db.query(RouteManagementBooking).filter(
-            RouteManagementBooking.route_id == route_id
-        ).order_by(RouteManagementBooking.stop_order).all()
-        
+
+        # Fetch bookings in this route
+        route_bookings = (
+            db.query(RouteManagementBooking)
+            .filter(RouteManagementBooking.route_id == route_id)
+            .order_by(RouteManagementBooking.order_id)
+            .all()
+        )
+
         booking_ids = [rb.booking_id for rb in route_bookings]
         bookings = get_bookings_by_ids(booking_ids, db) if booking_ids else []
-        
-        # Create estimations
-        estimations = RouteEstimations(
-            total_distance_km=route.total_distance_km or 0.0,
-            total_time_minutes=route.total_time_minutes or 0.0,
-            estimated_pickup_times={
-                rb.booking_id: rb.estimated_pickup_time 
-                for rb in route_bookings if rb.estimated_pickup_time
-            },
-            estimated_drop_times={
-                rb.booking_id: rb.estimated_drop_time 
-                for rb in route_bookings if rb.estimated_drop_time
+
+        # ---- Build stops list same format as listing API ----
+        stops = []
+        for rb in route_bookings:
+            booking = next((b for b in bookings if b["booking_id"] == rb.booking_id), None)
+            if not booking:
+                continue
+            
+            stops.append({
+                "order_id": rb.order_id,
+                "booking_id": rb.booking_id,
+                "employee_name": booking.get("employee_name"),
+                "pickup_location": booking.get("pickup_location"),
+                "pickup_latitude": booking.get("pickup_latitude"),
+                "pickup_longitude": booking.get("pickup_longitude"),
+                "drop_location": booking.get("drop_location"),
+                "drop_latitude": booking.get("drop_latitude"),
+                "drop_longitude": booking.get("drop_longitude"),
+
+                "estimated_pick_up_time": rb.estimated_pick_up_time,
+                "estimated_drop_time": rb.estimated_drop_time,
+                "estimated_distance": rb.estimated_distance,
+
+                "actual_pick_up_time": rb.actual_pick_up_time,
+                "actual_drop_time": rb.actual_drop_time,
+                "actual_distance": rb.actual_distance,
+            })
+
+        # ---- Response same as list API ----
+        response = {
+            "route_id": route.route_id,
+            "shift_id": route.shift_id,
+            "route_code": route.route_code,
+            "status": route.status.value if hasattr(route.status, "value") else route.status,
+            "stops": stops,
+            "summary": {
+                "total_distance_km": (
+                    route.actual_total_distance or route.estimated_total_distance or 0.0
+                ),
+                "total_time_minutes": (
+                    route.actual_total_time or route.estimated_total_time or 0.0
+                ),
             }
-        )
-        
-        logger.info(f"Successfully retrieved route {route_id}")
-        
+        }
+
+        logger.info(f"[get_route_by_id] success route={route_id}, stops={len(stops)}")
+
         return ResponseWrapper.success(
-            data=RouteWithEstimations(
-                route_id=route.route_id,
-                bookings=bookings,
-                estimations=estimations
-            ),
+            data=response,
             message=f"Route {route_id} retrieved successfully"
         )
-    
+
     except HTTPException:
         raise
     except Exception as e:
         return handle_db_error(e)
-    except Exception as e:
-        logger.error(f"Error retrieving route {route_id}: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=ResponseWrapper.error(
-                message=f"Error retrieving route {route_id}",
-                error_code="ROUTE_RETRIEVAL_ERROR",
-                details={"error": str(e)}
-            )
-        )
 
 @router.post("/merge")
 async def merge_routes(
