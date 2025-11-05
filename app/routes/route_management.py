@@ -1142,8 +1142,6 @@ async def merge_routes(
                     error_code="TENANT_ID_REQUIRED",
                 ),
             )
-        else:
-            tenant_id = tenant_id or token_tenant_id
 
         if not tenant_id:
             raise HTTPException(
@@ -1154,107 +1152,130 @@ async def merge_routes(
                 ),
             )
 
-        logger.info(f"Merging {len(request.route_ids)} routes for tenant={tenant_id}, user={user_id}")
-
-        # --- Tenant Validation ---
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
-        if not tenant:
-            logger.warning(f"Tenant {tenant_id} not found")
-            raise HTTPException(
-                status_code=404,
-                detail=ResponseWrapper.error(
-                    message=f"Tenant {tenant_id} not found",
-                    error_code="TENANT_NOT_FOUND",
-                    details={"tenant_id": tenant_id},
-                ),
-            )
+        logger.info(f"[MERGE] tenant={tenant_id}, user={user_id}, route_ids={request.route_ids}")
 
         if not request.route_ids:
             raise HTTPException(
-                status_code=400,
-                detail=ResponseWrapper.error(
-                    message="No route IDs provided for merging",
-                    error_code="NO_ROUTE_IDS_PROVIDED",
-                ),
+                400,
+                ResponseWrapper.error("No route ids provided", "NO_ROUTE_IDS")
             )
 
-        # --- Collect all bookings from the routes to be merged ---
-        all_booking_ids = []
-        route_ids_to_delete = []
+        # --- Load routes & collect bookings ---
+        routes = db.query(RouteManagement).filter(
+            RouteManagement.route_id.in_(request.route_ids),
+            RouteManagement.tenant_id == tenant_id
+        ).all()
 
-        for route_id in request.route_ids:
-            route = (
-                db.query(RouteManagement)
-                .filter(RouteManagement.route_id == route_id, RouteManagement.tenant_id == tenant_id)
-                .first()
-            )
-
-            if not route:
-                raise HTTPException(
-                    status_code=404,
-                    detail=ResponseWrapper.error(
-                        message=f"Route {route_id} not found",
-                        error_code="ROUTE_NOT_FOUND",
-                        details={"route_id": route_id},
-                    ),
-                )
-
-            route_bookings = (
-                db.query(RouteManagementBooking)
-                .filter(RouteManagementBooking.route_id == route_id)
-                .all()
-            )
-
-            all_booking_ids.extend([rb.booking_id for rb in route_bookings])
-            route_ids_to_delete.append(route_id)
-
-        # Deduplicate booking IDs (preserve order)
-        all_booking_ids = list(dict.fromkeys(all_booking_ids))
-
-        # --- Validate bookings exist ---
-        bookings = get_bookings_by_ids(all_booking_ids, db)
-        if not bookings:
+        if not routes:
             raise HTTPException(
-                status_code=404,
-                detail=ResponseWrapper.error(
-                    message="No valid bookings found for provided route IDs",
-                    error_code="BOOKINGS_NOT_FOUND",
-                ),
+                404,
+                ResponseWrapper.error("Routes not found", "ROUTE_NOT_FOUND")
             )
 
-        # --- Compute new estimations ---
-        estimations = calculate_route_estimations(bookings)
+        all_booking_ids = []
+        shift_id = None
 
-        # --- Create merged route ---
-        merged_route = save_route_to_db(all_booking_ids, estimations, tenant_id, db)
-        logger.info(f"Created merged route {merged_route.route_id}")
+        for r in routes:
+            if shift_id and r.shift_id != shift_id:
+                raise HTTPException(
+                    400,
+                    ResponseWrapper.error(
+                        "All routes must belong to same shift",
+                        "SHIFT_MISMATCH"
+                    )
+                )
+            shift_id = r.shift_id
 
-        # --- Hard delete old routes and related records ---
-        deleted_bookings_count = (
-            db.query(RouteManagementBooking)
-            .filter(RouteManagementBooking.route_id.in_(route_ids_to_delete))
-            .delete(synchronize_session=False)
+            rbs = db.query(RouteManagementBooking).filter(
+                RouteManagementBooking.route_id == r.route_id
+            ).all()
+
+            all_booking_ids.extend([b.booking_id for b in rbs])
+
+        all_booking_ids = list(dict.fromkeys(all_booking_ids))  # unique preserve order
+
+        if not all_booking_ids:
+            raise HTTPException(
+                400,
+                ResponseWrapper.error("No bookings in selected routes", "EMPTY_ROUTE_LIST")
+            )
+
+        # --- Pull full booking objects ---
+        bookings = get_bookings_by_ids(all_booking_ids, db)
+
+        shift = db.query(Shift).filter(Shift.shift_id == shift_id).first()
+        if not shift:
+            raise HTTPException(
+                404, ResponseWrapper.error("Shift not found", "SHIFT_NOT_FOUND")
+            )
+
+        # --- Which route generation to call? ---
+        from app.services.optimal_roiute_generation import generate_optimal_route, generate_drop_route
+
+        shift_type = shift.log_type.value if hasattr(shift.log_type, "value") else shift.log_type
+
+        if shift_type == "IN":
+            optimized = generate_optimal_route(
+                group=bookings,
+                drop_lat=bookings[-1]["drop_latitude"],
+                drop_lng=bookings[-1]["drop_longitude"],
+                drop_address=bookings[-1]["drop_location"]
+            )
+        else:
+            optimized = generate_drop_route(
+                group=bookings,
+                start_time_minutes=datetime_to_minutes(shift.shift_time),
+                office_lat=bookings[0]["pickup_latitude"],
+                office_lng=bookings[0]["pickup_longitude"],
+                office_address=bookings[0]["pickup_location"]
+            )
+
+        if not optimized:
+            raise HTTPException(
+                500,
+                ResponseWrapper.error("Route optimization failed", "OPT_FAIL")
+            )
+
+        optimized = optimized[0]  # first candidate
+
+        # --- Create new route ---
+        route = RouteManagement(
+            tenant_id=tenant_id,
+            shift_id=shift_id,
+            # route_code=f"M-{tenant_id}-{shift_id}",
+            estimated_total_time=float(optimized["estimated_time"].split()[0]),
+            estimated_total_distance=float(optimized["estimated_distance"].split()[0]),
+            buffer_time=float(optimized["buffer_time"].split()[0]),
+            status="PLANNED"
         )
 
-        deleted_routes_count = (
-            db.query(RouteManagement)
-            .filter(RouteManagement.route_id.in_(route_ids_to_delete))
-            .delete(synchronize_session=False)
-        )
+        db.add(route)
+        db.flush()
+
+        # --- Insert stops ---
+        for idx, b in enumerate(optimized["pickup_order"]):
+            db.add(RouteManagementBooking(
+                route_id=route.route_id,
+                booking_id=b["booking_id"],
+                order_id=idx + 1,
+                estimated_pick_up_time=b["estimated_pickup_time_formatted"],
+                estimated_distance=b["estimated_distance_km"]
+            ))
+
+        # ---- Delete old routes ----
+        db.query(RouteManagementBooking).filter(
+            RouteManagementBooking.route_id.in_(request.route_ids)
+        ).delete(synchronize_session=False)
+
+        db.query(RouteManagement).filter(
+            RouteManagement.route_id.in_(request.route_ids)
+        ).delete(synchronize_session=False)
 
         db.commit()
-        logger.info(
-            f"Merged route {merged_route.route_id} created. "
-            f"Deleted {deleted_routes_count} old routes and {deleted_bookings_count} linked route-booking records."
-        )
 
         return ResponseWrapper.success(
-            data=RouteWithEstimations(
-                route_id=merged_route.route_id,
-                bookings=bookings,
-                estimations=estimations,
-            ),
-            message=f"Successfully merged {len(request.route_ids)} routes into {merged_route.route_id}",
+            {"route_id": route.route_id},
+            f"Merged routes into {route.route_id}"
         )
 
     except HTTPException:
@@ -1262,14 +1283,10 @@ async def merge_routes(
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"Error merging routes: {e}", exc_info=True)
+        logger.error(f"[MERGE ROUTES] Error: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500,
-            detail=ResponseWrapper.error(
-                message="Error merging routes",
-                error_code="ROUTE_MERGE_ERROR",
-                details={"error": str(e)},
-            ),
+            500,
+            ResponseWrapper.error("Error merging routes", "ROUTE_MERGE_ERROR", {"error": str(e)})
         )
 
 @router.post("/{route_id}/split")
