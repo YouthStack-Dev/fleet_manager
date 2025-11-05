@@ -13,3 +13,4 @@ from app.routes.shift_router import router as shift_router
 from app.routes.weekoff_config_router import router as weekoff_config_router
 from app.routes.auth_router import router as auth_router
 from app.routes.cutoff import router as cutoff_router
+from app.routes.app_driver_router import router as app_driver_router

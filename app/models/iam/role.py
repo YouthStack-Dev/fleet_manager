@@ -29,6 +29,7 @@ class Role(Base):
     admins = relationship("Admin", back_populates="roles")
     vendor_users = relationship("VendorUser", back_populates="roles")
     employees = relationship("Employee", back_populates="roles")
+    drivers = relationship("Driver", back_populates="role")
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "name", name="uq_role_tenant_name"),

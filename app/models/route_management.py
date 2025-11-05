@@ -24,34 +24,27 @@ class RouteManagement(Base):
     )
 
     route_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    tenant_id = Column(String(50), nullable=False)  # Remove FK constraint temporarily
-    shift_id = Column(Integer, nullable=True)  # Remove FK constraint temporarily
+    tenant_id = Column(String(50), nullable=False)
+    shift_id = Column(Integer, nullable=True)
     route_code = Column(String(100), nullable=False)
-
-    status = Column(Enum(RouteManagementStatusEnum, native_enum=False), default=RouteManagementStatusEnum.PLANNED, nullable=False)
-    planned_distance_km = Column(Float)
-    planned_duration_minutes = Column(Integer)
-
-    actual_distance_km = Column(Float)
-    actual_duration_minutes = Column(Integer)
-    actual_start_time = Column(DateTime)
-    actual_end_time = Column(DateTime)
-    optimized_polyline = Column(Text)
 
     # Current assignment (denormalized for fast reads)
     assigned_vendor_id = Column(Integer, nullable=True)
     assigned_vehicle_id = Column(Integer, nullable=True)
     assigned_driver_id = Column(Integer, nullable=True)
 
-    total_distance_km = Column(Float, nullable=True)
-    total_time_minutes = Column(Float, nullable=True)
+    status = Column(Enum(RouteManagementStatusEnum, native_enum=False), default=RouteManagementStatusEnum.PLANNED, nullable=False)
+    estimated_total_time = Column(Float, nullable=True)  # New column
+    estimated_total_distance = Column(Float, nullable=True)  # New column
+    actual_total_time = Column(Float, nullable=True)  # New column
+    actual_total_distance = Column(Float, nullable=True)  # New column
+    buffer_time = Column(Float, nullable=True)  # New column
 
     is_active = Column(Boolean, default=True, nullable=False)
-    version = Column(Integer, default=1, nullable=False)  # for regeneration control
+    version = Column(Integer, default=1, nullable=False)
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
-    # Relationships
     route_management_bookings = relationship("RouteManagementBooking", back_populates="route_management", cascade="all, delete-orphan")
 
 
@@ -64,18 +57,16 @@ class RouteManagementBooking(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     route_id = Column(Integer, ForeignKey("route_management.route_id", ondelete="CASCADE"), nullable=False)
-    booking_id = Column(Integer, nullable=False)  # Keep as simple integer without FK
+    booking_id = Column(Integer, nullable=False)
 
-    # Order and timing
-    stop_order = Column(Integer, nullable=False)
-    estimated_pickup_time = Column(String(10), nullable=True)  # HH:MM format
-    estimated_drop_time = Column(String(10), nullable=True)    # HH:MM format
-    distance_from_previous = Column(Float, nullable=True)
-    cumulative_distance = Column(Float, nullable=True)
+    order_id = Column(Integer, nullable=False)  # New column
+    estimated_pick_up_time = Column(String(10), nullable=True)  # New column
+    estimated_distance = Column(Float, nullable=True)  # New column
+    actual_pick_up_time = Column(String(10), nullable=True)  # New column
+    actual_distance = Column(Float, nullable=True)  # New column
+    estimated_drop_time = Column(String(10), nullable=True)  # New column
+    actual_drop_time = Column(String(10), nullable=True)  # New column
 
-    # Audit
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
-    # Relationships
     route_management = relationship("RouteManagement", back_populates="route_management_bookings")
-    # Remove booking relationship to avoid circular dependencies
