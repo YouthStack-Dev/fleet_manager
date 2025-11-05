@@ -55,12 +55,12 @@ def generate_optimal_route(group, drop_lat, drop_lng, drop_address, deadline_min
 
     if response.status_code != 200:
         logger.error(f"Google Maps API request failed: {response.text}")
-        raise HTTPException(status_code=500, detail="Failed to fetch directions from Google Maps API")
+        return []  # Return an empty list instead of raising an exception
 
     data = response.json()
     if not data.get("routes"):
         logger.warning("Google Maps API returned no routes")
-        raise HTTPException(status_code=400, detail="No route returned from Google Maps")
+        return []  # Return an empty list instead of raising an exception
 
     route = data["routes"][0]
     order = route.get("waypoint_order", [])
@@ -92,6 +92,7 @@ def generate_optimal_route(group, drop_lat, drop_lng, drop_address, deadline_min
         distance_to_pickup = sum(leg["distance"]["value"] for leg in leg_data[:i]) / 1000 if i > 0 else 0
         
         pickup_order.append({
+            "order_id": i + 1,  # Add order_id
             "booking_id": booking["booking_id"],
             "pickup_lat": booking["pickup_latitude"],
             "pickup_lng": booking["pickup_longitude"],
@@ -154,12 +155,12 @@ def generate_drop_route(group, office_lat, office_lng, office_address, start_tim
 
     if response.status_code != 200:
         logger.error(f"Google Maps API request failed: {response.text}")
-        raise HTTPException(status_code=500, detail="Failed to fetch directions from Google Maps API")
+        return []  # Return an empty list instead of raising an exception
 
     data = response.json()
     if not data.get("routes"):
         logger.warning("Google Maps API returned no routes")
-        raise HTTPException(status_code=400, detail="No route returned from Google Maps")
+        return []  # Return an empty list instead of raising an exception
 
     route = data["routes"][0]
     order = route.get("waypoint_order", [])
@@ -191,6 +192,7 @@ def generate_drop_route(group, office_lat, office_lng, office_address, start_tim
         current_distance += travel_distance
         
         drop_order.append({
+            "order_id": i + 1,  # Add order_id
             "booking_id": booking["booking_id"],
             "drop_lat": booking["drop_latitude"],
             "drop_lng": booking["drop_longitude"],
