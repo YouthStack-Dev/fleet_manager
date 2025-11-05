@@ -577,6 +577,7 @@ async def get_bookings_grouped_by_shift(
     tenant_id: str = Path(..., description="Tenant ID (required for admin users)"),
     booking_date: date = Query(..., description="Filter by booking date (YYYY-MM-DD)"),
     log_type: Optional[ShiftLogTypeEnum] = Query(None, description="Optional shift type filter (e.g., IN, OUT)"),
+    shift_id: Optional[int] = Query(None, description="Optional shift ID filter"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True))
 ):
@@ -619,9 +620,12 @@ async def get_bookings_grouped_by_shift(
                 func.date(Booking.booking_date) == booking_date
             )
         )
-
+        
         if log_type:
             query = query.filter(Shift.log_type == log_type)
+
+        if shift_id:
+            query = query.filter(Shift.shift_id == shift_id)
 
         records = query.order_by(Shift.shift_time).all()
         logger.info(f"Fetched {len(records)} bookings")
