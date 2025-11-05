@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query ,status
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict
 from pydantic import BaseModel
-from datetime import date
+from datetime import date , datetime
 from enum import Enum
 import time
 
@@ -199,8 +199,25 @@ def save_route_to_db(booking_ids: List[int], estimations: RouteEstimations, tena
     db.commit()
     return route
 
-@router.post("/")
+def datetime_to_minutes(dt_val):
+    """
+    Convert datetime/time string or object to minutes from midnight
+    """
+    # If already datetime or time object
+    if isinstance(dt_val, datetime):
+        return dt_val.hour * 60 + dt_val.minute
+    
+    if isinstance(dt_val, time):
+        return dt_val.hour * 60 + dt_val.minute
 
+    # Else assume it's string
+    if isinstance(dt_val, str):
+        dt = datetime.fromisoformat(dt_val)
+        return dt.hour * 60 + dt.minute
+
+    raise TypeError(f"Unsupported type for datetime_to_minutes: {type(dt_val)}")
+
+@router.post("/" , status_code=status.HTTP_200_OK)
 async def create_routes(
     booking_date: date = Query(..., description="Date for the bookings (YYYY-MM-DD)"),
     shift_id: int = Query(..., description="Shift ID to filter bookings"),
@@ -405,7 +422,7 @@ async def create_routes(
             ),
         )
 
-@router.get("/")
+@router.get("/", status_code=status.HTTP_200_OK)
 async def get_all_routes(
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     shift_id: Optional[int] = Query(None, description="Filter by shift ID"),
@@ -416,23 +433,42 @@ async def get_all_routes(
     """
     Get all active routes with their details, optionally filtered by shift and booking date.
     """
+
     try:
         user_type = user_data.get("user_type")
         token_tenant_id = user_data.get("tenant_id")
 
+        logger.info(
+            f"[get_all_routes] user={user_data.get('user_id')} "
+            f"user_type={user_type}, query_tenant={tenant_id}, token_tenant={token_tenant_id}"
+        )
+
+        # ---------- Tenant Resolution ----------
         if user_type == "employee":
-            tenant_id = token_tenant_id
-        elif user_type == "admin" and not tenant_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="tenant_id is required for admin users",
-                    error_code="TENANT_ID_REQUIRED",
-                ),
-            )
-        else:
+            # Employees always locked to their tenant
             tenant_id = token_tenant_id
 
+        elif user_type == "admin":
+            if token_tenant_id:
+                # Normal admin with tenant in token
+                tenant_id = token_tenant_id
+            else:
+                # SuperAdmin must provide tenant_id explicitly
+                if not tenant_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=ResponseWrapper.error(
+                            message="tenant_id is required for admin users",
+                            error_code="TENANT_ID_REQUIRED",
+                        ),
+                    )
+                # tenant_id from query param stays
+
+        else:
+            # fallback
+            tenant_id = token_tenant_id
+
+        # final safety check
         if not tenant_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -442,9 +478,9 @@ async def get_all_routes(
                 ),
             )
 
-        logger.info(f"[create_routes] Effective tenant resolved: {tenant_id}")
+        logger.info(f"[get_all_routes] resolved tenant: {tenant_id}")
 
-        # ---- Validate tenant exists ----
+        # ---------- Validate Tenant ----------
         tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
         if not tenant:
             raise HTTPException(
@@ -460,111 +496,105 @@ async def get_all_routes(
         
         # Base query for routes
         if shift_id or booking_date:
-            # If shift_id or booking_date is provided, filter routes by bookings
-            routes_query = db.query(RouteManagement).join(
-                RouteManagementBooking, RouteManagement.route_id == RouteManagementBooking.route_id
-            ).join(
-                Booking, RouteManagementBooking.booking_id == Booking.booking_id
-            ).filter(
-                RouteManagement.tenant_id == tenant_id
+            routes_query = (
+                db.query(RouteManagement)
+                .join(RouteManagementBooking, RouteManagement.route_id == RouteManagementBooking.route_id)
+                .join(Booking, RouteManagementBooking.booking_id == Booking.booking_id)
+                .filter(RouteManagement.tenant_id == tenant_id)
+                .distinct()
             )
-            
-            # Add filters based on provided parameters
+
             if shift_id:
                 routes_query = routes_query.filter(Booking.shift_id == shift_id)
             if booking_date:
                 routes_query = routes_query.filter(Booking.booking_date == booking_date)
-                
-            routes_query = routes_query.distinct()
         else:
-            routes_query = db.query(RouteManagement).filter(
-                RouteManagement.tenant_id == tenant_id
-            )
-        
+            routes_query = db.query(RouteManagement).filter(RouteManagement.tenant_id == tenant_id)
+
         routes = routes_query.all()
-        
+
         if not routes:
-            filter_msg = f" and shift {shift_id}" if shift_id else ""
-            filter_msg += f" and date {booking_date}" if booking_date else ""
-            logger.info(f"No active routes found for tenant {tenant_id}{filter_msg}")
             return ResponseWrapper.success(
-                data={
-                    "shifts": [],
-                    "total_shifts": 0,
-                    "total_routes": 0,
-                },
-                message=f"No active routes found for tenant {tenant_id}{filter_msg}"
+                data={"shifts": [], "total_shifts": 0, "total_routes": 0},
+                message=f"No active routes found for tenant {tenant_id}"
+                       f"{f' shift {shift_id}' if shift_id else ''}"
+                       f"{f' date {booking_date}' if booking_date else ''}",
             )
-        
-        # Group routes by shift
+
+        # ---------- Group Routes by Shift ----------
         shifts_data = {}
-        
+
         for route in routes:
-            route_bookings = db.query(RouteManagementBooking).filter(
-                RouteManagementBooking.route_id == route.route_id
-            ).order_by(RouteManagementBooking.stop_order).all()
-            
+            route_bookings = (
+                db.query(RouteManagementBooking)
+                .filter(RouteManagementBooking.route_id == route.route_id)
+                .order_by(RouteManagementBooking.order_id)
+                .all()
+            )
+
             booking_ids = [rb.booking_id for rb in route_bookings]
             bookings = get_bookings_by_ids(booking_ids, db) if booking_ids else []
-            
-            # Get shift information from bookings
+
             for booking in bookings:
-                shift_id_key = booking["shift_id"]
-                if shift_id_key and shift_id_key not in shifts_data:
-                    # Get shift details
-                    shift = db.query(Shift).filter(Shift.shift_id == shift_id_key).first()
+                sid = booking["shift_id"]
+                if sid and sid not in shifts_data:
+                    shift = db.query(Shift).filter(Shift.shift_id == sid).first()
                     if shift:
-                        shifts_data[shift_id_key] = {
+                        shifts_data[sid] = {
                             "shift_id": shift.shift_id,
                             "log_type": shift.log_type.value if shift.log_type else None,
                             "shift_time": shift.shift_time.strftime("%H:%M:%S") if shift.shift_time else None,
-                            "routes": []
+                            "routes": [],
                         }
-            
+
             estimations = RouteEstimations(
-                total_distance_km=route.total_distance_km or 0.0,
-                total_time_minutes=route.total_time_minutes or 0.0,
+                total_distance_km=(
+                    route.actual_total_distance 
+                    or route.estimated_total_distance 
+                    or 0.0
+                ),
+                total_time_minutes=(
+                    route.actual_total_time 
+                    or route.estimated_total_time 
+                    or 0.0
+                ),
                 estimated_pickup_times={
-                    rb.booking_id: rb.estimated_pickup_time 
-                    for rb in route_bookings if rb.estimated_pickup_time
+                    rb.booking_id: rb.estimated_pick_up_time
+                    for rb in route_bookings if rb.estimated_pick_up_time
                 },
                 estimated_drop_times={
-                    rb.booking_id: rb.estimated_drop_time 
+                    rb.booking_id: rb.estimated_drop_time
                     for rb in route_bookings if rb.estimated_drop_time
-                }
+                },
             )
-            
+
+
             route_response = {
                 "route_id": route.route_id,
                 "bookings": bookings,
-                "estimations": estimations
+                "estimations": estimations,
             }
-            
-            # Add route to appropriate shift
+
             for booking in bookings:
-                shift_id_key = booking["shift_id"]
-                if shift_id_key and shift_id_key in shifts_data:
-                    # Check if route already added to this shift
-                    route_exists = any(r["route_id"] == route.route_id for r in shifts_data[shift_id_key]["routes"])
-                    if not route_exists:
-                        shifts_data[shift_id_key]["routes"].append(route_response)
+                sid = booking["shift_id"]
+                if sid in shifts_data and not any(r["route_id"] == route.route_id for r in shifts_data[sid]["routes"]):
+                    shifts_data[sid]["routes"].append(route_response)
                     break
-        
-        # Convert to list format
+
         shifts_list = list(shifts_data.values())
-        total_routes = sum(len(shift["routes"]) for shift in shifts_list)
-        
-        logger.info(f"Successfully fetched {len(shifts_list)} shifts with {total_routes} total routes")
-        
+        total_routes = sum(len(s["routes"]) for s in shifts_list)
+
+        logger.info(f"[get_all_routes] {len(shifts_list)} shifts, {total_routes} routes")
+
         return ResponseWrapper.success(
             data={
                 "shifts": shifts_list,
                 "total_shifts": len(shifts_list),
-                "total_routes": total_routes
+                "total_routes": total_routes,
             },
-            message=f"Successfully retrieved {len(shifts_list)} shifts with {total_routes} routes"
+            message=f"Successfully retrieved {len(shifts_list)} shifts with {total_routes} routes",
         )
-    
+
     except HTTPException:
         raise
     except Exception as e:
