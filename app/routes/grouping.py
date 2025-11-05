@@ -40,6 +40,28 @@ class ClusterGenerationRequest(BaseModel):
     radius: int = 1
     strict_grouping: bool = False
 
+from datetime import datetime
+
+from datetime import datetime, time
+
+def datetime_to_minutes(dt_val):
+    """
+    Convert datetime/time string or object to minutes from midnight
+    """
+    # If already datetime or time object
+    if isinstance(dt_val, datetime):
+        return dt_val.hour * 60 + dt_val.minute
+    
+    if isinstance(dt_val, time):
+        return dt_val.hour * 60 + dt_val.minute
+
+    # Else assume it's string
+    if isinstance(dt_val, str):
+        dt = datetime.fromisoformat(dt_val)
+        return dt.hour * 60 + dt.minute
+
+    raise TypeError(f"Unsupported type for datetime_to_minutes: {type(dt_val)}")
+
 @router.get("/bookings/routesuggestion")
 async def route_suggestion(
     booking_date: date = Query(..., description="Date for the bookings (YYYY-MM-DD)"),
@@ -107,7 +129,7 @@ async def route_suggestion(
         shift_type = shift.log_type or "Unknown"
         lat_col = "pickup_latitude" if shift_type == "IN" else "drop_latitude"
         lon_col = "pickup_longitude" if shift_type == "IN" else "drop_longitude"
-
+        
         # ---- Fetch Already Routed Booking IDs ----
         routed_booking_ids = (
             db.query(RouteManagementBooking.booking_id)
@@ -166,6 +188,30 @@ async def route_suggestion(
             cluster_data.append({"cluster_id": idx, "bookings": cluster})
 
         logger.info(f"Generated {len(cluster_data)} clusters from {len(bookings)} unrouted bookings")
+
+        # ---- Generate optimal route for each cluster (optional) ----
+        from app.services.optimal_roiute_generation import generate_optimal_route, generate_drop_route
+
+        if shift_type == "IN":
+            for cluster in cluster_data:
+                optimized_route = generate_optimal_route(
+                    group=cluster["bookings"],
+                    # start_time_minutes=datetime_to_minutes(shift.shift_time),
+                    drop_lat=cluster["bookings"][-1]["drop_latitude"],
+                    drop_lng=cluster["bookings"][-1]["drop_longitude"],
+                    drop_address=cluster["bookings"][-1]["drop_location"]
+                )
+                cluster["optimized_route"] = optimized_route
+        else:
+            for cluster in cluster_data:
+                optimized_route = generate_drop_route(
+                    group=cluster["bookings"],
+                    start_time_minutes=datetime_to_minutes(shift.shift_time),
+                    office_lat=cluster["bookings"][0]["pickup_latitude"],
+                    office_lng=cluster["bookings"][0]["pickup_longitude"],
+                    office_address=cluster["bookings"][0]["pickup_location"]
+                )
+                cluster["optimized_route"] = optimized_route
 
         # ---- Final Response ----
         shift_response = ShiftResponse.model_validate(shift, from_attributes=True)

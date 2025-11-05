@@ -65,41 +65,33 @@ def email_exists(email: str, tenant_id: str, api_url: str, token: str) -> bool:
     )
     return resp.status_code == 200
 
+ADDRESSES = [
+    {"address": "3rd Cross, 27th Main Rd, 1st Sector, HSR Layout, Bengaluru 560102", "lat":12.91198, "lon":77.63875},
+    {"address": "2nd Cross, 1st Main Rd, Soudamini Layout, Konanakunte, Bengaluru 560062", "lat":12.88568, "lon":77.57321},
+    {"address": "2nd Main Rd, Opp Varalakshmi Hospital, Madiwala Ext, BTM, Bengaluru 560068", "lat":12.91518, "lon":77.61146},
+    {"address": "8th Cross Rd, 1st Sector, HSR Layout, Bengaluru 560102", "lat":12.91595, "lon":77.63482},
+    {"address": "1st Cross, Central Jail Rd, Naganathapura, Hosa Rd, Bengaluru 560100", "lat":12.87188, "lon":77.65829},
+    {"address": "Kada Agrahara, Sarjapur-Marathahalli Rd", "lat":12.90948, "lon":77.75076},
+    {"address": "Bellandur Main Rd, Bellandur, Bengaluru 560103", "lat":12.93536, "lon":77.67819},
+    {"address": "Bellandur Main Rd, Bellandur, Bengaluru 560103", "lat":12.93495, "lon":77.67650},
+    {"address": "Brigade Cornerstone Utopia, Varthur 560087", "lat":12.95364, "lon":77.75105},
+    {"address": "KT Silk Sarees, Dommasandra, Thigala Chowdadenahalli 562125", "lat":12.87943, "lon":77.73863},
+    {"address": "Ashirvad Colony, Horamavu, Bengaluru", "lat":13.03407, "lon":77.66441},
+    {"address": "Heelalige Gate, Chandapura, Bengaluru 560099", "lat":12.80898, "lon":77.70554}
+]
+ADDR_COUNT = len(ADDRESSES)
 
 def generate_payload(i: int, tenant_id: str, team_id: Optional[int]):
     first_names = ["John", "Sara", "Mike", "Priya", "Ravi", "Kiran", "Aman", "Anita"]
     last_names = ["Shah", "Reddy", "Patel", "Singh", "Verma", "Das"]
-    
+
     name = f"{random.choice(first_names)} {random.choice(last_names)}"
-
     email = f"{tenant_id[:3].upper()}{uuid.uuid4().hex[:4].upper()}@gmail.com"
-     # Majestic, Bangalore center coordinates
-    center_lat = 12.9784
-    center_lon = 77.5721
-    radius_km = 20  # radius around Majestic
 
-    # Generate random offset
-    r = radius_km * math.sqrt(random.random())  # random distance
-    theta = random.uniform(0, 2 * math.pi)      # random direction
-    earth_radius = 6371.0                       # Earth radius in km
-    delta = r / earth_radius                    # angular distance
+    # deterministic address index (i-1 to zero-base)
+    idx = (i - 1) % ADDR_COUNT
+    addr = ADDRESSES[idx]
 
-    # Convert center to radians
-    center_lat_rad = math.radians(center_lat)
-    center_lon_rad = math.radians(center_lon)
-
-    # Compute destination point
-    new_lat_rad = math.asin(
-        math.sin(center_lat_rad) * math.cos(delta)
-        + math.cos(center_lat_rad) * math.sin(delta) * math.cos(theta)
-    )
-    new_lon_rad = center_lon_rad + math.atan2(
-        math.sin(theta) * math.sin(delta) * math.cos(center_lat_rad),
-        math.cos(delta) - math.sin(center_lat_rad) * math.sin(new_lat_rad)
-    )
-
-    new_lat = math.degrees(new_lat_rad)
-    new_lon = math.degrees(new_lon_rad)
     return {
         "name": name,
         "email": email,
@@ -109,11 +101,13 @@ def generate_payload(i: int, tenant_id: str, team_id: Optional[int]):
         "tenant_id": tenant_id,
         "team_id": team_id,
         "is_active": True,
-        "latitude": round(new_lat, 6),
-        "longitude": round(new_lon, 6),
+
+        "address": addr["address"],
+        "latitude": addr["lat"],
+        "longitude": addr["lon"],
+        
         "gender": random.choice(["Male", "Female"])
     }
-
 
 def create_employee(i: int, tenant_id: str, team_id: Optional[int], api_url: str, token: str):
     payload = generate_payload(i, tenant_id, team_id)
