@@ -42,17 +42,25 @@ class ClusterGenerationRequest(BaseModel):
 
 from datetime import datetime
 
-def datetime_to_minutes(datetime_str):
+from datetime import datetime, time
+
+def datetime_to_minutes(dt_val):
     """
-    Convert datetime string to integer minutes from midnight
-    Args:
-        datetime_str: String in format "2025-10-30T13:50:00.733946"
-    Returns:
-        int: Minutes from midnight (0-1439)
+    Convert datetime/time string or object to minutes from midnight
     """
-    # Parse the datetime string
-    dt = datetime.fromisoformat(datetime_str)
-    return dt.hour * 60 + dt.minute
+    # If already datetime or time object
+    if isinstance(dt_val, datetime):
+        return dt_val.hour * 60 + dt_val.minute
+    
+    if isinstance(dt_val, time):
+        return dt_val.hour * 60 + dt_val.minute
+
+    # Else assume it's string
+    if isinstance(dt_val, str):
+        dt = datetime.fromisoformat(dt_val)
+        return dt.hour * 60 + dt.minute
+
+    raise TypeError(f"Unsupported type for datetime_to_minutes: {type(dt_val)}")
 
 @router.get("/bookings/routesuggestion")
 async def route_suggestion(
@@ -188,9 +196,9 @@ async def route_suggestion(
             for cluster in cluster_data:
                 optimized_route = generate_optimal_route(
                     group=cluster["bookings"],
-                    start_time_minutes=datetime_to_minutes(shift.shift_time),
+                    # start_time_minutes=datetime_to_minutes(shift.shift_time),
                     drop_lat=cluster["bookings"][-1]["drop_latitude"],
-                    drop_lon=cluster["bookings"][-1]["drop_longitude"],
+                    drop_lng=cluster["bookings"][-1]["drop_longitude"],
                     drop_address=cluster["bookings"][-1]["drop_location"]
                 )
                 cluster["optimized_route"] = optimized_route
