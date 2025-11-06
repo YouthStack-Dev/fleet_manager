@@ -6,6 +6,7 @@ except ImportError:
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
 
+from datetime import datetime, time
 import requests
 from fastapi import HTTPException
 
@@ -16,7 +17,13 @@ GOOGLE_MAPS_API_KEY = "AIzaSyCI7CwlYJ6Qt5pQGW--inSsJmdEManW-K0"
 
 def generate_optimal_route(group, drop_lat, drop_lng, drop_address, shift_time, deadline_minutes=600, buffer_minutes=15):
     # Parse shift time to minutes
-    shift_hours, shift_minutes = map(int, shift_time.split(":"))
+    if isinstance(shift_time, str):
+        shift_hours, shift_minutes = map(int, shift_time.split(":"))
+    elif isinstance(shift_time, time):
+        shift_hours, shift_minutes = shift_time.hour, shift_time.minute
+    else:
+        raise TypeError(f"Unsupported type for shift_time: {type(shift_time)}")
+
     shift_time_minutes = shift_hours * 60 + shift_minutes
 
     # Find the pickup location with maximum distance from destination
@@ -132,7 +139,7 @@ def generate_optimal_route(group, drop_lat, drop_lng, drop_address, shift_time, 
 
     return final_routes
 
-def generate_drop_route(group, office_lat, office_lng, office_address, start_time_minutes=1020):
+def generate_drop_route(group, office_lat, office_lng, office_address,buffer_minutes=15, start_time_minutes=1020):
     """
     Generate optimal route from office to varying drop locations
     Args:
@@ -216,10 +223,11 @@ def generate_drop_route(group, office_lat, office_lng, office_address, start_tim
         {
             "temp_route_id": 1,
             "booking_ids": [b["booking_id"] for b in ordered],
-            "drop_order": drop_order,
+            "pickup_order": drop_order,
             "estimated_time": f"{int(duration)} mins",
             "estimated_distance": f"{round(distance, 1)} km",
             "total_route_duration": f"{int(total_route_duration)} mins",
+            "buffer_time": f"{buffer_minutes} mins",
             "start_time": f"{int(start_time_minutes // 60):02d}:{int(start_time_minutes % 60):02d}",
             "office_lat": office_lat,
             "office_lng": office_lng,
