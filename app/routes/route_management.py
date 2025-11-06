@@ -1818,6 +1818,7 @@ async def bulk_delete_routes(
             ).update(
                 {
                     Booking.status: BookingStatusEnum.REQUEST,
+                    Booking.OTP: None,
                     Booking.updated_at: func.now(),
                     Booking.reason: "Route deleted - reverted to request",
                 },
@@ -1967,6 +1968,7 @@ async def delete_route(
             ).update(
                 {
                     Booking.status: BookingStatusEnum.REQUEST,
+                    Booking.OTP: None,
                     Booking.updated_at: func.now(),
                     Booking.reason: "Route deleted - reverted to request",
                 },
