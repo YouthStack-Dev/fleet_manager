@@ -301,6 +301,7 @@ async def create_routes(
             Booking.booking_date == booking_date,
             Booking.shift_id == shift_id,
             Booking.tenant_id == tenant_id,
+            Booking.status == BookingStatusEnum.REQUEST
         )
         if routed_booking_ids:
             bookings_query = bookings_query.filter(~Booking.booking_id.in_(routed_booking_ids))
@@ -703,6 +704,7 @@ async def get_unrouted_bookings(
                 Booking.tenant_id == tenant_id,
                 Booking.shift_id == shift_id,
                 Booking.booking_date == booking_date,
+                Booking.status == BookingStatusEnum.REQUEST,
                 ~Booking.booking_id.in_(routed_booking_ids) if routed_booking_ids else True,
             )
             .all()
