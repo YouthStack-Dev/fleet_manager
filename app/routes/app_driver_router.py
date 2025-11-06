@@ -124,8 +124,7 @@ async def get_upcoming_trips(
                 RouteManagement.tenant_id == tenant_id,
                 RouteManagement.assigned_driver_id == driver_id,
                 RouteManagement.status.in_([
-                    RouteManagementStatusEnum.PLANNED,
-                    RouteManagementStatusEnum.ASSIGNED,
+                    RouteManagementStatusEnum.DRIVER_ASSIGNED
                 ]),
             )
             .all()

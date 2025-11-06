@@ -810,7 +810,7 @@ async def assign_vendor_to_route(
         route.assigned_vendor_id = vendor_id
 
         if route.status == RouteManagementStatusEnum.PLANNED:
-            route.status = RouteManagementStatusEnum.ASSIGNED
+            route.status = RouteManagementStatusEnum.VENDOR_ASSIGNED
 
         db.commit()
         db.refresh(route)
@@ -974,8 +974,8 @@ async def assign_vehicle_to_route(
         route.assigned_vehicle_id = vehicle.vehicle_id
         route.assigned_driver_id = driver.driver_id
 
-        if route.status == RouteManagementStatusEnum.ASSIGNED:
-            route.status = RouteManagementStatusEnum.PLANNED  # better status progression
+        if route.status == RouteManagementStatusEnum.VENDOR_ASSIGNED:
+            route.status = RouteManagementStatusEnum.DRIVER_ASSIGNED  # better status progression
 
         db.commit()
         db.refresh(route)
