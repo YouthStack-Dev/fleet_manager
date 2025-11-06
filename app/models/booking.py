@@ -8,8 +8,8 @@ from enum import Enum as PyEnum
 
 
 class BookingStatusEnum(str, PyEnum):
-    PENDING = "Pending"          # request raised
-    CONFIRMED = "Confirmed"      # routing done
+    REQUEST = "Request"          # request raised
+    SCHEDULED = "Scheduled"     # routing done
     ONGOING = "Ongoing"          # in vehicle
     COMPLETED = "Completed"
     CANCELLED = "Cancelled"      
@@ -43,7 +43,7 @@ class Booking(Base):
 
     status = Column(
         Enum(BookingStatusEnum, native_enum=False),
-        default=BookingStatusEnum.PENDING,
+        default=BookingStatusEnum.REQUEST,
         nullable=False,
         index=True
     )

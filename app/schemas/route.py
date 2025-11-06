@@ -5,7 +5,8 @@ from enum import Enum
 
 class RouteStatusEnum(str, Enum):
     PLANNED = "Planned"
-    ASSIGNED = "Assigned"
+    VENDOR_ASSIGNED = "Vendor Assigned"
+    DRIVER_ASSIGNED = "Driver Assigned"
     ONGOING = "Ongoing"
     COMPLETED = "Completed"
     CANCELLED = "Cancelled"

@@ -209,7 +209,7 @@ def create_booking(
                 drop_latitude=drop_lat,
                 drop_longitude=drop_lng,
                 drop_location=drop_addr,
-                status="Pending",
+                status="Request",
             )
             db.add(db_booking)
             db.flush()

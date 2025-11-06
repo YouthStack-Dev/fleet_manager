@@ -9,7 +9,8 @@ from enum import Enum as PyEnum
 
 class RouteManagementStatusEnum(str, PyEnum):
     PLANNED = "Planned"
-    ASSIGNED = "Assigned"
+    VENDOR_ASSIGNED = "Vendor Assigned"
+    DRIVER_ASSIGNED = "Driver Assigned"
     ONGOING = "Ongoing"
     COMPLETED = "Completed"
     CANCELLED = "Cancelled"
