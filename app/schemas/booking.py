@@ -42,6 +42,7 @@ class BookingBase(BaseModel):
     drop_location: Optional[str] = None
     status: Optional[BookingStatusEnum] = BookingStatusEnum.REQUEST
     reason: Optional[str] = None
+    OTP: Optional[int] = None
     is_active: Optional[bool] = True
 
 

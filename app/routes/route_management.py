@@ -1,3 +1,4 @@
+import random as random
 from fastapi import APIRouter, Depends, HTTPException, Path, Query ,status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -382,6 +383,7 @@ async def create_routes(
                     db.flush()  # Get the route_id
 
                     for idx, booking in enumerate(optimized_route[0]["pickup_order"]):
+                        otp_code = random.randint(1000, 9999)
                         route_booking = RouteManagementBooking(
                             route_id=route.route_id,
                             booking_id=booking["booking_id"],
@@ -398,6 +400,7 @@ async def create_routes(
                         ).update(
                             {
                                 Booking.status: BookingStatusEnum.SCHEDULED,
+                                Booking.OTP:otp_code,
                                 Booking.updated_at: func.now(),
                             },
                             synchronize_session=False
