@@ -9,8 +9,9 @@ from enum import Enum as PyEnum
 
 class RouteManagementStatusEnum(str, PyEnum):
     PLANNED = "Planned"
-    ASSIGNED = "Assigned"
-    IN_PROGRESS = "InProgress"
+    VENDOR_ASSIGNED = "Vendor Assigned"
+    DRIVER_ASSIGNED = "Driver Assigned"
+    ONGOING = "Ongoing"
     COMPLETED = "Completed"
     CANCELLED = "Cancelled"
 
@@ -19,14 +20,13 @@ class RouteManagement(Base):
     __tablename__ = "route_management"
     __table_args__ = (
         Index("ix_route_management_tenant_status", "tenant_id", "status"),
-        UniqueConstraint("tenant_id", "route_code", name="uq_route_management_code_per_tenant"),
         {"extend_existing": True},
     )
 
     route_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     tenant_id = Column(String(50), nullable=False)
     shift_id = Column(Integer, nullable=True)
-    route_code = Column(String(100), nullable=False)
+    route_code = Column(String(100), nullable=True)
 
     # Current assignment (denormalized for fast reads)
     assigned_vendor_id = Column(Integer, nullable=True)

@@ -1,4 +1,6 @@
+import random as random
 from fastapi import APIRouter, Depends, HTTPException, Path, Query ,status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict
 from pydantic import BaseModel
@@ -6,7 +8,7 @@ from datetime import date , datetime, time
 from enum import Enum
 
 from app.database.session import get_db
-from app.models.booking import Booking
+from app.models.booking import Booking, BookingStatusEnum
 from app.models.driver import Driver
 from app.models.route_management import RouteManagement, RouteManagementBooking, RouteManagementStatusEnum
 from app.models.shift import Shift  # Add shift model import
@@ -349,6 +351,8 @@ async def create_routes(
         for cluster in cluster_data:
             if shift_type == "IN":
                 optimized_route = generate_optimal_route(
+                    deadline_minutes=540,
+                    shift_time=shift.shift_time,
                     group=cluster["bookings"],
                     drop_lat=cluster["bookings"][-1]["drop_latitude"],
                     drop_lng=cluster["bookings"][-1]["drop_longitude"],
@@ -372,13 +376,14 @@ async def create_routes(
                         route_code=f"Route-{cluster['cluster_id']}",
                         estimated_total_time=optimized_route[0]["estimated_time"].split()[0],
                         estimated_total_distance=optimized_route[0]["estimated_distance"].split()[0],
-                        buffer_time=optimized_route[0].get("buffer_time", "0"),
+                        buffer_time=float(optimized_route[0]["buffer_time"].split()[0]),
                         status="PLANNED",
                     )
                     db.add(route)
                     db.flush()  # Get the route_id
 
                     for idx, booking in enumerate(optimized_route[0]["pickup_order"]):
+                        otp_code = random.randint(1000, 9999)
                         route_booking = RouteManagementBooking(
                             route_id=route.route_id,
                             booking_id=booking["booking_id"],
@@ -387,6 +392,21 @@ async def create_routes(
                             estimated_distance=booking["estimated_distance_km"],
                         )
                         db.add(route_booking)
+
+                        # Update booking status to SCHEDULED (only if still in REQUEST)
+                        db.query(Booking).filter(
+                            Booking.booking_id == booking["booking_id"],
+                            Booking.status == BookingStatusEnum.REQUEST
+                        ).update(
+                            {
+                                Booking.status: BookingStatusEnum.SCHEDULED,
+                                Booking.OTP:otp_code,
+                                Booking.updated_at: func.now(),
+                            },
+                            synchronize_session=False
+                        )
+
+                    db.commit()
 
                     db.commit()
                 except SQLAlchemyError as e:
@@ -1702,7 +1722,7 @@ async def bulk_delete_routes(
 ):
     """
     Permanently delete all routes and their associated route-booking records
-    for a given shift and date.
+    for a given shift and date, and revert bookings back to 'REQUEST'.
     """
     try:
         logger.info("==== BULK ROUTE HARD DELETE INITIATED ====")
@@ -1773,12 +1793,37 @@ async def bulk_delete_routes(
                 ),
             )
 
-        # --- Delete child records first (FK safety) ---
+
+        # --- Fetch affected booking IDs ---
+        booking_ids = [
+            b.booking_id
+            for b in db.query(RouteManagementBooking.booking_id)
+            .filter(RouteManagementBooking.route_id.in_(route_ids))
+            .distinct()
+            .all()
+        ]
+
+        # --- Delete child route-booking links ---
         deleted_bookings_count = (
             db.query(RouteManagementBooking)
             .filter(RouteManagementBooking.route_id.in_(route_ids))
             .delete(synchronize_session=False)
         )
+
+        # --- Revert booking statuses ---
+        if booking_ids:
+            db.query(Booking).filter(
+                Booking.booking_id.in_(booking_ids),
+                Booking.status == BookingStatusEnum.SCHEDULED,
+            ).update(
+                {
+                    Booking.status: BookingStatusEnum.REQUEST,
+                    Booking.OTP: None,
+                    Booking.updated_at: func.now(),
+                    Booking.reason: "Route deleted - reverted to request",
+                },
+                synchronize_session=False,
+            )
 
         # --- Hard delete routes ---
         deleted_routes_count = (
@@ -1790,7 +1835,7 @@ async def bulk_delete_routes(
         db.commit()
 
         logger.info(
-            f"Hard deleted {deleted_routes_count} routes and {deleted_bookings_count} route-booking links successfully"
+            f"✅ Hard deleted {deleted_routes_count} routes, {deleted_bookings_count} mappings, reverted {len(booking_ids)} bookings."
         )
 
         return ResponseWrapper.success(
@@ -1834,7 +1879,8 @@ async def delete_route(
     user_data=Depends(PermissionChecker(["route.delete"], check_tenant=True)),
 ):
     """
-    Permanently delete a route and all its associated bookings.
+    Permanently delete a route and all its associated route-booking links,
+    reverting affected bookings back to 'REQUEST'.
     """
     try:
         user_type = user_data.get("user_type")
@@ -1884,10 +1930,7 @@ async def delete_route(
         # ---- Fetch route ----
         route = (
             db.query(RouteManagement)
-            .filter(
-                RouteManagement.route_id == route_id,
-                RouteManagement.tenant_id == tenant_id,
-            )
+            .filter(RouteManagement.route_id == route_id, RouteManagement.tenant_id == tenant_id)
             .first()
         )
 
@@ -1900,27 +1943,52 @@ async def delete_route(
                 ),
             )
 
-        # ---- Delete associated bookings ----
+
+        # --- Get linked bookings ---
+        booking_ids = [
+            b.booking_id
+            for b in db.query(RouteManagementBooking.booking_id)
+            .filter(RouteManagementBooking.route_id == route_id)
+            .distinct()
+            .all()
+        ]
+
+        # --- Delete route-booking mappings ---
         deleted_bookings_count = (
             db.query(RouteManagementBooking)
             .filter(RouteManagementBooking.route_id == route_id)
             .delete(synchronize_session=False)
         )
 
-        # ---- Delete the route ----
+        # --- Revert bookings ---
+        if booking_ids:
+            db.query(Booking).filter(
+                Booking.booking_id.in_(booking_ids),
+                Booking.status == BookingStatusEnum.SCHEDULED,
+            ).update(
+                {
+                    Booking.status: BookingStatusEnum.REQUEST,
+                    Booking.OTP: None,
+                    Booking.updated_at: func.now(),
+                    Booking.reason: "Route deleted - reverted to request",
+                },
+                synchronize_session=False,
+            )
+
+        # --- Delete route itself ---
         db.delete(route)
         db.commit()
 
         logger.info(
-            f"[delete_route] ✅ Route {route_id} permanently deleted with {deleted_bookings_count} associated bookings."
+            f"✅ Route {route_id} deleted. {len(booking_ids)} bookings reverted to REQUEST."
         )
 
         return ResponseWrapper.success(
             data={
                 "deleted_route_id": route_id,
-                "deleted_bookings_count": deleted_bookings_count,
+                "reverted_bookings_count": len(booking_ids),
             },
-            message=f"Route {route_id} deleted successfully",
+            message=f"Route {route_id} deleted successfully, reverted {len(booking_ids)} bookings to REQUEST",
         )
 
     except HTTPException:

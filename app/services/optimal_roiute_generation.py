@@ -6,6 +6,7 @@ except ImportError:
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
 
+from datetime import datetime, time
 import requests
 from fastapi import HTTPException
 
@@ -14,7 +15,16 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 URL = f"https://maps.googleapis.com/maps/api/directions/json"
 GOOGLE_MAPS_API_KEY = "AIzaSyCI7CwlYJ6Qt5pQGW--inSsJmdEManW-K0" 
 
-def generate_optimal_route(group, drop_lat, drop_lng, drop_address, deadline_minutes=600, buffer_minutes=15):
+def generate_optimal_route(group, drop_lat, drop_lng, drop_address, shift_time, deadline_minutes=600, buffer_minutes=15):
+    # Parse shift time to minutes
+    if isinstance(shift_time, str):
+        shift_hours, shift_minutes = map(int, shift_time.split(":"))
+    elif isinstance(shift_time, time):
+        shift_hours, shift_minutes = shift_time.hour, shift_time.minute
+    else:
+        raise TypeError(f"Unsupported type for shift_time: {type(shift_time)}")
+
+    shift_time_minutes = shift_hours * 60 + shift_minutes
 
     # Find the pickup location with maximum distance from destination
     def calculate_distance(lat1, lng1, lat2, lng2):
@@ -22,7 +32,7 @@ def generate_optimal_route(group, drop_lat, drop_lng, drop_address, deadline_min
         # Haversine formula for distance calculation
         R = 6371  # Earth's radius in km
         dlat = math.radians(lat2 - lat1)
-        dlng = math.radians(lat2 - lat1)
+        dlng = math.radians(lat2 - lng1)
         a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng/2)**2
         c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
         return R * c
@@ -73,61 +83,63 @@ def generate_optimal_route(group, drop_lat, drop_lng, drop_address, deadline_min
     # Reorder bookings: origin booking + optimized order of remaining bookings
     ordered = [origin_booking] + [remaining_bookings[i] for i in order] if waypoints else [origin_booking]
 
-    # Calculate pickup times working backwards from deadline
-    pickup_order = []
-    
     # Calculate total time for each pickup point to reach destination
+    total_route_time = sum(leg["duration"]["value"] for leg in leg_data) / 60  # minutes
+    pickup_time_per_stop = 2  # minutes per pickup
+    total_pickup_time = len(ordered) * pickup_time_per_stop
+    
+    # Total route duration = travel time + pickup times + buffer
+    total_route_duration = total_route_time + total_pickup_time + buffer_minutes
+
+    # Calculate base pickup time by working backwards from shift time
+    base_pickup_time = shift_time_minutes - total_route_duration
+
+    # Calculate pickup times for each stop
+    pickup_order = []
     for i, booking in enumerate(ordered):
-        # Calculate remaining travel time from this pickup to destination
         remaining_legs = leg_data[i:]
-        remaining_travel_time = sum(leg["duration"]["value"] for leg in remaining_legs) / 60  # minutes
+        remaining_travel_time = sum(leg["duration"]["value"] for leg in remaining_legs) / 60
+        distance_to_destination = sum(leg["distance"]["value"] for leg in remaining_legs) / 1000
         
-        # Add pickup time for subsequent passengers (2 minutes each)
-        subsequent_pickup_time = (len(ordered) - i - 1) * 2  # 2 minutes per subsequent pickup
+        # Calculate actual pickup time (base time + 2 mins per previous pickup)
+        actual_pickup_time = base_pickup_time + (i * 2)
         
-        # Calculate pickup time: deadline - remaining_travel_time - buffer - subsequent_pickup_time
-        pickup_time = deadline_minutes - remaining_travel_time - buffer_minutes - subsequent_pickup_time
-        
-        # Calculate distance traveled to reach this pickup point
-        distance_to_pickup = sum(leg["distance"]["value"] for leg in leg_data[:i]) / 1000 if i > 0 else 0
+        # Format time as HH:MM
+        hours = int(actual_pickup_time // 60)
+        minutes = int(actual_pickup_time % 60)
+        formatted_pickup_time = f"{hours:02d}:{minutes:02d}"
         
         pickup_order.append({
-            "order_id": i + 1,  # Add order_id
+            "order_id": i + 1,
             "booking_id": booking["booking_id"],
             "pickup_lat": booking["pickup_latitude"],
             "pickup_lng": booking["pickup_longitude"],
-            "estimated_pickup_time_minutes": pickup_time,
-            "estimated_pickup_time_formatted": f"{int(pickup_time // 60):02d}:{int(pickup_time % 60):02d}",
-            "estimated_distance_km": round(distance_to_pickup, 2),
-            "estimated_distance_formatted": f"{round(distance_to_pickup, 2)} km",
-            "travel_time_to_destination": f"{int(remaining_travel_time + subsequent_pickup_time)} mins"
+            "estimated_pickup_time_minutes": actual_pickup_time,
+            "estimated_drop_time_formatted": shift_time,
+            "estimated_pickup_time_formatted": formatted_pickup_time,
+            "estimated_distance_km": round(distance_to_destination, 2),
+            "estimated_distance_formatted": f"{round(distance_to_destination, 2)} km",
+            "travel_time_to_destination": f"{int(remaining_travel_time)} mins"
         })
 
-    # Calculate earliest pickup time for route duration
-    earliest_pickup = min(p["estimated_pickup_time_minutes"] for p in pickup_order)
-    latest_arrival = deadline_minutes
-    total_route_duration = latest_arrival - earliest_pickup
-
     final_routes = []
-    final_routes.append(
-        {
-            "temp_route_id": 1,
-            "booking_ids": [b["booking_id"] for b in ordered],
-            "pickup_order": pickup_order,
-            "estimated_time": f"{int(duration)} mins",
-            "estimated_distance": f"{round(distance, 1)} km",
-            "total_route_duration": f"{int(total_route_duration)} mins",
-            "deadline_time": f"{int(deadline_minutes // 60):02d}:{int(deadline_minutes % 60):02d}",
-            "buffer_time": f"{buffer_minutes} mins",
-            "drop_lat": drop_lat,
-            "drop_lng": drop_lng,
-            "drop_address": drop_address
-        }
-    )
+    final_routes.append({
+        "temp_route_id": 1,
+        "booking_ids": [b["booking_id"] for b in ordered],
+        "pickup_order": pickup_order,
+        "estimated_time": f"{int(duration)} mins",
+        "estimated_distance": f"{round(distance, 1)} km",
+        "total_route_duration": f"{int(total_route_duration)} mins",
+        "deadline_time": f"{int(deadline_minutes // 60):02d}:{int(deadline_minutes % 60):02d}",
+        "buffer_time": f"{buffer_minutes} mins",
+        "drop_lat": drop_lat,
+        "drop_lng": drop_lng,
+        "drop_address": drop_address
+    })
 
     return final_routes
 
-def generate_drop_route(group, office_lat, office_lng, office_address, start_time_minutes=1020):
+def generate_drop_route(group, office_lat, office_lng, office_address,buffer_minutes=15, start_time_minutes=1020):
     """
     Generate optimal route from office to varying drop locations
     Args:
@@ -196,6 +208,7 @@ def generate_drop_route(group, office_lat, office_lng, office_address, start_tim
             "booking_id": booking["booking_id"],
             "drop_lat": booking["drop_latitude"],
             "drop_lng": booking["drop_longitude"],
+            "estimated_pickup_time_formatted": "",
             "estimated_drop_time_minutes": current_time,
             "estimated_drop_time_formatted": f"{int(current_time // 60):02d}:{int(current_time % 60):02d}",
             "estimated_distance_km": round(current_distance, 2),
@@ -210,10 +223,11 @@ def generate_drop_route(group, office_lat, office_lng, office_address, start_tim
         {
             "temp_route_id": 1,
             "booking_ids": [b["booking_id"] for b in ordered],
-            "drop_order": drop_order,
+            "pickup_order": drop_order,
             "estimated_time": f"{int(duration)} mins",
             "estimated_distance": f"{round(distance, 1)} km",
             "total_route_duration": f"{int(total_route_duration)} mins",
+            "buffer_time": f"{buffer_minutes} mins",
             "start_time": f"{int(start_time_minutes // 60):02d}:{int(start_time_minutes % 60):02d}",
             "office_lat": office_lat,
             "office_lng": office_lng,
@@ -240,7 +254,8 @@ if __name__ == "__main__":
     # Deadline at 10:00 AM (600 minutes from midnight) with 15 minute buffer
     deadline_time = 600  # 10:00 AM in minutes
     buffer_time = 15     # 15 minutes buffer
-    final_routes = generate_optimal_route(group, DROP_LAT, DROP_LNG, DROP_ADDRESS, deadline_time, buffer_time)
+    shift_time = "09:00"  # 9:00 AM shift time
+    final_routes = generate_optimal_route(group, DROP_LAT, DROP_LNG, DROP_ADDRESS, shift_time, deadline_time, buffer_time)
     for route in final_routes:
         print(f"Route ID: {route['temp_route_id']}")
         print(f"Total Distance: {route['estimated_distance']}")
