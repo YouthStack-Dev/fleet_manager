@@ -155,7 +155,18 @@ def create_booking(
                         ),
                     )
 
+            # 3️⃣ Prevent booking if shift time has already passed today
+            shift_datetime = datetime.combine(booking_date, shift.shift_time)
+            now = datetime.now()
 
+            if booking_date == date.today() and now >= shift_datetime:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message=f"Cannot create booking for a shift that has already started or passed (Shift time: {shift.shift_time})",
+                        error_code="PAST_SHIFT_TIME",
+                    ),
+                )
 
             # 3️⃣ Duplicate booking check
             existing_booking = (
