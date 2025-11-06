@@ -372,7 +372,7 @@ async def create_routes(
                         route_code=f"Route-{cluster['cluster_id']}",
                         estimated_total_time=optimized_route[0]["estimated_time"].split()[0],
                         estimated_total_distance=optimized_route[0]["estimated_distance"].split()[0],
-                        buffer_time=optimized_route[0]["buffer_time"].split()[0],
+                        buffer_time=optimized_route[0].get("buffer_time", "0"),
                         status="PLANNED",
                     )
                     db.add(route)
