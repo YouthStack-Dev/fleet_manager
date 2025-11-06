@@ -3,9 +3,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict
 from pydantic import BaseModel
-from datetime import date , datetime
+from datetime import date , datetime, time
 from enum import Enum
-import time
 
 from app.database.session import get_db
 from app.models.booking import Booking, BookingStatusEnum
@@ -374,7 +373,7 @@ async def create_routes(
                         route_code=f"Route-{cluster['cluster_id']}",
                         estimated_total_time=optimized_route[0]["estimated_time"].split()[0],
                         estimated_total_distance=optimized_route[0]["estimated_distance"].split()[0],
-                        buffer_time=optimized_route[0]["buffer_time"].split()[0],
+                        buffer_time=optimized_route[0].get("buffer_time", "0"),
                         status="PLANNED",
                     )
                     db.add(route)
