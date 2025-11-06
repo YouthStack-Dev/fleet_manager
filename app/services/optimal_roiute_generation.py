@@ -14,7 +14,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 URL = f"https://maps.googleapis.com/maps/api/directions/json"
 GOOGLE_MAPS_API_KEY = "AIzaSyCI7CwlYJ6Qt5pQGW--inSsJmdEManW-K0" 
 
-def generate_optimal_route(group, drop_lat, drop_lng, drop_address, deadline_minutes=600, buffer_minutes=15):
+def generate_optimal_route(group, drop_lat, drop_lng, drop_address,shift_time, deadline_minutes=600, buffer_minutes=15):
 
     # Find the pickup location with maximum distance from destination
     def calculate_distance(lat1, lng1, lat2, lng2):
@@ -97,6 +97,7 @@ def generate_optimal_route(group, drop_lat, drop_lng, drop_address, deadline_min
             "pickup_lat": booking["pickup_latitude"],
             "pickup_lng": booking["pickup_longitude"],
             "estimated_pickup_time_minutes": pickup_time,
+            "estimated_drop_time_formatted": shift_time,
             "estimated_pickup_time_formatted": f"{int(pickup_time // 60):02d}:{int(pickup_time % 60):02d}",
             "estimated_distance_km": round(distance_to_pickup, 2),
             "estimated_distance_formatted": f"{round(distance_to_pickup, 2)} km",
@@ -196,6 +197,7 @@ def generate_drop_route(group, office_lat, office_lng, office_address, start_tim
             "booking_id": booking["booking_id"],
             "drop_lat": booking["drop_latitude"],
             "drop_lng": booking["drop_longitude"],
+            "estimated_pickup_time_formatted": "",
             "estimated_drop_time_minutes": current_time,
             "estimated_drop_time_formatted": f"{int(current_time // 60):02d}:{int(current_time % 60):02d}",
             "estimated_distance_km": round(current_distance, 2),

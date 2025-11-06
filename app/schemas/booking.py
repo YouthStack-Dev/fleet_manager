@@ -5,25 +5,23 @@ from enum import Enum
 
 
 class BookingStatusEnum(str, Enum):
-    PENDING = "Pending"
-    CONFIRMED = "Confirmed"
+    REQUEST = "Request"
+    SCHEDULED = "Scheduled"
     ONGOING = "Ongoing"
     COMPLETED = "Completed"
     CANCELLED = "Cancelled"
     NO_SHOW = "No-Show"
-    BOARDING = "Boarding"
     EXPIRED = "Expired"
 
     class Config:
         schema_extra = {
             "example": {
-                "PENDING": "Pending",
-                "CONFIRMED": "Confirmed",
+                "REQUEST": "Request",
+                "SCHEDULED": "Scheduled",
                 "ONGOING": "Ongoing",
                 "COMPLETED": "Completed",
                 "CANCELLED": "Cancelled",
                 "NO_SHOW": "No-Show",
-                "BOARDING": "Boarding",
                 "EXPIRED": "Expired",
             }
         }
@@ -42,7 +40,7 @@ class BookingBase(BaseModel):
     drop_latitude: Optional[float] = None
     drop_longitude: Optional[float] = None
     drop_location: Optional[str] = None
-    status: Optional[BookingStatusEnum] = BookingStatusEnum.PENDING
+    status: Optional[BookingStatusEnum] = BookingStatusEnum.REQUEST
     reason: Optional[str] = None
     is_active: Optional[bool] = True
 
