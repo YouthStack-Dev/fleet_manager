@@ -350,6 +350,8 @@ async def create_routes(
         for cluster in cluster_data:
             if shift_type == "IN":
                 optimized_route = generate_optimal_route(
+                    deadline_minutes=540,
+                    shift_time=shift.shift_time,
                     group=cluster["bookings"],
                     drop_lat=cluster["bookings"][-1]["drop_latitude"],
                     drop_lng=cluster["bookings"][-1]["drop_longitude"],
@@ -373,7 +375,7 @@ async def create_routes(
                         route_code=f"Route-{cluster['cluster_id']}",
                         estimated_total_time=optimized_route[0]["estimated_time"].split()[0],
                         estimated_total_distance=optimized_route[0]["estimated_distance"].split()[0],
-                        buffer_time=optimized_route[0].get("buffer_time", "0"),
+                        buffer_time=float(optimized_route[0]["buffer_time"].split()[0]),
                         status="PLANNED",
                     )
                     db.add(route)
