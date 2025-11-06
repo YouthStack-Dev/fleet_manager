@@ -2,9 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query ,status
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict
 from pydantic import BaseModel
-from datetime import date , datetime
+from datetime import date , datetime, time
 from enum import Enum
-import time
 
 from app.database.session import get_db
 from app.models.booking import Booking
