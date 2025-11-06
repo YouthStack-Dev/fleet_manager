@@ -10,7 +10,6 @@ from enum import Enum as PyEnum
 class BookingStatusEnum(str, PyEnum):
     PENDING = "Pending"          # request raised
     CONFIRMED = "Confirmed"      # routing done
-    BOARDING = "Boarding"        # waiting to board
     ONGOING = "Ongoing"          # in vehicle
     COMPLETED = "Completed"
     CANCELLED = "Cancelled"      

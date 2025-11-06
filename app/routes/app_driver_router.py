@@ -5,6 +5,8 @@ from typing import Optional, List
 from datetime import date, datetime, timedelta
 
 from app.database.session import get_db
+from app.models.employee import Employee
+from app.models.shift import Shift
 from common_utils.auth.permission_checker import PermissionChecker
 from app.models.route_management import RouteManagement, RouteManagementBooking, RouteManagementStatusEnum
 from app.models.booking import Booking
@@ -94,9 +96,8 @@ def require_tenant(db: Session, tenant_id: str):
     return tenant
 
 
-# ---------------------------
-# Core Driver Trip Endpoints
-# ---------------------------
+
+
 
 @router.get("/trips/upcoming", status_code=status.HTTP_200_OK)
 async def get_upcoming_trips(
@@ -105,37 +106,141 @@ async def get_upcoming_trips(
     ctx=Depends(DriverAuth),
 ):
     """
-    Upcoming = routes assigned to this driver from TODAY through TODAY+days_ahead,
-    with statuses PLANNED or ASSIGNED.
+    Fetch upcoming trips for the driver for today through N future days.
+    Each trip includes ordered stops with employee, pickup details, and route summary.
     """
     try:
         tenant_id = ctx["tenant_id"]
         driver_id = ctx["driver_id"]
-        require_tenant(db, tenant_id)
+        today = date.today()
+        max_date = today + timedelta(days=days_ahead)
 
-        now = datetime.utcnow()
-        next_24h = now + timedelta(hours=24)
-        logger.info(f"[driver.upcoming] tenant={tenant_id} driver={driver_id} range={now}..{next_24h}")
+        logger.info(f"[driver.upcoming] tenant={tenant_id}, driver={driver_id}, range={today}..{max_date}")
+
+        # --- Get assigned routes for driver ---
         routes = (
             db.query(RouteManagement)
             .filter(
                 RouteManagement.tenant_id == tenant_id,
                 RouteManagement.assigned_driver_id == driver_id,
-                RouteManagement.actual_start_time  >= now,
-                RouteManagement.actual_start_time <= next_24h,
                 RouteManagement.status.in_([
                     RouteManagementStatusEnum.PLANNED,
-                    RouteManagementStatusEnum.ASSIGNED
-                ])
+                    RouteManagementStatusEnum.ASSIGNED,
+                ]),
             )
-            .order_by(RouteManagement.actual_start_time.asc())
             .all()
         )
 
-        data = [serialize_route(db, r) for r in routes]
+        if not routes:
+            return ResponseWrapper.success(
+                data={"routes": [], "count": 0},
+                message="No upcoming routes assigned"
+            )
+
+        upcoming_routes = []
+
+        for route in routes:
+            # --- Fetch related route bookings ---
+            rbs = (
+                db.query(RouteManagementBooking)
+                .filter(RouteManagementBooking.route_id == route.route_id)
+                .order_by(RouteManagementBooking.order_id)
+                .all()
+            )
+
+            if not rbs:
+                continue
+
+            booking_ids = [rb.booking_id for rb in rbs]
+
+            bookings = (
+                db.query(Booking)
+                .filter(Booking.booking_id.in_(booking_ids))
+                .all()
+            )
+
+            # join employee data
+            employee_ids = [b.employee_id for b in bookings if b.employee_id]
+            employees = (
+                db.query(Employee.employee_id, Employee.name, Employee.phone)
+                .filter(Employee.employee_id.in_(employee_ids))
+                .all()
+            )
+            employee_map = {e.employee_id: {"name": e.name, "phone": e.phone} for e in employees}
+
+            # --- determine earliest pickup time for sorting ---
+            pickup_times = [
+                rb.estimated_pick_up_time or rb.actual_pick_up_time
+                for rb in rbs if rb.estimated_pick_up_time or rb.actual_pick_up_time
+            ]
+            if not pickup_times:
+                continue
+            try:
+                first_pickup_time = min(
+                    datetime.combine(today, datetime.strptime(t, "%H:%M").time())
+                    for t in pickup_times
+                )
+            except Exception:
+                first_pickup_time = datetime.utcnow()
+
+            if today <= first_pickup_time.date() <= max_date:
+                shift = db.query(Shift).filter(Shift.shift_id == route.shift_id).first()
+
+                # drop location is common for OUT routes
+                drop_lat, drop_lng, drop_address = None, None, None
+                if bookings:
+                    first_booking = bookings[0]
+                    drop_lat = getattr(first_booking, "drop_latitude", None)
+                    drop_lng = getattr(first_booking, "drop_longitude", None)
+                    drop_address = getattr(first_booking, "drop_location", None)
+
+                # --- build ordered stops ---
+                stops = []
+                for rb in rbs:
+                    booking = next((b for b in bookings if b.booking_id == rb.booking_id), None)
+                    if not booking:
+                        continue
+
+                    emp_info = employee_map.get(booking.employee_id, {})
+                    stops.append({
+                        "order_id": rb.order_id,
+                        "booking_id": booking.booking_id,
+                        "employee_id": booking.employee_id,
+                        "employee_name": emp_info.get("name"),
+                        "employee_phone": emp_info.get("phone"),
+                        "pickup_address": booking.pickup_location,
+                        "pickup_latitude": booking.pickup_latitude,
+                        "pickup_longitude": booking.pickup_longitude,
+                        "estimated_pickup_time": rb.estimated_pick_up_time,
+                        "actual_pickup_time": rb.actual_pick_up_time,
+                    })
+
+                upcoming_routes.append({
+                    "route_id": route.route_id,
+                    "route_code": route.route_code,
+                    "shift_id": route.shift_id,
+                    "shift_time": shift.shift_time.strftime("%H:%M:%S") if shift else None,
+                    "log_type": shift.log_type.value if shift and shift.log_type else None,
+                    "status": route.status.value,
+                    "start_time": first_pickup_time.strftime("%Y-%m-%d %H:%M"),
+                    "drop_location": {
+                        "address": drop_address,
+                        "latitude": drop_lat,
+                        "longitude": drop_lng,
+                    },
+                    "stops": stops,
+                    "summary": {
+                        "total_stops": len(stops),
+                        "total_distance_km": route.actual_total_distance or route.estimated_total_distance or 0,
+                        "total_time_minutes": route.actual_total_time or route.estimated_total_time or 0,
+                    }
+                })
+
+        upcoming_routes.sort(key=lambda r: r["start_time"])
+
         return ResponseWrapper.success(
-            data={"routes": data, "count": len(data)},
-            message=f"Fetched {len(data)} upcoming routes"
+            data={"routes": upcoming_routes, "count": len(upcoming_routes)},
+            message=f"Fetched {len(upcoming_routes)} upcoming routes"
         )
 
     except HTTPException:
@@ -143,7 +248,6 @@ async def get_upcoming_trips(
     except Exception as e:
         logger.exception("[driver.upcoming] Unexpected error")
         return handle_db_error(e)
-
 
 @router.get("/trips/today", status_code=status.HTTP_200_OK)
 async def get_today_trips(
@@ -252,7 +356,7 @@ async def start_trip(
 ):
     """
     Driver marks a trip as started. Transitions:
-    PLANNED/ASSIGNED -> IN_PROGRESS.
+    PLANNED/ASSIGNED -> ONGOING.
     """
     try:
         tenant_id = ctx["tenant_id"]
@@ -277,14 +381,14 @@ async def start_trip(
                 detail=ResponseWrapper.error("Route not found or not startable", "ROUTE_NOT_FOUND_OR_INVALID_STATE"),
             )
 
-        route.status = RouteManagementStatusEnum.IN_PROGRESS
+        route.status = RouteManagementStatusEnum.ONGOING
         # Optional: audit timestamps
         if hasattr(route, "actual_start_time"):
             route.actual_start_time = datetime.utcnow()
 
         db.commit()
         db.refresh(route)
-        logger.info(f"[driver.start] route={route_id} driver={driver_id} -> IN_PROGRESS")
+        logger.info(f"[driver.start] route={route_id} driver={driver_id} -> ONGOING")
 
         return ResponseWrapper.success(
             data={"route_id": route.route_id, "status": route.status},
@@ -307,7 +411,7 @@ async def complete_trip(
 ):
     """
     Driver marks a trip as completed. Transitions:
-    IN_PROGRESS -> COMPLETED.
+    ONGOING -> COMPLETED.
     """
     try:
         tenant_id = ctx["tenant_id"]
@@ -319,7 +423,7 @@ async def complete_trip(
                 RouteManagement.route_id == route_id,
                 RouteManagement.tenant_id == tenant_id,
                 RouteManagement.assigned_driver_id == driver_id,
-                RouteManagement.status == RouteManagementStatusEnum.IN_PROGRESS
+                RouteManagement.status == RouteManagementStatusEnum.ONGOING
             )
             .first()
         )

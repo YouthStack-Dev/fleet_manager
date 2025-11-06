@@ -11,7 +11,6 @@ class BookingStatusEnum(str, Enum):
     COMPLETED = "Completed"
     CANCELLED = "Cancelled"
     NO_SHOW = "No-Show"
-    BOARDING = "Boarding"
     EXPIRED = "Expired"
 
     class Config:
@@ -23,7 +22,6 @@ class BookingStatusEnum(str, Enum):
                 "COMPLETED": "Completed",
                 "CANCELLED": "Cancelled",
                 "NO_SHOW": "No-Show",
-                "BOARDING": "Boarding",
                 "EXPIRED": "Expired",
             }
         }
