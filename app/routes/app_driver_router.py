@@ -443,7 +443,8 @@ async def mark_no_show(
     - Allowed only if route is assigned to the driver.
     - Updates booking.status = NO_SHOW.
     - Updates route.status = ONGOING if it wasn’t already.
-    - Only marks route COMPLETED if all DROPS are completed.
+    - If route has only one booking → auto-complete route.
+    - Otherwise, only mark route COMPLETED if all DROPS are completed.
     """
     try:
         tenant_id = ctx["tenant_id"]
@@ -528,7 +529,7 @@ async def mark_no_show(
             .filter(
                 RouteManagementBooking.route_id == route_id,
                 RouteManagementBooking.order_id < rb.order_id,
-                Booking.status.notin_([BookingStatusEnum.NO_SHOW, BookingStatusEnum.COMPLETED]),
+                Booking.status.notin_([BookingStatusEnum.NO_SHOW, BookingStatusEnum.ONGOING, BookingStatusEnum.COMPLETED]),
             )
             .count()
         )
@@ -560,7 +561,7 @@ async def mark_no_show(
             f"[driver.no_show] Booking {booking_id} marked NO_SHOW; route={route_id}, driver={driver_id}"
         )
 
-        # --- Check if all DROPS (COMPLETED bookings) are done ---
+        # --- Count total bookings & completed drops ---
         total_bookings = (
             db.query(Booking)
             .join(RouteManagementBooking, RouteManagementBooking.booking_id == Booking.booking_id)
@@ -578,7 +579,19 @@ async def mark_no_show(
         )
 
         route_completed = False
-        if total_bookings > 0 and completed_drops == total_bookings:
+
+        # ✅ Case 1: If route has only one booking → auto-complete immediately
+        if total_bookings == 1:
+            route.status = RouteManagementStatusEnum.COMPLETED
+            route.updated_at = now
+            if hasattr(route, "actual_end_time"):
+                setattr(route, "actual_end_time", now)
+            db.commit()
+            route_completed = True
+            logger.info(f"[driver.no_show] Single-booking route {route_id} marked COMPLETED after no-show")
+
+        # ✅ Case 2: If all drops are completed → mark route completed
+        elif total_bookings > 1 and completed_drops == total_bookings:
             route.status = RouteManagementStatusEnum.COMPLETED
             route.updated_at = now
             if hasattr(route, "actual_end_time"):
@@ -616,7 +629,7 @@ async def mark_no_show(
         return ResponseWrapper.success(
             message="Booking marked as no-show successfully"
             if not route_completed
-            else "Booking marked as no-show; all drops completed — route closed",
+            else "Booking marked as no-show; route closed as completed",
             data={
                 "route_id": route.route_id,
                 "route_status": route.status.value,
@@ -646,7 +659,7 @@ async def verify_drop_and_complete_route(
     """
     Driver confirms drop for a booking.
     - Marks booking as COMPLETED and sets actual_drop_time.
-    - If all bookings in route are completed -> auto-completes route.
+    - If all other bookings are NO_SHOW or COMPLETED, auto-completes the route.
     """
     try:
         tenant_id = ctx["tenant_id"]
@@ -731,26 +744,35 @@ async def verify_drop_and_complete_route(
 
         logger.info(f"[driver.drop] Booking {booking_id} marked as completed by driver {driver_id}")
 
-        # --- Check if all bookings are completed ---
+        # --- Check if route should be completed ---
+        total_bookings = (
+            db.query(Booking)
+            .join(RouteManagementBooking, RouteManagementBooking.booking_id == Booking.booking_id)
+            .filter(RouteManagementBooking.route_id == route_id)
+            .count()
+        )
+
+        # Bookings still pending (neither completed nor no-show)
         pending = (
             db.query(Booking)
             .join(RouteManagementBooking, RouteManagementBooking.booking_id == Booking.booking_id)
             .filter(
                 RouteManagementBooking.route_id == route_id,
-                Booking.status != BookingStatusEnum.COMPLETED,
+                Booking.status.notin_([BookingStatusEnum.COMPLETED, BookingStatusEnum.NO_SHOW]),
             )
             .count()
         )
 
+        # --- Auto-complete route if all bookings are done or no-shows ---
         route_completed = False
-        if pending == 0:
+        if total_bookings > 0 and pending == 0:
             route.status = RouteManagementStatusEnum.COMPLETED
             route.updated_at = now
             if hasattr(route, "actual_end_time"):
                 setattr(route, "actual_end_time", now)
             db.commit()
             route_completed = True
-            logger.info(f"[driver.drop] Auto-completed route_id={route_id}")
+            logger.info(f"[driver.drop] Auto-completed route_id={route_id} (all drops done or no-shows)")
 
         return ResponseWrapper.success(
             message="Drop verified successfully" if not route_completed else "Drop verified and trip auto-completed",
