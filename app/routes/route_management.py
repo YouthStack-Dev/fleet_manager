@@ -810,7 +810,7 @@ async def assign_vendor_to_route(
         route.assigned_vendor_id = vendor_id
 
         if route.status == RouteManagementStatusEnum.PLANNED:
-            route.status = RouteManagementStatusEnum.ASSIGNED
+            route.status = RouteManagementStatusEnum.VENDOR_ASSIGNED
 
         db.commit()
         db.refresh(route)
@@ -843,12 +843,14 @@ async def assign_vehicle_to_route(
     user_data=Depends(PermissionChecker(["route.update"], check_tenant=True)),
 ):
     """
-    Assign a vehicle to a specific route.
+    Assign a vehicle (and implicitly driver) to a route.
 
     Validation:
+      - Vendor must be assigned to route before assigning a vehicle.
       - Route and Vehicle must belong to the same tenant.
       - Vehicle.vendor_id must match Route.assigned_vendor_id.
-      - If route has no vendor, assign from the vehicle.vendor_id.
+      - Vehicle must have a mapped driver.
+      - Driver.vendor_id must match Route.assigned_vendor_id.
     """
     try:
         tenant_id = user_data.get("tenant_id")
@@ -862,7 +864,7 @@ async def assign_vehicle_to_route(
         route = (
             db.query(RouteManagement)
             .filter(RouteManagement.route_id == route_id, RouteManagement.tenant_id == tenant_id)
-            .with_for_update()  # avoid race conditions
+            .with_for_update()
             .first()
         )
         if not route:
@@ -871,6 +873,17 @@ async def assign_vehicle_to_route(
                 detail=ResponseWrapper.error(
                     message="Route not found for this tenant",
                     error_code="ROUTE_NOT_FOUND",
+                ),
+            )
+
+        # ✅ Enforce vendor assignment first
+        if not route.assigned_vendor_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Assign a vendor to the route before assigning a vehicle/driver",
+                    error_code="VENDOR_NOT_ASSIGNED",
+                    details={"route_id": route_id},
                 ),
             )
 
@@ -891,15 +904,29 @@ async def assign_vehicle_to_route(
                     details={"vehicle_id": vehicle_id, "tenant_id": tenant_id},
                 ),
             )
-        
-        # ---- Resolve Driver from Vehicle (1:1 mapping) ----
+
+        # ✅ Vehicle’s vendor must match route’s vendor
+        if vehicle.vendor_id != route.assigned_vendor_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Vehicle vendor does not match the vendor assigned to the route",
+                    error_code="ROUTE_VEHICLE_VENDOR_MISMATCH",
+                    details={
+                        "route_vendor_id": route.assigned_vendor_id,
+                        "vehicle_vendor_id": vehicle.vendor_id,
+                    },
+                ),
+            )
+
+        # ---- Resolve Driver from Vehicle ----
         driver = (
             db.query(Driver)
             .join(Vendor, Vendor.vendor_id == Driver.vendor_id)
             .filter(
                 Driver.driver_id == vehicle.driver_id,
                 Driver.vendor_id == vehicle.vendor_id,
-                Vendor.tenant_id == tenant_id
+                Vendor.tenant_id == tenant_id,
             )
             .first()
         )
@@ -912,76 +939,40 @@ async def assign_vehicle_to_route(
                     details={"vehicle_id": vehicle.vehicle_id},
                 ),
             )
+
+        # ✅ Driver’s vendor must match route’s vendor too
+        if driver.vendor_id != route.assigned_vendor_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Driver vendor mismatch with route vendor",
+                    error_code="DRIVER_VENDOR_MISMATCH",
+                    details={
+                        "route_vendor_id": route.assigned_vendor_id,
+                        "driver_vendor_id": driver.vendor_id,
+                    },
+                ),
+            )
+
+        # --- Normalize gender (optional safeguard) ---
         if hasattr(driver, "gender") and driver.gender:
             valid_enums = {"MALE", "FEMALE", "OTHER"}
             if driver.gender.upper() not in valid_enums:
                 driver.gender = driver.gender.upper()
 
-        if vehicle.driver_id != driver.driver_id:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=ResponseWrapper.error(
-                    message="Vehicle and driver mismatch",
-                    error_code="VEHICLE_DRIVER_MISMATCH",
-                    details={
-                        "vehicle_id": vehicle.vehicle_id,
-                        "driver_id": driver.driver_id,
-                    },
-                ),
-            )   
-        # ---- Vendor logic ----
-        if not route.assigned_vendor_id:
-            # Auto-assign vendor from vehicle if route vendor missing
-            route.assigned_vendor_id = vehicle.vendor_id
-            logger.info(
-                f"[assign_vehicle_to_route] Route {route_id} had no vendor assigned. Auto-set vendor_id={vehicle.vendor_id}"
-            )
-        elif route.assigned_vendor_id != vehicle.vendor_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=ResponseWrapper.error(
-                    message="Vehicle vendor does not match the vendor assigned to the route",
-                    error_code="ROUTE_VEHICLE_VENDOR_MISMATCH",
-                    details={
-                        "route_vendor_id": route.assigned_vendor_id,
-                        "vehicle_vendor_id": vehicle.vendor_id,
-                    },
-                ),
-            )
-        # assigned_conflict = (
-        #     db.query(RouteManagement)
-        #     .filter(
-        #         RouteManagement.assigned_vehicle_id == vehicle.vehicle_id,
-        #         RouteManagement.route_id != route_id,
-        #         RouteManagement.tenant_id == tenant_id,
-        #         RouteManagement.shift_id == route.shift_id,  # example constraint
-        #         RouteManagement.date == route.date          # depends on your schema
-        #     ).first()
-        # )
-        # if assigned_conflict:
-        #     raise HTTPException(
-        #         status_code=status.HTTP_409_CONFLICT,
-        #         detail=ResponseWrapper.error(
-        #             message="Vehicle is already assigned to another route for the same shift and date",
-        #             error_code="VEHICLE_ALREADY_ASSIGNED",
-        #             details={
-        #                 "conflicting_route_id": assigned_conflict.route_id,
-        #                 "vehicle_id": vehicle.vehicle_id,
-        #             },
-        #         ),
-        #     )
         # ---- Apply assignment ----
         route.assigned_vehicle_id = vehicle.vehicle_id
         route.assigned_driver_id = driver.driver_id
 
-        if route.status == RouteManagementStatusEnum.ASSIGNED:
-            route.status = RouteManagementStatusEnum.PLANNED  # better status progression
+        # Progress status only if vendor already assigned
+        if route.status == RouteManagementStatusEnum.VENDOR_ASSIGNED:
+            route.status = RouteManagementStatusEnum.DRIVER_ASSIGNED
 
         db.commit()
         db.refresh(route)
 
         logger.info(
-            f"[assign_vehicle_to_route] Vehicle={vehicle_id} assigned to Route={route_id} (Tenant={tenant_id})"
+            f"[assign_vehicle_to_route] Vehicle={vehicle_id} (Driver={driver.driver_id}) assigned to Route={route_id} (Tenant={tenant_id})"
         )
 
         return ResponseWrapper.success(
@@ -989,9 +980,10 @@ async def assign_vehicle_to_route(
                 "route_id": route.route_id,
                 "assigned_vendor_id": route.assigned_vendor_id,
                 "assigned_vehicle_id": route.assigned_vehicle_id,
-                "status": route.status,
+                "assigned_driver_id": route.assigned_driver_id,
+                "status": route.status.value,
             },
-            message="Vehicle assigned successfully",
+            message="Vehicle and driver assigned successfully",
         )
 
     except HTTPException:
@@ -1237,6 +1229,7 @@ async def merge_routes(
 
         if shift_type == "IN":
             optimized = generate_optimal_route(
+                shift_time=shift.shift_time,
                 group=bookings,
                 drop_lat=bookings[-1]["drop_latitude"],
                 drop_lng=bookings[-1]["drop_longitude"],
