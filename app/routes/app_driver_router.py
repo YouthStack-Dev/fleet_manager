@@ -103,11 +103,11 @@ def require_tenant(db: Session, tenant_id: str):
 async def get_upcoming_trips(
     days_ahead: int = Query(14, ge=0, le=60, description="How many future days to fetch (default 14, max 60)"),
     db: Session = Depends(get_db),
-    ctx=Depends(DriverAuth),
+    ctx = Depends(DriverAuth),
 ):
     """
     Fetch upcoming trips for the driver for today through N future days.
-    Each trip includes ordered stops with employee, pickup details, and route summary.
+    Returns routes with `stops` shaped exactly like the example you provided.
     """
     try:
         tenant_id = ctx["tenant_id"]
@@ -117,125 +117,139 @@ async def get_upcoming_trips(
 
         logger.info(f"[driver.upcoming] tenant={tenant_id}, driver={driver_id}, range={today}..{max_date}")
 
-        # --- Get assigned routes for driver ---
+        # --- Get assigned routes for this driver (only DRIVER_ASSIGNED status) ---
         routes = (
             db.query(RouteManagement)
-            .filter(
-                RouteManagement.tenant_id == tenant_id,
-                RouteManagement.assigned_driver_id == driver_id,
-                RouteManagement.status.in_([
-                    RouteManagementStatusEnum.DRIVER_ASSIGNED
-                ]),
-            )
-            .all()
+              .filter(
+                  RouteManagement.tenant_id == tenant_id,
+                  RouteManagement.assigned_driver_id == driver_id,
+                  RouteManagement.status.in_([ RouteManagementStatusEnum.DRIVER_ASSIGNED ]),
+              )
+              .all()
         )
 
         if not routes:
-            return ResponseWrapper.success(
-                data={"routes": [], "count": 0},
-                message="No upcoming routes assigned"
-            )
+            return ResponseWrapper.success(data={"routes": [], "count": 0}, message="No upcoming routes assigned")
 
         upcoming_routes = []
 
         for route in routes:
-            # --- Fetch related route bookings ---
-            rbs = (
-                db.query(RouteManagementBooking)
-                .filter(RouteManagementBooking.route_id == route.route_id)
-                .order_by(RouteManagementBooking.order_id)
-                .all()
+            # fetch RBs joined with Booking and Employee in one go to avoid N+1
+            rows = (
+                db.query(RouteManagementBooking, Booking, Employee)
+                  .join(Booking, RouteManagementBooking.booking_id == Booking.booking_id)
+                  .outerjoin(Employee, Booking.employee_id == Employee.employee_id)
+                  .filter(RouteManagementBooking.route_id == route.route_id)
+                  .order_by(RouteManagementBooking.order_id)
+                  .all()
             )
 
-            if not rbs:
+            if not rows:
                 continue
 
-            booking_ids = [rb.booking_id for rb in rbs]
+            # Build stops list from joined rows
+            stops = []
+            pickup_datetimes = []
+            for rb, booking, employee in rows:
+                # booking.booking_date may be date object; format as YYYY-MM-DD
+                booking_date_str = booking.booking_date.isoformat() if getattr(booking, "booking_date", None) else None
 
-            bookings = (
-                db.query(Booking)
-                .filter(Booking.booking_id.in_(booking_ids))
-                .all()
-            )
+                # pickup time: prefer RB estimated_pick_up_time then actual_pick_up_time then booking.pickup_time (if any)
+                est_pick = getattr(rb, "estimated_pick_up_time", None)
+                act_pick = getattr(rb, "actual_pick_up_time", None)
+                pick_time_str = est_pick or act_pick
 
-            # join employee data
-            employee_ids = [b.employee_id for b in bookings if b.employee_id]
-            employees = (
-                db.query(Employee.employee_id, Employee.name, Employee.phone)
-                .filter(Employee.employee_id.in_(employee_ids))
-                .all()
-            )
-            employee_map = {e.employee_id: {"name": e.name, "phone": e.phone} for e in employees}
+                # collect a datetime for earliest pickup sorting if possible (assumes pickup times are "HH:MM")
+                if pick_time_str and booking_date_str:
+                    try:
+                        dt = datetime.combine(
+                            datetime.fromisoformat(booking_date_str).date(),
+                            datetime.strptime(pick_time_str, "%H:%M").time()
+                        )
+                        pickup_datetimes.append(dt)
+                    except Exception:
+                        # ignore malformed times; we'll fall back later
+                        pass
 
-            # --- determine earliest pickup time for sorting ---
-            pickup_times = [
-                rb.estimated_pick_up_time or rb.actual_pick_up_time
-                for rb in rbs if rb.estimated_pick_up_time or rb.actual_pick_up_time
-            ]
-            if not pickup_times:
-                continue
-            try:
-                first_pickup_time = min(
-                    datetime.combine(today, datetime.strptime(t, "%H:%M").time())
-                    for t in pickup_times
-                )
-            except Exception:
-                first_pickup_time = datetime.utcnow()
-
-            if today <= first_pickup_time.date() <= max_date:
-                shift = db.query(Shift).filter(Shift.shift_id == route.shift_id).first()
-
-                # drop location is common for OUT routes
-                drop_lat, drop_lng, drop_address = None, None, None
-                if bookings:
-                    first_booking = bookings[0]
-                    drop_lat = getattr(first_booking, "drop_latitude", None)
-                    drop_lng = getattr(first_booking, "drop_longitude", None)
-                    drop_address = getattr(first_booking, "drop_location", None)
-
-                # --- build ordered stops ---
-                stops = []
-                for rb in rbs:
-                    booking = next((b for b in bookings if b.booking_id == rb.booking_id), None)
-                    if not booking:
-                        continue
-
-                    emp_info = employee_map.get(booking.employee_id, {})
-                    stops.append({
-                        "order_id": rb.order_id,
-                        "booking_id": booking.booking_id,
-                        "employee_id": booking.employee_id,
-                        "employee_name": emp_info.get("name"),
-                        "employee_phone": emp_info.get("phone"),
-                        "pickup_address": booking.pickup_location,
-                        "pickup_latitude": booking.pickup_latitude,
-                        "pickup_longitude": booking.pickup_longitude,
-                        "estimated_pickup_time": rb.estimated_pick_up_time,
-                        "actual_pickup_time": rb.actual_pick_up_time,
-                    })
-
-                upcoming_routes.append({
-                    "route_id": route.route_id,
-                    "route_code": route.route_code,
-                    "shift_id": route.shift_id,
-                    "shift_time": shift.shift_time.strftime("%H:%M:%S") if shift else None,
-                    "log_type": shift.log_type.value if shift and shift.log_type else None,
-                    "status": route.status.value,
-                    "start_time": first_pickup_time.strftime("%Y-%m-%d %H:%M"),
-                    "drop_location": {
-                        "address": drop_address,
-                        "latitude": drop_lat,
-                        "longitude": drop_lng,
-                    },
-                    "stops": stops,
-                    "summary": {
-                        "total_stops": len(stops),
-                        "total_distance_km": route.actual_total_distance or route.estimated_total_distance or 0,
-                        "total_time_minutes": route.actual_total_time or route.estimated_total_time or 0,
-                    }
+                stops.append({
+                    "booking_id": booking.booking_id,
+                    "tenant_id": getattr(booking, "tenant_id", tenant_id),
+                    "employee_id": booking.employee_id,
+                    "employee_code": getattr(employee, "employee_code", None) or getattr(booking, "employee_code", None),
+                    "shift_id": getattr(booking, "shift_id", None),
+                    "team_id": getattr(booking, "team_id", None),
+                    "booking_date": booking_date_str,
+                    "pickup_latitude": getattr(booking, "pickup_latitude", None),
+                    "pickup_longitude": getattr(booking, "pickup_longitude", None),
+                    "pickup_location": getattr(booking, "pickup_location", None),
+                    "drop_latitude": getattr(booking, "drop_latitude", None) or getattr(booking, "drop_longitude", None) and None,
+                    "drop_longitude": getattr(booking, "drop_longitude", None),
+                    "drop_location": getattr(booking, "drop_location", None) or getattr(booking, "drop_location", None),
+                    "status": getattr(booking, "status", None),
+                    "reason": getattr(booking, "reason", None),
+                    "is_active": getattr(booking, "is_active", True),
+                    "created_at": getattr(booking, "created_at", None).isoformat() if getattr(booking, "created_at", None) else None,
+                    "updated_at": getattr(booking, "updated_at", None).isoformat() if getattr(booking, "updated_at", None) else None,
+                    "order_id": getattr(rb, "order_id", None),
+                    "estimated_pick_up_time": est_pick,
+                    "estimated_drop_time": getattr(rb, "estimated_drop_time", None),
+                    "estimated_distance": getattr(rb, "estimated_distance", None) or getattr(booking, "estimated_distance", None),
+                    "actual_pick_up_time": act_pick,
+                    "actual_drop_time": getattr(rb, "actual_drop_time", None),
+                    "actual_distance": getattr(rb, "actual_distance", None),
                 })
 
-        upcoming_routes.sort(key=lambda r: r["start_time"])
+            # determine earliest pickup datetime for this route
+            if pickup_datetimes:
+                first_pickup_dt = min(pickup_datetimes)
+            else:
+                # fallback — try booking.booking_date + shift.shift_time if available, else use today's midnight
+                first_pickup_dt = None
+                # try to derive from bookings' booking_date and shift time
+                sample_booking_date = next((b.booking_date for _, b, _ in rows if getattr(b, "booking_date", None)), None)
+                shift_obj = db.query(Shift).filter(Shift.shift_id == route.shift_id).first()
+                if sample_booking_date and shift_obj and getattr(shift_obj, "shift_time", None):
+                    try:
+                        first_pickup_dt = datetime.combine(sample_booking_date, shift_obj.shift_time)
+                    except Exception:
+                        first_pickup_dt = None
+                if not first_pickup_dt:
+                    first_pickup_dt = datetime.combine(today, datetime.min.time())
+
+            # only include routes whose first pickup falls within requested window
+            if not (today <= first_pickup_dt.date() <= max_date):
+                continue
+
+            # drop location common for OUT routes (use first booking's drop fields as your example)
+            first_row_booking = rows[0][1]
+            drop_lat = getattr(first_row_booking, "drop_latitude", None)
+            drop_lng = getattr(first_row_booking, "drop_longitude", None)
+            drop_addr = getattr(first_row_booking, "drop_location", None)
+
+            shift = shift_obj if 'shift_obj' in locals() and shift_obj else db.query(Shift).filter(Shift.shift_id == route.shift_id).first()
+
+            upcoming_routes.append({
+                "route_id": route.route_id,
+                "shift_id": route.shift_id,
+                "shift_time": shift.shift_time.strftime("%H:%M:%S") if shift and getattr(shift, "shift_time", None) else None,
+                "log_type": shift.log_type.value if shift and getattr(shift, "log_type", None) else None,
+                "status": route.status.value if getattr(route, "status", None) else None,
+                "start_time": first_pickup_dt.strftime("%Y-%m-%d %H:%M"),
+                # "drop_location": {
+                #     "address": drop_addr,
+                #     "latitude": drop_lat,
+                #     "longitude": drop_lng,
+                # },
+                "stops": stops,
+                "summary": {
+                    "total_stops": len(stops),
+                    "total_distance_km": float(route.actual_total_distance or route.estimated_total_distance or 0),
+                    "total_time_minutes": float(route.actual_total_time or route.estimated_total_time or 0),
+                }
+            })
+
+        # sort by real datetime parsed from start_time
+        upcoming_routes.sort(key=lambda r: datetime.strptime(r["start_time"], "%Y-%m-%d %H:%M"))
 
         return ResponseWrapper.success(
             data={"routes": upcoming_routes, "count": len(upcoming_routes)},
