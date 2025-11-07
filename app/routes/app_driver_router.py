@@ -9,12 +9,12 @@ from app.models.employee import Employee
 from app.models.shift import Shift
 from common_utils.auth.permission_checker import PermissionChecker
 from app.models.route_management import RouteManagement, RouteManagementBooking, RouteManagementStatusEnum
-from app.models.booking import Booking
+from app.models.booking import Booking, BookingStatusEnum
 from app.models.tenant import Tenant
 from app.models.vehicle import Vehicle
 from app.models.driver import Driver
 from app.core.logging_config import get_logger
-from app.utils.response_utils import ResponseWrapper, handle_db_error
+from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 
 
 logger = get_logger(__name__)
@@ -261,6 +261,159 @@ async def get_upcoming_trips(
     except Exception as e:
         logger.exception("[driver.upcoming] Unexpected error")
         return handle_db_error(e)
+
+@router.post("/start", status_code=status.HTTP_200_OK)
+async def start_trip(
+    route_id: int,
+    booking_id: int,
+    otp: str,
+    db: Session = Depends(get_db),
+    ctx=Depends(DriverAuth),
+):
+    """
+    Start the trip for the given route.
+    - Verify OTP for the first booking (order_id=1)
+    - Update both booking and route statuses to 'Ongoing'
+    - Return next stop details
+    """
+    try:
+        tenant_id = ctx["tenant_id"]
+        driver_id = ctx["driver_id"]
+
+        logger.info(f"[driver.start_trip] tenant={tenant_id}, driver={driver_id}, route={route_id}, booking={booking_id}")
+
+        # --- Validate route ---
+        route = (
+            db.query(RouteManagement)
+            .filter(
+                RouteManagement.route_id == route_id,
+                RouteManagement.assigned_driver_id == driver_id,
+                RouteManagement.tenant_id == tenant_id,
+            )
+            .first()
+        )
+        if not route:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Route not found or not assigned to driver",
+                    error_code="ROUTE_NOT_FOUND",
+                    details={"route_id": route_id, "driver_id": driver_id},
+                ),
+            )
+
+        # --- Validate booking in route ---
+        rb = (
+            db.query(RouteManagementBooking)
+            .filter(
+                RouteManagementBooking.route_id == route_id,
+                RouteManagementBooking.booking_id == booking_id,
+            )
+            .first()
+        )
+        if not rb:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Booking not found in this route",
+                    error_code="BOOKING_NOT_FOUND_IN_ROUTE",
+                    details={"route_id": route_id, "booking_id": booking_id},
+                ),
+            )
+
+        if rb.order_id != 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Trip can only be started with the first stop (order_id=1)",
+                    error_code="INVALID_START_ORDER",
+                    details={"order_id": rb.order_id},
+                ),
+            )
+
+        # --- Validate booking object ---
+        booking = (
+            db.query(Booking)
+            .filter(
+                Booking.booking_id == booking_id,
+                Booking.tenant_id == tenant_id,
+            )
+            .first()
+        )
+        if not booking:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Booking not found for this tenant",
+                    error_code="BOOKING_NOT_FOUND",
+                    details={"booking_id": booking_id, "tenant_id": tenant_id},
+                ),
+            )
+
+        # --- Verify OTP ---
+        if str(booking.OTP).strip() != str(otp).strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Invalid OTP",
+                    error_code="INVALID_OTP",
+                    details={"booking_id": booking_id},
+                ),
+            )
+
+        # --- Update statuses ---
+        booking.status = BookingStatusEnum.ONGOING
+        route.status = RouteManagementStatusEnum.ONGOING
+        route.actual_start_time = datetime.utcnow()
+
+        db.add_all([booking, route])
+        db.commit()
+        db.refresh(route)
+
+        # --- Fetch next stop (order_id = 2) ---
+        next_rb = (
+            db.query(RouteManagementBooking)
+            .join(Booking, RouteManagementBooking.booking_id == Booking.booking_id)
+            .filter(
+                RouteManagementBooking.route_id == route_id,
+                RouteManagementBooking.order_id == rb.order_id + 1,
+            )
+            .first()
+        )
+
+        next_stop = None
+        if next_rb:
+            booking_next = db.query(Booking).filter(Booking.booking_id == next_rb.booking_id).first()
+            if booking_next:
+                next_stop = {
+                    "booking_id": booking_next.booking_id,
+                    "employee_id": booking_next.employee_id,
+                    "pickup_latitude": booking_next.pickup_latitude,
+                    "pickup_longitude": booking_next.pickup_longitude,
+                    "pickup_location": booking_next.pickup_location,
+                    "estimated_pickup_time": next_rb.estimated_pick_up_time,
+                }
+
+        return ResponseWrapper.success(
+            message="Trip started successfully",
+            data={
+                "route_id": route.route_id,
+                "route_status": route.status.value,
+                "started_at": route.actual_start_time.isoformat(),
+                "current_booking_id": booking.booking_id,
+                "current_status": booking.status.value,
+                "next_stop": next_stop,
+            },
+        )
+
+    except HTTPException as e:
+        logger.warning(f"[driver.start_trip] HTTP error: {e.detail}")
+        raise handle_http_error(e)
+    except Exception as e:
+        logger.exception("[driver.start_trip] Unexpected error")
+        db.rollback()
+        return ResponseWrapper.error(message=str(e))
+
 
 @router.get("/trips/today", status_code=status.HTTP_200_OK)
 async def get_today_trips(
