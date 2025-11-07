@@ -418,206 +418,139 @@ async def start_trip(
         return ResponseWrapper.error(message=str(e))
 
 
-@router.get("/trips/today", status_code=status.HTTP_200_OK)
-async def get_today_trips(
+@router.put("/trip/drop", status_code=status.HTTP_200_OK)
+async def verify_drop_and_complete_route(
+    route_id: int,
+    booking_id: int,
     db: Session = Depends(get_db),
     ctx=Depends(DriverAuth),
 ):
     """
-    All of today's routes for this driver, any non-cancelled status.
+    Driver confirms drop for a booking.
+    - Marks booking as COMPLETED and sets actual_drop_time.
+    - If all bookings in route are completed -> auto-completes route.
     """
     try:
         tenant_id = ctx["tenant_id"]
         driver_id = ctx["driver_id"]
-        require_tenant(db, tenant_id)
+        now = datetime.utcnow()
 
-        today = date.today()
+        logger.info(f"[driver.drop] tenant={tenant_id}, driver={driver_id}, route={route_id}, booking={booking_id}")
 
-        logger.info(f"[driver.today] tenant={tenant_id} driver={driver_id} date={today}")
-
-        routes = (
+        # --- Validate route ---
+        route = (
             db.query(RouteManagement)
             .filter(
+                RouteManagement.route_id == route_id,
                 RouteManagement.tenant_id == tenant_id,
                 RouteManagement.assigned_driver_id == driver_id,
-                RouteManagement.booking_date == today,
-                RouteManagement.status != RouteManagementStatusEnum.CANCELLED
+                RouteManagement.status == RouteManagementStatusEnum.ONGOING,
             )
-            .order_by(RouteManagement.start_time.asc().nulls_last())
-            .all()
+            .first()
         )
+        if not route:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Route not found or not in ongoing state",
+                    error_code="ROUTE_NOT_FOUND_OR_INVALID_STATE",
+                    details={"route_id": route_id, "driver_id": driver_id},
+                ),
+            )
 
-        data = [serialize_route(db, r) for r in routes]
-        return ResponseWrapper.success(
-            data={"routes": data, "count": len(data)},
-            message=f"Fetched {len(data)} routes for today"
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("[driver.today] Unexpected error")
-        return handle_db_error(e)
-
-
-@router.get("/trips/history", status_code=status.HTTP_200_OK)
-async def get_trip_history(
-    start: Optional[date] = Query(None, description="Start date (inclusive)"),
-    end: Optional[date] = Query(None, description="End date (inclusive)"),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    db: Session = Depends(get_db),
-    ctx=Depends(DriverAuth),
-):
-    """
-    Completed trips, optional date range, with pagination.
-    """
-    try:
-        tenant_id = ctx["tenant_id"]
-        driver_id = ctx["driver_id"]
-        require_tenant(db, tenant_id)
-
-        q = (
-            db.query(RouteManagement)
+        # --- Validate route-booking association ---
+        rb = (
+            db.query(RouteManagementBooking)
             .filter(
-                RouteManagement.tenant_id == tenant_id,
-                RouteManagement.assigned_driver_id == driver_id,
-                RouteManagement.status == RouteManagementStatusEnum.COMPLETED
+                RouteManagementBooking.route_id == route_id,
+                RouteManagementBooking.booking_id == booking_id,
             )
+            .first()
         )
-        if start:
-            q = q.filter(RouteManagement.booking_date >= start)
-        if end:
-            q = q.filter(RouteManagement.booking_date <= end)
+        if not rb:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Booking not associated with this route",
+                    error_code="BOOKING_NOT_FOUND_IN_ROUTE",
+                ),
+            )
 
-        total = q.count()
-        routes = (
-            q.order_by(RouteManagement.booking_date.desc(), RouteManagement.route_id.desc())
-             .offset((page - 1) * page_size)
-             .limit(page_size)
-             .all()
+        # --- Fetch booking ---
+        booking = (
+            db.query(Booking)
+            .filter(
+                Booking.booking_id == booking_id,
+                Booking.tenant_id == tenant_id,
+            )
+            .first()
+        )
+        if not booking:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error("Booking not found", "BOOKING_NOT_FOUND"),
+            )
+
+        # --- Prevent re-marking if already dropped ---
+        if booking.status == BookingStatusEnum.COMPLETED:
+            return ResponseWrapper.success(
+                message="Booking already marked as completed",
+                data={
+                    "route_id": route_id,
+                    "booking_id": booking_id,
+                    "status": booking.status.value,
+                    "actual_drop_time": rb.actual_drop_time,
+                },
+            )
+
+        # --- Mark booking as completed ---
+        booking.status = BookingStatusEnum.COMPLETED
+        booking.updated_at = now
+        rb.actual_drop_time = now.strftime("%H:%M")
+
+        db.add_all([booking, rb])
+        db.commit()
+
+        logger.info(f"[driver.drop] Booking {booking_id} marked as completed by driver {driver_id}")
+
+        # --- Check if all bookings are completed ---
+        pending = (
+            db.query(Booking)
+            .join(RouteManagementBooking, RouteManagementBooking.booking_id == Booking.booking_id)
+            .filter(
+                RouteManagementBooking.route_id == route_id,
+                Booking.status != BookingStatusEnum.COMPLETED,
+            )
+            .count()
         )
 
-        data = [serialize_route(db, r) for r in routes]
+        route_completed = False
+        if pending == 0:
+            route.status = RouteManagementStatusEnum.COMPLETED
+            route.updated_at = now
+            if hasattr(route, "actual_end_time"):
+                setattr(route, "actual_end_time", now)
+            db.commit()
+            route_completed = True
+            logger.info(f"[driver.drop] Auto-completed route_id={route_id}")
+
         return ResponseWrapper.success(
+            message="Drop verified successfully" if not route_completed else "Drop verified and trip auto-completed",
             data={
-                "routes": data,
-                "count": len(data),
-                "page": page,
-                "page_size": page_size,
-                "total": total,
+                "route_id": route.route_id,
+                "booking_id": booking.booking_id,
+                "booking_status": booking.status.value,
+                "actual_drop_time": rb.actual_drop_time,
+                "route_status": route.status.value,
+                "route_completed": route_completed,
             },
-            message=f"Fetched {len(data)} completed routes"
         )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("[driver.history] Unexpected error")
-        return handle_db_error(e)
-
-
-@router.put("/trip/{route_id}/start", status_code=status.HTTP_200_OK)
-async def start_trip(
-    route_id: int,
-    db: Session = Depends(get_db),
-    ctx=Depends(DriverAuth),
-):
-    """
-    Driver marks a trip as started. Transitions:
-    PLANNED/ASSIGNED -> ONGOING.
-    """
-    try:
-        tenant_id = ctx["tenant_id"]
-        driver_id = ctx["driver_id"]
-
-        route = (
-            db.query(RouteManagement)
-            .filter(
-                RouteManagement.route_id == route_id,
-                RouteManagement.tenant_id == tenant_id,
-                RouteManagement.assigned_driver_id == driver_id,
-                RouteManagement.status.in_([
-                    RouteManagementStatusEnum.PLANNED,
-                    RouteManagementStatusEnum.ASSIGNED
-                ])
-            )
-            .first()
-        )
-        if not route:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=ResponseWrapper.error("Route not found or not startable", "ROUTE_NOT_FOUND_OR_INVALID_STATE"),
-            )
-
-        route.status = RouteManagementStatusEnum.ONGOING
-        # Optional: audit timestamps
-        if hasattr(route, "actual_start_time"):
-            route.actual_start_time = datetime.utcnow()
-
-        db.commit()
-        db.refresh(route)
-        logger.info(f"[driver.start] route={route_id} driver={driver_id} -> ONGOING")
-
-        return ResponseWrapper.success(
-            data={"route_id": route.route_id, "status": route.status},
-            message="Trip started"
-        )
-
-    except HTTPException:
-        raise
+    except HTTPException as e:
+        db.rollback()
+        logger.warning(f"[driver.drop] HTTP error: {e.detail}")
+        raise handle_http_error(e)
     except Exception as e:
         db.rollback()
-        logger.exception("[driver.start] Unexpected error")
-        return handle_db_error(e)
-
-
-@router.put("/trip/{route_id}/complete", status_code=status.HTTP_200_OK)
-async def complete_trip(
-    route_id: int,
-    db: Session = Depends(get_db),
-    ctx=Depends(DriverAuth),
-):
-    """
-    Driver marks a trip as completed. Transitions:
-    ONGOING -> COMPLETED.
-    """
-    try:
-        tenant_id = ctx["tenant_id"]
-        driver_id = ctx["driver_id"]
-
-        route = (
-            db.query(RouteManagement)
-            .filter(
-                RouteManagement.route_id == route_id,
-                RouteManagement.tenant_id == tenant_id,
-                RouteManagement.assigned_driver_id == driver_id,
-                RouteManagement.status == RouteManagementStatusEnum.ONGOING
-            )
-            .first()
-        )
-        if not route:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=ResponseWrapper.error("Route not found or not completable", "ROUTE_NOT_FOUND_OR_INVALID_STATE"),
-            )
-
-        route.status = RouteManagementStatusEnum.COMPLETED
-        if hasattr(route, "actual_end_time"):
-            route.actual_end_time = datetime.utcnow()
-
-        db.commit()
-        db.refresh(route)
-        logger.info(f"[driver.complete] route={route_id} driver={driver_id} -> COMPLETED")
-
-        return ResponseWrapper.success(
-            data={"route_id": route.route_id, "status": route.status},
-            message="Trip completed"
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.exception("[driver.complete] Unexpected error")
+        logger.exception("[driver.drop] Unexpected error")
         return handle_db_error(e)

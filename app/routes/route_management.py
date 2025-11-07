@@ -1237,6 +1237,7 @@ async def merge_routes(
 
         if shift_type == "IN":
             optimized = generate_optimal_route(
+                shift_time=shift.shift_time,
                 group=bookings,
                 drop_lat=bookings[-1]["drop_latitude"],
                 drop_lng=bookings[-1]["drop_longitude"],
