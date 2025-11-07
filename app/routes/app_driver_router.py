@@ -317,15 +317,28 @@ async def start_trip(
                 ),
             )
 
-        if rb.order_id != 1:
+        # allow start from first available booking if previous ones are no-show
+        previous_pending = (
+            db.query(RouteManagementBooking)
+            .join(Booking, RouteManagementBooking.booking_id == Booking.booking_id)
+            .filter(
+                RouteManagementBooking.route_id == route_id,
+                RouteManagementBooking.order_id < rb.order_id,
+                Booking.status.notin_([BookingStatusEnum.NO_SHOW, BookingStatusEnum.ONGOING, BookingStatusEnum.COMPLETED]),
+            )
+            .count()
+        )
+
+        if previous_pending > 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ResponseWrapper.error(
-                    message="Trip can only be started with the first stop (order_id=1)",
-                    error_code="INVALID_START_ORDER",
-                    details={"order_id": rb.order_id},
+                    message="Cannot start from this stop. Previous pickups still pending.",
+                    error_code="PREVIOUS_PENDING_STOPS",
+                    details={"pending_count": previous_pending},
                 ),
             )
+
 
         # --- Validate booking object ---
         booking = (
@@ -417,6 +430,211 @@ async def start_trip(
         db.rollback()
         return ResponseWrapper.error(message=str(e))
 
+@router.put("/trip/no-show", status_code=status.HTTP_200_OK)
+async def mark_no_show(
+    route_id: int,
+    booking_id: int,
+    reason: Optional[str] = Query(None, description="Reason for marking as no-show"),
+    db: Session = Depends(get_db),
+    ctx=Depends(DriverAuth),
+):
+    """
+    Mark a booking as NO_SHOW when employee did not board.
+    - Allowed only if route is assigned to the driver.
+    - Updates booking.status = NO_SHOW.
+    - Updates route.status = ONGOING if it wasn’t already.
+    - Only marks route COMPLETED if all DROPS are completed.
+    """
+    try:
+        tenant_id = ctx["tenant_id"]
+        driver_id = ctx["driver_id"]
+        now = datetime.utcnow()
+
+        logger.info(f"[driver.no_show] tenant={tenant_id}, driver={driver_id}, route={route_id}, booking={booking_id}")
+
+        # --- Validate route ---
+        route = (
+            db.query(RouteManagement)
+            .filter(
+                RouteManagement.route_id == route_id,
+                RouteManagement.assigned_driver_id == driver_id,
+                RouteManagement.tenant_id == tenant_id,
+            )
+            .first()
+        )
+        if not route:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Route not found or not assigned to driver",
+                    error_code="ROUTE_NOT_FOUND",
+                    details={"route_id": route_id, "driver_id": driver_id},
+                ),
+            )
+
+        # --- Validate route-booking association ---
+        rb = (
+            db.query(RouteManagementBooking)
+            .filter(
+                RouteManagementBooking.route_id == route_id,
+                RouteManagementBooking.booking_id == booking_id,
+            )
+            .first()
+        )
+        if not rb:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Booking not associated with this route",
+                    error_code="BOOKING_NOT_FOUND_IN_ROUTE",
+                    details={"route_id": route_id, "booking_id": booking_id},
+                ),
+            )
+
+        # --- Validate booking object ---
+        booking = (
+            db.query(Booking)
+            .filter(
+                Booking.booking_id == booking_id,
+                Booking.tenant_id == tenant_id,
+            )
+            .first()
+        )
+        if not booking:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Booking not found for this tenant",
+                    error_code="BOOKING_NOT_FOUND",
+                    details={"booking_id": booking_id, "tenant_id": tenant_id},
+                ),
+            )
+
+        # --- Prevent marking ongoing or completed bookings as no-show ---
+        if booking.status in [BookingStatusEnum.ONGOING, BookingStatusEnum.COMPLETED]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Cannot mark no-show for an active or completed booking",
+                    error_code="INVALID_BOOKING_STATE",
+                    details={"booking_status": booking.status.value},
+                ),
+            )
+
+        # --- Allow marking current booking as no-show only if all previous stops are done ---
+        previous_pending = (
+            db.query(RouteManagementBooking)
+            .join(Booking, RouteManagementBooking.booking_id == Booking.booking_id)
+            .filter(
+                RouteManagementBooking.route_id == route_id,
+                RouteManagementBooking.order_id < rb.order_id,
+                Booking.status.notin_([BookingStatusEnum.NO_SHOW, BookingStatusEnum.COMPLETED]),
+            )
+            .count()
+        )
+        if previous_pending > 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Cannot mark no-show. Previous stops are still pending.",
+                    error_code="PREVIOUS_PENDING_STOPS",
+                    details={"pending_count": previous_pending},
+                ),
+            )
+
+        # --- Update booking as NO_SHOW ---
+        booking.status = BookingStatusEnum.NO_SHOW
+        booking.reason = reason or "Employee did not board"
+        booking.updated_at = now
+        rb.actual_pick_up_time = now.strftime("%H:%M")
+
+        # --- If route not ongoing yet, set it ---
+        if route.status != RouteManagementStatusEnum.ONGOING:
+            route.status = RouteManagementStatusEnum.ONGOING
+            route.updated_at = now
+
+        db.add_all([booking, rb, route])
+        db.commit()
+
+        logger.info(
+            f"[driver.no_show] Booking {booking_id} marked NO_SHOW; route={route_id}, driver={driver_id}"
+        )
+
+        # --- Check if all DROPS (COMPLETED bookings) are done ---
+        total_bookings = (
+            db.query(Booking)
+            .join(RouteManagementBooking, RouteManagementBooking.booking_id == Booking.booking_id)
+            .filter(RouteManagementBooking.route_id == route_id)
+            .count()
+        )
+        completed_drops = (
+            db.query(Booking)
+            .join(RouteManagementBooking, RouteManagementBooking.booking_id == Booking.booking_id)
+            .filter(
+                RouteManagementBooking.route_id == route_id,
+                Booking.status == BookingStatusEnum.COMPLETED,
+            )
+            .count()
+        )
+
+        route_completed = False
+        if total_bookings > 0 and completed_drops == total_bookings:
+            route.status = RouteManagementStatusEnum.COMPLETED
+            route.updated_at = now
+            if hasattr(route, "actual_end_time"):
+                setattr(route, "actual_end_time", now)
+            db.commit()
+            route_completed = True
+            logger.info(f"[driver.no_show] Route {route_id} marked COMPLETED — all drops done.")
+
+        # --- Get next stop ---
+        next_rb = (
+            db.query(RouteManagementBooking)
+            .join(Booking, RouteManagementBooking.booking_id == Booking.booking_id)
+            .filter(
+                RouteManagementBooking.route_id == route_id,
+                RouteManagementBooking.order_id > rb.order_id,
+                Booking.status.notin_([BookingStatusEnum.NO_SHOW, BookingStatusEnum.COMPLETED]),
+            )
+            .order_by(RouteManagementBooking.order_id)
+            .first()
+        )
+
+        next_stop = None
+        if next_rb:
+            booking_next = db.query(Booking).filter(Booking.booking_id == next_rb.booking_id).first()
+            if booking_next:
+                next_stop = {
+                    "booking_id": booking_next.booking_id,
+                    "employee_id": booking_next.employee_id,
+                    "pickup_latitude": booking_next.pickup_latitude,
+                    "pickup_longitude": booking_next.pickup_longitude,
+                    "pickup_location": booking_next.pickup_location,
+                    "estimated_pickup_time": next_rb.estimated_pick_up_time,
+                }
+
+        return ResponseWrapper.success(
+            message="Booking marked as no-show successfully"
+            if not route_completed
+            else "Booking marked as no-show; all drops completed — route closed",
+            data={
+                "route_id": route.route_id,
+                "route_status": route.status.value,
+                "booking_id": booking.booking_id,
+                "booking_status": booking.status.value,
+                "actual_pick_up_time": rb.actual_pick_up_time,
+                "next_stop": next_stop,
+                "route_completed": route_completed,
+            },
+        )
+
+    except HTTPException as e:
+        logger.warning(f"[driver.no_show] HTTP error: {e.detail}")
+        raise handle_http_error(e)
+    except Exception as e:
+        logger.exception("[driver.no_show] Unexpected error")
+        db.rollback()
+        return ResponseWrapper.error(message=str(e))
 
 @router.put("/trip/drop", status_code=status.HTTP_200_OK)
 async def verify_drop_and_complete_route(
