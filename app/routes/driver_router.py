@@ -101,14 +101,14 @@ async def create_driver(
 
         if user_type == "vendor":
             vendor_id = token_vendor_id
-        elif user_type == "admin":
+        elif user_type == "admin" or user_type == "employee":
             vendor_id = vendor_id
             if not vendor_id:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ResponseWrapper.error("Vendor ID is required", "BAD_REQUEST"),
                 )
-        elif user_type not in {"admin", "superadmin"}:
+        else:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error("You don't have permission to create drivers", "FORBIDDEN")
