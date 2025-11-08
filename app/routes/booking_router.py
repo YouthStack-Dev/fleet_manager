@@ -599,13 +599,13 @@ async def get_bookings_grouped_by_shift(
     user_data=Depends(PermissionChecker(["booking.read"], check_tenant=True))
 ):
     """
-    Fetch bookings grouped by shift with clean stats:
+    Fetch bookings grouped by shift with clean, accurate stats:
       - total_bookings
       - routed_bookings
       - unrouted_bookings
       - vendor_assigned
       - driver_assigned
-      - route_count per status
+      - route_count per status (distinct routes only)
     """
     try:
         user_type = user_data.get("user_type")
@@ -615,10 +615,7 @@ async def get_bookings_grouped_by_shift(
             if not tenant_id:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=ResponseWrapper.error(
-                        message="Admin must provide tenant_id",
-                        error_code="TENANT_ID_REQUIRED"
-                    ),
+                    detail=ResponseWrapper.error("Admin must provide tenant_id", "TENANT_ID_REQUIRED"),
                 )
             effective_tenant_id = tenant_id
         elif user_type == "employee":
@@ -635,7 +632,7 @@ async def get_bookings_grouped_by_shift(
         logger.info(f"[get_bookings_grouped_by_shift] Tenant={effective_tenant_id}, Date={booking_date}")
 
         # ---- Base bookings ----
-        query = (
+        booking_query = (
             db.query(Booking, Shift.shift_code, Shift.shift_time, Shift.log_type)
             .join(Shift, Shift.shift_id == Booking.shift_id)
             .filter(
@@ -643,25 +640,27 @@ async def get_bookings_grouped_by_shift(
                 func.date(Booking.booking_date) == booking_date,
             )
         )
-        if log_type:
-            query = query.filter(Shift.log_type == log_type)
-        if shift_id:
-            query = query.filter(Shift.shift_id == shift_id)
 
-        bookings = query.order_by(Shift.shift_time).all()
+        if log_type:
+            booking_query = booking_query.filter(Shift.log_type == log_type)
+        if shift_id:
+            booking_query = booking_query.filter(Shift.shift_id == shift_id)
+
+        bookings = booking_query.order_by(Shift.shift_time).all()
         if not bookings:
             return ResponseWrapper.success(
                 data={"date": booking_date, "shifts": []},
                 message="No bookings found for this date",
             )
 
-        # ---- Fetch all routed bookings & routes ----
+        # ---- Fetch route data ----
         route_data = (
             db.query(
                 RouteManagement.shift_id,
                 RouteManagement.status,
                 RouteManagement.assigned_vendor_id,
                 RouteManagement.assigned_driver_id,
+                RouteManagement.route_id,
                 RouteManagementBooking.booking_id,
             )
             .join(RouteManagementBooking, RouteManagementBooking.route_id == RouteManagement.route_id)
@@ -672,6 +671,7 @@ async def get_bookings_grouped_by_shift(
                 func.date(Booking.booking_date) == booking_date,
             )
         )
+
         if shift_id:
             route_data = route_data.filter(RouteManagement.shift_id == shift_id)
         if log_type:
@@ -681,7 +681,7 @@ async def get_bookings_grouped_by_shift(
 
         route_data = route_data.all()
 
-        # ---- Build route stats ----
+        # ---- Process route stats ----
         route_stats_by_shift = {}
         routed_booking_ids = set()
 
@@ -693,7 +693,7 @@ async def get_bookings_grouped_by_shift(
 
             if sid not in route_stats_by_shift:
                 route_stats_by_shift[sid] = {
-                    "_total": 0,
+                    "route_ids": set(),
                     "status": {
                         RouteManagementStatusEnum.PLANNED.value: 0,
                         RouteManagementStatusEnum.VENDOR_ASSIGNED.value: 0,
@@ -706,11 +706,13 @@ async def get_bookings_grouped_by_shift(
                     "driver_assigned": 0,
                 }
 
-            # Count route and status
-            route_stats_by_shift[sid]["_total"] += 1
+            # Unique routes only
+            route_stats_by_shift[sid]["route_ids"].add(r.route_id)
+
+            # Count route by status (per unique route)
             route_stats_by_shift[sid]["status"][r.status.value] += 1
 
-            # Count vendor/driver assignment
+            # Track vendor/driver assignment (per unique route)
             if r.assigned_vendor_id:
                 route_stats_by_shift[sid]["vendor_assigned"] += 1
             if r.assigned_driver_id:
@@ -724,7 +726,7 @@ async def get_bookings_grouped_by_shift(
                 stats = route_stats_by_shift.get(
                     sid,
                     {
-                        "_total": 0,
+                        "route_ids": set(),
                         "status": {
                             RouteManagementStatusEnum.PLANNED.value: 0,
                             RouteManagementStatusEnum.VENDOR_ASSIGNED.value: 0,
@@ -750,17 +752,16 @@ async def get_bookings_grouped_by_shift(
                         "unrouted_bookings": 0,
                         "vendor_assigned": stats["vendor_assigned"],
                         "driver_assigned": stats["driver_assigned"],
-                        "route_count": stats["_total"],
+                        "route_count": len(stats["route_ids"]),  # ✅ distinct routes only
                         "route_status_breakdown": stats["status"],
                     },
                 }
 
-            # Add booking
             grouped[sid]["bookings"].append(
                 BookingResponse.model_validate(booking_obj, from_attributes=True)
             )
 
-            # ---- Count Metrics ----
+            # ---- Count booking-level stats ----
             grouped[sid]["stats"]["total_bookings"] += 1
             if booking_obj.booking_id in routed_booking_ids:
                 grouped[sid]["stats"]["routed_bookings"] += 1
