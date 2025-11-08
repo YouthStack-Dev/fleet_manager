@@ -1,4 +1,5 @@
 from datetime import date
+from app.models.vendor import Vendor
 from app.utils.file_utils import file_size_validator
 from app.services.storage_service import storage_service
 from fastapi import APIRouter, Depends, HTTPException, status, Query , UploadFile, Form
@@ -189,19 +190,29 @@ def read_vehicle(
 ):
     """
     Get details of a specific vehicle by ID.
-    Enforces tenant isolation for vendor users.
+    - Vendor users: can access only their own vehicles.
+    - Employee users: can access vehicles whose vendor belongs to their tenant.
     """
     try:
         user_type = user_data.get("user_type")
         token_vendor_id = user_data.get("vendor_id")
+        token_tenant_id = user_data.get("tenant_id")
 
         query = db.query(Vehicle).filter(Vehicle.vehicle_id == vehicle_id)
 
-        # --- Restrict vendor user to own vendor_id
         if user_type == "vendor":
             query = query.filter(Vehicle.vendor_id == token_vendor_id)
+        elif user_type == "employee":
+            # Employee can only view vehicles from vendors belonging to their tenant
+            query = query.join(Vendor).filter(Vendor.tenant_id == token_tenant_id)
+        elif user_type == "driver":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error("Drivers are not allowed to access vehicles", "FORBIDDEN"),
+            )
 
         db_vehicle = query.first()
+
         if not db_vehicle:
             logger.warning(f"[VehicleRead] Vehicle ID {vehicle_id} not found or unauthorized access")
             raise HTTPException(
@@ -209,7 +220,10 @@ def read_vehicle(
                 detail=ResponseWrapper.error(f"Vehicle {vehicle_id} not found", "VEHICLE_NOT_FOUND"),
             )
 
-        logger.info(f"[VehicleRead] Vehicle ID={vehicle_id} fetched by user_id={user_data.get('user_id')}")
+        logger.info(
+            f"[VehicleRead] Vehicle ID={vehicle_id} fetched by user_id={user_data.get('user_id')} user_type={user_type}"
+        )
+
         return ResponseWrapper.success(
             data=VehicleResponse.model_validate(db_vehicle, from_attributes=True),
             message="Vehicle details fetched successfully",
@@ -228,6 +242,7 @@ def read_vehicle(
             detail=ResponseWrapper.error("Unexpected error fetching vehicle details", "VEHICLE_READ_FAILED"),
         )
 
+
 @router.get("/", status_code=status.HTTP_200_OK, response_model=dict)
 def read_vehicles(
     skip: int = 0,
@@ -240,13 +255,28 @@ def read_vehicles(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vehicle.read"], check_tenant=True)),
 ):
+    """
+    Get paginated list of vehicles.
+    - Vendor users: restricted to their vendor_id.
+    - Employee users: restricted to vendors belonging to their tenant.
+    - Drivers: denied access.
+    """
     try:
         user_type = user_data.get("user_type")
         token_vendor_id = user_data.get("vendor_id")
+        token_tenant_id = user_data.get("tenant_id")
+
+        query = db.query(Vehicle)
 
         if user_type == "vendor":
             vendor_id = token_vendor_id
-        elif user_type in ["employee", "driver"]:
+            query = query.filter(Vehicle.vendor_id == vendor_id)
+
+        elif user_type == "employee":
+            # Employee can view vehicles only from vendors of their tenant
+            query = query.join(Vendor).filter(Vendor.tenant_id == token_tenant_id)
+
+        elif user_type == "driver":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
@@ -255,7 +285,7 @@ def read_vehicles(
                 ),
             )
 
-        query = db.query(Vehicle)
+        # Optional filters
         if vendor_id:
             query = query.filter(Vehicle.vendor_id == vendor_id)
         if rc_number:
@@ -268,14 +298,12 @@ def read_vehicles(
             query = query.filter(Vehicle.is_active == is_active)
 
         total, items = paginate_query(query, skip, limit)
-
-        # 🔥 Convert ORM → Pydantic
         vehicle_list = [VehicleResponse.model_validate(vehicle) for vehicle in items]
 
         logger.info(
-            f"[VehicleList] vendor_id={vendor_id} user_id={user_data.get('user_id')} "
-            f"filters={{rc_number:{rc_number}, driver_id:{driver_id}, active:{is_active}}} "
-            f"returned={len(vehicle_list)}"
+            f"[VehicleList] user_id={user_data.get('user_id')} user_type={user_type} "
+            f"tenant_id={token_tenant_id} vendor_id={vendor_id} "
+            f"filters={{rc_number:{rc_number}, driver_id:{driver_id}, active:{is_active}}} returned={len(vehicle_list)}"
         )
 
         return ResponseWrapper.success(
@@ -286,7 +314,7 @@ def read_vehicles(
     except SQLAlchemyError as e:
         logger.exception(f"[VehicleList] DB error: {e}")
         raise handle_db_error(e)
-    except HTTPException:
+    except HTTPException as e:
         logger.exception(f"[VehicleList] HTTP error: {e}")
         raise handle_http_error(e)
     except Exception as e:

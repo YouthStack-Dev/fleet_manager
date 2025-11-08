@@ -1,4 +1,5 @@
 from datetime import date
+from app.models.vendor import Vendor
 from app.utils.validition import validate_future_dates
 from common_utils.auth.utils import hash_password
 from fastapi import APIRouter, Depends, UploadFile, Form, HTTPException, status , Query
@@ -12,7 +13,7 @@ from app.schemas.driver import DriverCreate, DriverPaginationResponse, DriverRes
 from app.crud.driver import driver_crud
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from app.utils.file_utils import file_size_validator, save_file
-from app.models.driver import VerificationStatusEnum ,GenderEnum 
+from app.models.driver import Driver, VerificationStatusEnum ,GenderEnum 
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
 from app.services.storage_service import storage_service
@@ -238,50 +239,86 @@ def get_driver(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["driver.read"]))
 ):
+    """
+    Get specific driver details.
+    - Vendor users: can view only their drivers.
+    - Employee users: can view drivers whose vendor belongs to their tenant.
+    - Admin/SuperAdmin: full access.
+    - Drivers: restricted.
+    """
     try:
         user_type = user_data.get("user_type")
         token_vendor_id = user_data.get("vendor_id")
+        token_tenant_id = user_data.get("tenant_id")
 
         if user_type == "vendor":
             vendor_id = token_vendor_id
+
         elif user_type == "driver":
-            vendor_id = vendor_id
             if not vendor_id:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail=ResponseWrapper.error("vendor_id is required", "bad request")
+                    detail=ResponseWrapper.error("vendor_id is required", "BAD_REQUEST")
                 )
+
+        elif user_type == "employee":
+            # Employee can view only drivers under vendors of their tenant
+            query = (
+                db.query(Driver)
+                .join(Vendor)
+                .filter(Driver.driver_id == driver_id, Vendor.tenant_id == token_tenant_id)
+            )
+            driver = query.first()
+            if not driver:
+                logger.warning(
+                    f"[GET DRIVER] Employee from tenant {token_tenant_id} tried to access driver {driver_id}"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error("Driver not found or unauthorized", "DRIVER_NOT_FOUND"),
+                )
+
+            logger.info(f"[GET DRIVER] Driver fetched successfully by employee: driver_id={driver_id}")
+            return ResponseWrapper.success(
+                data={"driver": DriverResponse.model_validate(driver, from_attributes=True)}
+            )
 
         elif user_type not in {"admin", "superadmin"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=ResponseWrapper.error("You don't have permission to create drivers", "FORBIDDEN")
+                detail=ResponseWrapper.error("You don't have permission to read drivers", "FORBIDDEN")
             )
-        logger.info(f"[GET DRIVER] Fetching driver_id={driver_id} for vendor_id={vendor_id} by user={user_data.get('user_id')}")
+
+        # --- Default lookup for admin/superadmin/vendor
+        logger.info(
+            f"[GET DRIVER] Fetching driver_id={driver_id} for vendor_id={vendor_id} by user={user_data.get('user_id')}"
+        )
+
         driver = driver_crud.get_by_id_and_vendor(db, driver_id=driver_id, vendor_id=vendor_id)
+
         if not driver:
             logger.warning(f"[GET DRIVER] Driver {driver_id} not found for vendor {vendor_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=ResponseWrapper.error(
-                    message="Driver not found",
-                    error_code="DRIVER_NOT_FOUND"
-                )
+                detail=ResponseWrapper.error("Driver not found", "DRIVER_NOT_FOUND")
             )
+
         logger.info(f"[GET DRIVER] Driver fetched successfully: driver_id={driver.driver_id}")
-        return ResponseWrapper.success(data={"driver": DriverResponse.model_validate(driver, from_attributes=True)})
+        return ResponseWrapper.success(
+            data={"driver": DriverResponse.model_validate(driver, from_attributes=True)}
+        )
 
     except HTTPException as e:
-        logger.warning(f"Driver creation failed (HTTPException) for driver '{driver_id}': {e.detail}")
+        logger.warning(f"Driver fetch failed (HTTPException) for driver '{driver_id}': {e.detail}")
         raise
     except SQLAlchemyError as e:
-        logger.error(f"Database error creating driver '{driver_id}': {e}")
+        logger.error(f"Database error fetching driver '{driver_id}': {e}")
         raise handle_db_error(e)
     except Exception as e:
         db.rollback()
-        logger.error(f"Unexpected error creating driver '{driver_id}': {e}")
+        logger.error(f"Unexpected error fetching driver '{driver_id}': {e}")
         raise handle_http_error(e)
-    
+
 
 
 # --------------------------
@@ -296,24 +333,80 @@ def get_drivers(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["driver.read"]))
 ):
+    """
+    Get all drivers for a vendor with filters.
+    - Vendor users: restricted to their vendor_id.
+    - Employee users: restricted to vendors of their tenant.
+    - Admin/SuperAdmin: full access.
+    - Drivers: restricted.
+    """
     try:
         user_type = user_data.get("user_type")
         token_vendor_id = user_data.get("vendor_id")
+        token_tenant_id = user_data.get("tenant_id")
 
+        # --- Vendor users
         if user_type == "vendor":
             vendor_id = token_vendor_id
-        elif user_type == "admin" and  vendor_id is not None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=ResponseWrapper.error("please don't provide vendor_id", "NOT_FOUND"),
+
+        # --- Employee users (tenant-level restriction)
+        elif user_type == "employee":
+            query = (
+                db.query(Driver)
+                .join(Vendor)
+                .filter(Vendor.tenant_id == token_tenant_id)
             )
-        elif user_type not in {"admin", "superadmin"}:
+
+            if active_only is not None:
+                query = query.filter(Driver.is_active == active_only)
+            if license_number:
+                query = query.filter(Driver.license_number == license_number)
+            if search:
+                search_like = f"%{search}%"
+                query = query.filter(
+                    (Driver.name.ilike(search_like))
+                    | (Driver.email.ilike(search_like))
+                    | (Driver.phone.ilike(search_like))
+                    | (Driver.badge_number.ilike(search_like))
+                    | (Driver.license_number.ilike(search_like))
+                )
+
+            drivers = query.all()
+            logger.info(
+                f"[GET DRIVERS] Employee (tenant_id={token_tenant_id}) fetched {len(drivers)} drivers"
+            )
+
+            driver_list = [DriverResponse.model_validate(d, from_attributes=True) for d in drivers]
+            return ResponseWrapper.success(
+                data=DriverPaginationResponse(total=len(driver_list), items=driver_list).dict()
+            )
+
+        # --- Driver users not allowed
+        elif user_type == "driver":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=ResponseWrapper.error("You don't have permission to create drivers", "FORBIDDEN")
+                detail=ResponseWrapper.error("Drivers are not allowed to access driver data", "FORBIDDEN"),
             )
-        logger.info(f"[GET DRIVERS] Fetching drivers for vendor_id={vendor_id} by user={user_data.get('user_id')}, "
-                    f"filters: active_only={active_only}, license_number={license_number}, search={search}")
+
+        # --- Admin/SuperAdmin
+        elif user_type in {"admin", "superadmin"}:
+            if vendor_id is not None and user_type == "admin":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error("Admins should not pass vendor_id explicitly", "BAD_REQUEST"),
+                )
+
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error("Unauthorized access", "FORBIDDEN")
+            )
+
+        # --- Default flow (vendor/admin/superadmin)
+        logger.info(
+            f"[GET DRIVERS] Fetching drivers for vendor_id={vendor_id} by user={user_data.get('user_id')} "
+            f"filters: active_only={active_only}, license_number={license_number}, search={search}"
+        )
 
         drivers = driver_crud.get_by_vendor(
             db,
@@ -322,7 +415,7 @@ def get_drivers(
             search=search
         )
 
-        # Additional filter by license number if provided
+        # Filter by license number if provided
         if license_number:
             drivers = [d for d in drivers if d.license_number == license_number]
 
@@ -334,15 +427,15 @@ def get_drivers(
         )
 
     except HTTPException as e:
-        logger.warning(f"Driver creation failed (HTTPException) for driver : {e.detail}")
+        logger.warning(f"Driver fetch failed (HTTPException): {e.detail}")
         raise
     except SQLAlchemyError as e:
-        logger.error(f"Database error creating driver : {e}")
+        logger.error(f"Database error fetching drivers: {e}")
         raise handle_db_error(e)
     except Exception as e:
-        logger.error(f"Unexpected error creating driver : {e}")
+        logger.error(f"Unexpected error fetching drivers: {e}")
         raise handle_http_error(e)
-    
+
 @router.put("/update", response_model=dict)
 async def update_driver(
     driver_id: int,
