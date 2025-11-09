@@ -497,6 +497,21 @@ async def get_all_routes(
                     error_code="TENANT_ID_REQUIRED",
                 ),
             )
+        # ---------- Vendor-Specific Access Control ----------
+        vendor_id = user_data.get("vendor_id")
+        if user_type == "vendor":
+            if not vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Vendor ID missing in token",
+                        error_code="VENDOR_ID_MISSING",
+                    ),
+                )
+
+            # Vendor can only see their own routes
+            logger.info(f"[get_all_routes] Restricting to vendor_id={vendor_id}")
+
 
         logger.info(f"[get_all_routes] resolved tenant: {tenant_id}")
 
@@ -516,6 +531,11 @@ async def get_all_routes(
 
         # --- Query routes ---
         routes_q = db.query(RouteManagement).filter(RouteManagement.tenant_id == tenant_id)
+
+        if user_type == "vendor":
+            logger.info(f"[get_all_routes] Applying vendor filter: {vendor_id}")
+            routes_q = routes_q.filter(RouteManagement.assigned_vendor_id == vendor_id)
+
 
         if shift_id or booking_date:
             routes_q = (
@@ -886,6 +906,22 @@ async def assign_vehicle_to_route(
                     details={"route_id": route_id},
                 ),
             )
+        # ---- Vendor-level access validation ----
+        user_vendor_id = user_data.get("vendor_id")  # Comes from token if vendor persona
+        if user_vendor_id:
+            # Ensure vendor trying to assign belongs to the same route
+            if route.assigned_vendor_id != int(user_vendor_id):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="You can only assign vehicles to routes owned by your vendor",
+                        error_code="VENDOR_ROUTE_MISMATCH",
+                        details={
+                            "user_vendor_id": user_vendor_id,
+                            "route_vendor_id": route.assigned_vendor_id,
+                        },
+                    ),
+                )
 
         # ---- Validate Vehicle ----
         vehicle = (
@@ -1059,6 +1095,31 @@ async def get_route_by_id(
                 status_code=404,
                 detail=ResponseWrapper.error("Route not found", "ROUTE_NOT_FOUND")
             )
+        # ✅ Restrict vendor access to only their own routes
+        vendor_id = user_data.get("vendor_id")
+        if user_type == "vendor":
+            if not vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Vendor ID missing in token",
+                        error_code="VENDOR_ID_MISSING",
+                    ),
+                )
+
+            if route.assigned_vendor_id != int(vendor_id):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="You are not authorized to access this route",
+                        error_code="ROUTE_ACCESS_DENIED",
+                        details={
+                            "requested_route_vendor": route.assigned_vendor_id,
+                            "your_vendor_id": vendor_id,
+                        },
+                    ),
+                )
+
 
         # Get bookings
         rbs = db.query(RouteManagementBooking).filter(
