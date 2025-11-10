@@ -15,7 +15,28 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 URL = f"https://maps.googleapis.com/maps/api/directions/json"
 GOOGLE_MAPS_API_KEY = "AIzaSyCI7CwlYJ6Qt5pQGW--inSsJmdEManW-K0" 
 
-def generate_optimal_route(group, drop_lat, drop_lng, drop_address, shift_time, deadline_minutes=600, buffer_minutes=15):
+def calculate_distance(lat1, lng1, lat2, lng2):
+    import math
+    # Haversine formula for distance calculation
+    R = 6371  # Earth's radius in km
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lat2 - lng1)
+    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    return R * c
+
+def find_centroid_origin(group, drop_lat, drop_lng):
+    # Calculate distances from each pickup to destination
+    distances = []
+    for booking in group:
+        dist = calculate_distance(booking["pickup_latitude"], booking["pickup_longitude"], drop_lat, drop_lng)
+        distances.append((dist, booking))
+    
+    # Sort by distance (descending) and use the farthest as origin
+    distances.sort(key=lambda x: x[0], reverse=True)
+    return distances[0][1]
+
+def generate_optimal_route(group, drop_lat, drop_lng, drop_address, shift_time, deadline_minutes=600, buffer_minutes=15, use_centroid=True):
     # Parse shift time to minutes
     if isinstance(shift_time, str):
         shift_hours, shift_minutes = map(int, shift_time.split(":"))
@@ -26,26 +47,12 @@ def generate_optimal_route(group, drop_lat, drop_lng, drop_address, shift_time, 
 
     shift_time_minutes = shift_hours * 60 + shift_minutes
 
-    # Find the pickup location with maximum distance from destination
-    def calculate_distance(lat1, lng1, lat2, lng2):
-        import math
-        # Haversine formula for distance calculation
-        R = 6371  # Earth's radius in km
-        dlat = math.radians(lat2 - lat1)
-        dlng = math.radians(lat2 - lng1)
-        a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng/2)**2
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-        return R * c
+    # Choose origin based on use_centroid flag
+    if use_centroid:
+        origin_booking = find_centroid_origin(group, drop_lat, drop_lng)
+    else:
+        origin_booking = group[0]
 
-    # Calculate distances from each pickup to destination
-    distances = []
-    for booking in group:
-        dist = calculate_distance(booking["pickup_latitude"], booking["pickup_longitude"], drop_lat, drop_lng)
-        distances.append((dist, booking))
-    
-    # Sort by distance (descending) and use the farthest as origin
-    distances.sort(key=lambda x: x[0], reverse=True)
-    origin_booking = distances[0][1]
     remaining_bookings = [booking for booking in group if booking != origin_booking]
     
     origin = f"{origin_booking['pickup_latitude']},{origin_booking['pickup_longitude']}"
@@ -139,7 +146,7 @@ def generate_optimal_route(group, drop_lat, drop_lng, drop_address, shift_time, 
 
     return final_routes
 
-def generate_drop_route(group, office_lat, office_lng, office_address,buffer_minutes=15, start_time_minutes=1020):
+def generate_drop_route(group, office_lat, office_lng, office_address,buffer_minutes=15, start_time_minutes=1020, optimize_route: str ="true"):
     """
     Generate optimal route from office to varying drop locations
     Args:
@@ -158,7 +165,7 @@ def generate_drop_route(group, office_lat, office_lng, office_address,buffer_min
     params = {
         "origin": origin,
         "destination": origin,  # Return to office (circular route)
-        "waypoints": f"optimize:true|{waypoints}",
+        "waypoints": f"optimize:{optimize_route}|{waypoints}",
         "key": GOOGLE_MAPS_API_KEY
     }
 

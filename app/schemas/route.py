@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
 
@@ -59,10 +59,9 @@ class RouteManagementResponse(RouteManagementBase):
         from_attributes = True
 
 class RouteEstimations(BaseModel):
-    total_distance_km: float
-    total_time_minutes: float
-    estimated_pickup_times: Dict[int, str]  # booking_id -> time
-    estimated_drop_times: Dict[int, str]    # booking_id -> time
+    start_time: str
+    total_distance_km: str
+    total_time_minutes: str
 
 # Keep the existing RouteWithEstimations but import BookingResponse properly
 class RouteWithEstimations(BaseModel):
