@@ -18,7 +18,7 @@ def init_firebase():
         if not firebase_admin._apps:
             cred = credentials.Certificate(firebase_key_path)
             initialize_app(cred, {
-                'databaseURL': 'https://ets-1-ccb71-default-rtdb.firebaseio.com/'
+                'databaseURL': os.getenv("FIREBASE_DATABASE_URL")
             })
     except Exception as e:
         print("Error initializing Firebase:", str(e))
