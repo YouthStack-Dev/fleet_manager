@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.9"
 
 services:
 
@@ -44,12 +44,7 @@ services:
     container_name: service_manager
     restart: always
     env_file:
-      - ./service.prod.env        # production specific env file
-    volumes:
-      # Map production storage directory to container (will be removed when using S3)
-      - /var/lib/fleet/storage:/var/lib/fleet/storage
-      # Legacy uploads mapping (if needed for backward compatibility)
-      - /var/lib/fleet/uploads:/app/uploaded_files
+      - ./service.prod.env
     environment:
       - DATABASE_URL=postgresql://fleetadmin:fleetpass@fleet_postgres:5432/fleet_db
       - REDIS_HOST=redis_server
@@ -62,7 +57,17 @@ services:
       - STORAGE_TYPE=filesystem  # Change to 's3' when migrating to AWS
       - PROD_SERVER_STORAGE_PATH=/var/lib/fleet/storage
       - MAX_FILE_SIZE_MB=10
-      
+
+    volumes:
+      # ✅ Mount Firebase service account key (host → container)
+      - ~/app/firebase/firebase_key.json:/app/firebase/firebase_key.json:ro
+
+      # ✅ Persistent storage for uploaded data
+      - /var/lib/fleet/storage:/var/lib/fleet/storage
+
+      # Optional legacy uploads path (remove if unused)
+      - /var/lib/fleet/uploads:/app/uploaded_files
+
     depends_on:
       redis_server:
         condition: service_healthy
