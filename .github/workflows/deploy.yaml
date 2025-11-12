@@ -85,7 +85,15 @@ jobs:
           password: ${{ secrets.VPS_PASSWORD }}
           script: |
             # Create service.prod.env on VPS with secrets
+            mkdir -p ~/app/firebase
+            # 🔐 Write Firebase service account key from GitHub secret
+            echo "${{ secrets.FIREBASE_KEY_JSON }}" | base64 -d > ~/app/firebase/firebase_key.json
+            chmod 600 ~/app/firebase/firebase_key.json
+            echo "✅ Firebase key written to ~/app/firebase/firebase_key.json"
             cat <<EOF > ~/service.prod.env
+            # Firebase Configuration
+            FIREBASE_KEY_PATH=/app/firebase/firebase_key.json
+            FIREBASE_DATABASE_URL=https://ets-1-ccb71-default-rtdb.firebaseio.com
             DATABASE_URL=postgresql://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@fleet_postgres:5432/${{ secrets.POSTGRES_DB }}
             REDIS_HOST=redis_server
             REDIS_PORT=6379
