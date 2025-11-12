@@ -17,6 +17,7 @@ from app.models.driver import Driver, VerificationStatusEnum ,GenderEnum
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
 from app.services.storage_service import storage_service
+from app.firebase.driver_location import push_driver_location_to_firebase
 from fastapi.encoders import jsonable_encoder
 logger = get_logger(__name__)
 router = APIRouter(prefix="/drivers", tags=["drivers"])
@@ -200,6 +201,7 @@ async def create_driver(
             induction_date=induction_date,
             induction_url=induction_url,
 
+
             photo_url=photo_url,
         )
 
@@ -208,6 +210,24 @@ async def create_driver(
         db_obj = driver_crud.create_with_vendor(db, vendor_id=vendor_id, obj_in=driver_in)
         db.commit()
         db.refresh(db_obj)
+
+        # --- Push driver location to Firebase ---
+        try:
+            # Get vendor with tenant relationship
+            vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
+            if vendor and vendor.tenant_id:
+                logger.info(f"Pushing driver {db_obj.driver_id} to Firebase")
+                push_driver_location_to_firebase(
+                    tenant_id=vendor.tenant_id,
+                    vendor_id=vendor_id,
+                    driver_id=db_obj.driver_id,
+                    latitude=None,
+                    longitude=None,
+                    driver_code=driver_code
+                )
+        except Exception as firebase_error:
+            logger.error(f"⚠️ Firebase push failed for driver {driver_code}: {str(firebase_error)}")
+            # Continue - don't fail the entire operation if Firebase push fails
 
         logger.info(f"✅ Driver '{driver_code}' created successfully (ID={db_obj.driver_id})")
         return ResponseWrapper.success(
