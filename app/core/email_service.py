@@ -561,6 +561,53 @@ class EmailService:
             subject=subject,
             html_content=html_content
         )
+    def send_employee_created_email(self, user_email: str, user_name: str, details: Dict[str, Any]) -> bool:
+        """Send email when a new employee is created"""
+        subject = f"Employee Account Created - {self.app_name}"
+
+        html_content = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background-color: #4CAF50; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
+                <h1>🎉 Your Employee Account is Ready!</h1>
+            </div>
+
+            <div style="background-color: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px;">
+                <h2>Hello {user_name},</h2>
+                <p>Your employee account has been created successfully in <strong>{self.app_name}</strong>.</p>
+
+                <div style="background-color: #e8f5e8; padding: 18px; border-radius: 5px; margin: 20px 0;">
+                    <h3>Employee Details:</h3>
+                    <p><strong>Employee ID:</strong> {details.get('employee_id')}</p>
+                    <p><strong>Name:</strong> {details.get('name')}</p>
+                    <p><strong>Email:</strong> {details.get('email')}</p>
+                    <p><strong>Phone:</strong> {details.get('phone')}</p>
+                    <p><strong>Tenant ID:</strong> {details.get('tenant_id')}</p>
+                    <p><strong>Team:</strong> {details.get('team_id')}</p>
+                </div>
+
+                <p><strong>What’s Next?</strong></p>
+                <ul>
+                    <li>Log in using your registered email</li>
+                    <li>Contact admin if you need your temporary password</li>
+                    <li>Update your personal profile after login</li>
+                </ul>
+
+                <p>For any support, email us at <a href="mailto:{self.support_email}">{self.support_email}</a></p>
+
+                <p>Welcome aboard!<br>The {self.app_name} Team</p>
+            </div>
+
+            <div style="text-align: center; color: #666; font-size: 12px; margin-top: 20px;">
+                <p>&copy; 2024 {self.app_name}. All rights reserved.</p>
+            </div>
+        </div>
+        """
+
+        return self.send_email(
+            to_emails=user_email,
+            subject=subject,
+            html_content=html_content
+        )
 
 # Singleton instance
 email_service = EmailService()

@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query
+from app.core.email_service import get_email_service
 from sqlalchemy.orm import Session
 from typing import Optional
 from app.database.session import get_db
@@ -19,6 +20,7 @@ router = APIRouter(prefix="/employees", tags=["employees"])
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def create_employee(
     employee: EmployeeCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["employee.create"], check_tenant=True)),
 ):
@@ -100,6 +102,18 @@ def create_employee(
                     error_code="EMPLOYEE_CREATION_FAILED",
                 ),
             )
+        # 🔥 Add background email task
+        background_tasks.add_task(
+            send_employee_created_email,
+            employee_data={
+                "name": db_employee.name,
+                "email": db_employee.email,
+                "phone": db_employee.phone,
+                "employee_id": db_employee.employee_id,
+                "tenant_id": tenant_id,
+                "team_id": db_employee.team_id,
+            },
+        )
         db.commit()
         db.refresh(db_employee)
 
@@ -120,6 +134,25 @@ def create_employee(
     except Exception as e:
         logger.exception(f"Unexpected error while creating employee: {str(e)}")
         raise handle_http_error(e)
+
+def send_employee_created_email(employee_data: dict):
+    """Background task to send employee creation email."""
+    try:
+        email_service = get_email_service()
+
+        success = email_service.send_employee_created_email(
+            user_email=employee_data["email"],
+            user_name=employee_data["name"],
+            details=employee_data,
+        )
+
+        if success:
+            logger.info(f"Employee creation email sent: {employee_data['employee_id']}")
+        else:
+            logger.error(f"Employee creation email FAILED: {employee_data['employee_id']}")
+
+    except Exception as e:
+        logger.error(f"Error sending employee creation email: {str(e)}")
 
 @router.get("/", status_code=status.HTTP_200_OK)
 def read_employees(
