@@ -524,6 +524,13 @@ async def get_all_routes(
                     error_code="TENANT_NOT_FOUND",
                 ),
             )
+        tenant_details = {
+            "tenant_id": tenant.tenant_id,
+            "name": tenant.name,
+            "address": tenant.address,
+            "latitude": tenant.latitude,
+            "longitude": tenant.longitude,
+        }
         logger.info(f"Fetching all routes for tenant: {tenant_id}, shift_id: {shift_id}, booking_date: {booking_date}, user: {user_data.get('user_id', 'unknown')}")
         
 
@@ -619,6 +626,7 @@ async def get_all_routes(
                     }
 
             shifts[shift_id_key]["routes"].append({
+                "tenant": tenant_details,
                 "route_id": route.route_id,
                 "route_code": route.route_code,
                 "status": route.status.value,
@@ -1080,7 +1088,13 @@ async def get_route_by_id(
                     error_code="TENANT_NOT_FOUND"
                 )
             )
-
+        tenant_details = {
+            "tenant_id": tenant.tenant_id,
+            "name": tenant.name,
+            "address": tenant.address,
+            "latitude": tenant.latitude,
+            "longitude": tenant.longitude,
+        }
         # Fetch route
         route = db.query(RouteManagement).filter(
             RouteManagement.route_id == route_id,
@@ -1166,6 +1180,7 @@ async def get_route_by_id(
 
         # Same response structure as list API ✅
         response = {
+            "tenant": tenant_details,
             "route_id": route.route_id,
             "shift_id": route.shift_id,
             "route_code": route.route_code,
