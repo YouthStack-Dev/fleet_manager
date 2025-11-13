@@ -733,6 +733,7 @@ async def driver_login(
 ):
     """
     Authenticate a driver and return JWT + opaque token + roles + permissions.
+    Enforces single active session per driver: new login invalidates previous session.
     """
     logger.info(f"Driver login attempt: {form_data.username}, tenant: {form_data.tenant_id}")
 
@@ -750,7 +751,6 @@ async def driver_login(
         )
 
         if not driver:
-            logger.warning(f"Driver login failed - Not found: {form_data.username} in tenant {form_data.tenant_id}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=ResponseWrapper.error(
@@ -763,45 +763,31 @@ async def driver_login(
         tenant = vendor.tenant
         logger.debug(f"Tenant validation successful - ID: {tenant.tenant_id}")
 
-        # Step 2: Password verification
+        # Password verification
         if not verify_password(hash_password(form_data.password), driver.password):
-            logger.warning(f"🔒 Invalid password for driver {driver.driver_id} ({form_data.username})")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ResponseWrapper.error(
-                    message="Incorrect password",
-                    error_code=status.HTTP_401_UNAUTHORIZED
-                )
+                detail=ResponseWrapper.error("Incorrect password", "INVALID_PASSWORD")
             )
 
-        # Step 3: Check active status
+        # Active status check
         if not driver.is_active or not vendor.is_active or not tenant.is_active:
-            logger.warning(f"🚫 Login failed - Inactive driver: {driver.driver_id}")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=ResponseWrapper.error(
-                    message="User account is inactive",
-                    error_code="ACCOUNT_INACTIVE"
-                )
+                detail=ResponseWrapper.error("User account is inactive", "ACCOUNT_INACTIVE")
             )
 
-        # ✅ Fetch driver roles + permissions
+        # Roles & permissions
         driver_with_roles, roles, all_permissions = driver_crud.get_driver_roles_and_permissions(
-            db, driver_id=driver.driver_id , tenant_id=tenant.tenant_id
+            db, driver_id=driver.driver_id, tenant_id=tenant.tenant_id
         )
-
         if not driver_with_roles:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=ResponseWrapper.error(
-                    message="Failed to fetch roles and permissions",
-                    error_code="ROLE_FETCH_ERROR"
-                )
+                status_code=500,
+                detail=ResponseWrapper.error("Failed to fetch roles", "ROLE_FETCH_ERROR")
             )
 
-        logger.info(f"Driver {driver.driver_id} roles={roles}, permissions={len(all_permissions)}")
-
-        # Token payload
+        # Prepare tokens
         current_time = int(time.time())
         expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
         opaque_token = secrets.token_hex(16)
@@ -810,28 +796,88 @@ async def driver_login(
             "user_id": str(driver.driver_id),
             "tenant_id": str(tenant.tenant_id),
             "vendor_id": str(vendor.vendor_id),
+            "opaque_token": opaque_token,
             "roles": roles,
             "permissions": all_permissions,
             "user_type": "driver",
-            "opaque_token": opaque_token,
             "iat": current_time,
             "exp": expiry_time,
         }
 
-        # Step 6: Store opaque token in Redis
+        # ================================
+        # 🔥 SINGLE SESSION ENFORCEMENT
+        # ================================
         oauth_accessor = Oauth2AsAccessor()
         ttl = expiry_time - current_time
-        if not oauth_accessor.store_opaque_token(opaque_token, token_payload, 1800):
-            logger.error(f"💥 Failed to store opaque token in Redis for driver {driver.driver_id}")
+
+        driver_session_key = f"driver_session:{driver.driver_id}"
+        metadata_prefix = "opaque_token_metadata:"
+        basic_prefix = "opaque_token:"
+
+        try:
+            if oauth_accessor.use_redis:
+                redis_client = oauth_accessor.redis_manager.client
+
+                # Delete old session token if exists
+                try:
+                    old_token = redis_client.get(driver_session_key)
+                    if old_token:
+                        if isinstance(old_token, bytes):
+                            old_token = old_token.decode()
+                        redis_client.delete(f"{metadata_prefix}{old_token}")
+                        redis_client.delete(f"{basic_prefix}{old_token}")
+                        redis_client.delete(old_token)
+                        logger.info(f"Invalidated previous session for driver {driver.driver_id} (old_token={old_token})")
+                except Exception as redis_err:
+                    logger.warning(f"Redis cleanup failed for driver {driver.driver_id}: {redis_err}")
+
+                # Store new token
+                stored = oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl)
+                try:
+                    redis_client.setex(driver_session_key, int(ttl), opaque_token)
+                except Exception as ex:
+                    logger.warning(f"Failed to store driver_session pointer for driver {driver.driver_id}: {ex}")
+
+                if not stored:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=ResponseWrapper.error("Failed to store authentication token", "TOKEN_STORE_FAILED")
+                    )
+
+            else:
+                # In-memory fallback
+                try:
+                    old_session_val = oauth_accessor.cache.get(driver_session_key)
+                    if old_session_val:
+                        old_token = old_session_val[0] if isinstance(old_session_val, tuple) else old_session_val
+                        try:
+                            meta_key = hashkey(f"{metadata_prefix}{old_token}")
+                            basic_key = hashkey(f"{basic_prefix}{old_token}")
+                            if meta_key in oauth_accessor.cache:
+                                del oauth_accessor.cache[meta_key]
+                            if basic_key in oauth_accessor.cache:
+                                del oauth_accessor.cache[basic_key]
+                            logger.info(f"Invalidated old in-memory session for driver {driver.driver_id}")
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl)
+
+                try:
+                    oauth_accessor.cache[driver_session_key] = (opaque_token, current_time + ttl)
+                except Exception:
+                    pass
+
+        except Exception as e:
+            logger.error(f"Single-session storage failed for driver {driver.driver_id}: {e}", exc_info=True)
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=ResponseWrapper.error(
-                    message="Failed to store authentication token",
-                    error_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
+                status_code=500,
+                detail=ResponseWrapper.error("Login failed (session error)", "SESSION_ERROR", {"error": str(e)})
             )
 
-        # Step 7: Generate JWT access/refresh tokens
+        # Generate access/refresh tokens
         access_token = create_access_token(
             user_id=str(driver.driver_id),
             tenant_id=str(tenant.tenant_id),
@@ -855,18 +901,18 @@ async def driver_login(
                     "driver": DriverResponse.model_validate(driver),
                     "tenant": TenantResponse.model_validate(tenant),
                     "roles": roles,
-                    "permissions": all_permissions
-                }
+                    "permissions": all_permissions,
+                },
             },
-            message="Driver login successful"
+            message="Driver login successful",
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Driver login failed with unexpected error: {str(e)}")
+        logger.error(f"Driver login failed: {e}", exc_info=True)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=ResponseWrapper.error(
                 message="Login failed due to server error",
                 error_code="SERVER_ERROR",

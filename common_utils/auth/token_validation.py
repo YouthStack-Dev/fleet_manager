@@ -414,11 +414,12 @@ class Oauth2AsAccessor:
     def validate_oauth2_token(self, oauth_token, opaque_token=None, use_cache=True):
 
         # ------------------------
-        # EXTRACT USER-ID FROM JWT
+        # Extract payload
         # ------------------------
         try:
             payload = jwt.decode(oauth_token, SECRET_KEY, algorithms=[ALGORITHM])
             user_id = str(payload.get("user_id"))
+            user_type = payload.get("user_type")
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -428,18 +429,22 @@ class Oauth2AsAccessor:
                 ),
             )
 
-        session_key = f"employee_session:{user_id}"
+        # Determine session key (employee/driver)
+        if user_type == "employee":
+            session_key = f"employee_session:{user_id}"
+        elif user_type == "driver":
+            session_key = f"driver_session:{user_id}"
+        else:
+            session_key = None
 
         # ----------------------------------------------
         # 1) CHECK ACTIVE SESSION BEFORE CACHE VALIDATION
         # ----------------------------------------------
-        # If we have opaque_token: compare against stored one
-        if opaque_token:
+        if session_key and opaque_token:
             active_token = self.redis_manager.client.get(session_key)
             if active_token and active_token != opaque_token:
                 logging.warning(
-                    f"❌ Token rejected due to session mismatch: "
-                    f"active={active_token} provided={opaque_token}"
+                    f"❌ Session mismatch: active={active_token} provided={opaque_token}"
                 )
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -450,29 +455,29 @@ class Oauth2AsAccessor:
                 )
 
         # ------------------------
-        # 2) Try cache (if allowed)
+        # 2) Try cache
         # ------------------------
         if use_cache:
             cached_response = self.get_cached_oauth2_token(opaque_token)
             if cached_response:
 
-                # Again enforce single-session against cached metadata
-                active_token = self.redis_manager.client.get(session_key)
-                if active_token and active_token != opaque_token:
-                    logging.warning("❌ Cached token rejected: logged in elsewhere")
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail=ResponseWrapper.error(
-                            message="Session expired due to login on another device",
-                            error_code="SESSION_EXPIRED",
-                        ),
-                    )
+                if session_key:
+                    active_token = self.redis_manager.client.get(session_key)
+                    if active_token and active_token != opaque_token:
+                        logging.warning("❌ Cached token rejected (other device logged in)")
+                        raise HTTPException(
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail=ResponseWrapper.error(
+                                message="Session expired due to login on another device",
+                                error_code="SESSION_EXPIRED",
+                            ),
+                        )
 
                 logging.info("Cache hit")
                 return cached_response
 
         # -------------------------------------------------
-        # 3) Cache miss → direct introspection logic
+        # 3) Cache miss → direct introspection
         # -------------------------------------------------
         logging.info("Cache miss - calling introspection directly")
 
@@ -493,16 +498,17 @@ class Oauth2AsAccessor:
                     else:
                         self.store_token_inmem_cache(opaque_token, response_data, ttl)
 
-            # ❗ Enforce session again
-            active_token = self.redis_manager.client.get(session_key)
-            if active_token and active_token != opaque_token:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=ResponseWrapper.error(
-                        message="Session expired due to login on another device",
-                        error_code="SESSION_EXPIRED",
-                    ),
-                )
+            # enforce single session again
+            if session_key:
+                active_token = self.redis_manager.client.get(session_key)
+                if active_token and active_token != opaque_token:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail=ResponseWrapper.error(
+                            message="Session expired due to login on another device",
+                            error_code="SESSION_EXPIRED",
+                        ),
+                    )
 
             response_data["source"] = "introspect-direct"
             return response_data
