@@ -162,7 +162,12 @@ def get_booking_by_id(booking_id: int, db: Session) -> Optional[Dict]:
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
         logger.warning(f"[get_booking_by_id] No booking found with ID {booking_id}")
-        raise HTTPException(status_code=404, detail=f"Booking {booking_id} not found.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+            detail=ResponseWrapper.error(
+                message="Booking not found.",
+                error_code="BOOKING_NOT_FOUND",
+            )
+        )
 
     logger.debug(
         f"[get_booking_by_id] Booking fetched → "
@@ -1374,25 +1379,41 @@ async def update_route(
         user_type = user_data.get("user_type")
         token_tenant_id = user_data.get("tenant_id")
 
-        if user_type == "admin" and not tenant_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="tenant_id is required for admin users",
-                    error_code="TENANT_ID_REQUIRED",
-                ),
-            )
-        elif user_type != "admin":
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        if user_type == "employee":
             tenant_id = token_tenant_id
+
+        elif user_type == "vendor":
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=ResponseWrapper.error(
+                        message="tenant_id is required for vendor users",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+
+        elif user_type == "admin":
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=ResponseWrapper.error(
+                        message="tenant_id is required for admin users",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
 
         if not tenant_id:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
+                status_code=403,
                 detail=ResponseWrapper.error(
                     message="Tenant context not available",
-                    error_code="TENANT_ID_REQUIRED",
+                    error_code="TENANT_ID_MISSING",
                 ),
             )
+
         logger.info(f"Updating route {route_id} with operation '{request.operation}' for {len(request.booking_ids)} bookings, user: {user_data.get('user_id', 'unknown')}")
 
         # Validate tenant exists
@@ -1448,6 +1469,25 @@ async def update_route(
         for booking in request_booking_ids:
             booking_details = get_booking_by_id(booking, db)
             request_bookings.append(booking_details)
+            
+        # --- Remove booking from any other active route before adding ---
+        if request.operation == "add":
+            for booking_id in request_booking_ids:
+                existing_links = db.query(RouteManagementBooking).join(RouteManagement).filter(
+                    RouteManagementBooking.booking_id == booking_id,
+                    RouteManagementBooking.route_id != route_id,
+                    RouteManagement.tenant_id == tenant_id
+                ).all()
+
+                for link in existing_links:
+                    logger.info(
+                        f"Removing booking {booking_id} from route {link.route_id} "
+                        f"because it is being moved to route {route_id}"
+                    )
+                    db.delete(link)
+
+            db.flush()  # ensure removal is persisted before adding in new route
+
         
         logger.debug(f"Fetched request bookings: {request_bookings}")
         
@@ -1494,11 +1534,12 @@ async def update_route(
         route.estimated_total_distance = float(optimized["estimated_distance"].split()[0])
         route.buffer_time = float(optimized["buffer_time"].split()[0])
         # calculate the estimations to return
-        estimations= {
-            "start_time": optimized.get("start_time",0),
-            "total_distance_km": optimized.get("estimated_distance", 0),
-            "total_time_minutes": optimized.get("total_route_duration", 0)
+        estimations = {
+            "start_time": str(optimized.get("start_time", "")),
+            "total_distance_km": optimized.get("estimated_distance", "0"),
+            "total_time_minutes": optimized.get("total_route_duration", "0")
         }
+
 
         # --- Safely replace stops without deleting the route row (avoid StaleDataError) ---
         # Delete existing route-booking mappings for this route_id
