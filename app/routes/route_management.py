@@ -1596,155 +1596,164 @@ async def update_booking_order(
     user_data=Depends(PermissionChecker(["route.update"], check_tenant=True)),
 ):
     """
-    Update booking order manually.
-    User may send only 1 booking with new_order_id.
-    This endpoint recalculates order for ALL bookings in the route.
+    Update the order of bookings in a route and regenerate optimal route based on the new order.
+    The first booking (order_id=0) will be used as the starting point.
     """
     try:
         user_type = user_data.get("user_type")
         token_tenant_id = user_data.get("tenant_id")
 
-        # --- Tenant Resolution ---
-        if user_type == "employee" or user_type == "vendor":
-            tenant_id = token_tenant_id
-            
-        elif user_type == "admin" and not tenant_id:
+        if user_type == "admin" and not tenant_id:
             raise HTTPException(
-                400,
-                ResponseWrapper.error(
-                    "tenant_id is required for admin users", "TENANT_ID_REQUIRED"
-                )
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="tenant_id is required for admin users",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
             )
+        elif user_type != "admin":
+            tenant_id = token_tenant_id
 
         if not tenant_id:
             raise HTTPException(
-                403,
-                ResponseWrapper.error("Tenant context not available", "TENANT_ID_MISSING")
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant context not available",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
             )
 
-        # --- Load route + shift ---
-        result = (
-            db.query(RouteManagement, Shift)
+        logger.info(f"Updating booking order for route {route_id} by user: {user_data.get('user_id', 'unknown')}")
+
+        # Validate route exists and get shift info
+        route = (
+            db.query(RouteManagement)
             .join(RouteManagementBooking, RouteManagementBooking.route_id == RouteManagement.route_id)
             .join(Booking, RouteManagementBooking.booking_id == Booking.booking_id)
             .join(Shift, Shift.shift_id == Booking.shift_id)
-            .filter(RouteManagement.route_id == route_id, RouteManagement.tenant_id == tenant_id)
+            .filter(
+                RouteManagement.route_id == route_id,
+                RouteManagement.tenant_id == tenant_id,
+            )
+            .with_entities(
+                RouteManagement,
+                Shift.shift_time,
+                Shift.log_type
+            )
             .first()
         )
 
-        if not result:
-            raise HTTPException(404, ResponseWrapper.error("Route not found", "ROUTE_NOT_FOUND"))
-
-        route, shift = result
-        shift_type = shift.log_type.value if hasattr(shift.log_type, "value") else shift.log_type
-        shift_time = shift.shift_time
-
-        # --- Step 1: Fetch ALL current bookings in this route ---
-        current_links = db.query(RouteManagementBooking).filter(
-            RouteManagementBooking.route_id == route_id
-        ).order_by(RouteManagementBooking.order_id.asc()).all()
-
-        if not current_links:
+        if not route:
             raise HTTPException(
-                400,
-                ResponseWrapper.error("No bookings found in route", "EMPTY_ROUTE")
+                status_code=404,
+                detail=ResponseWrapper.error(
+                    message=f"Route {route_id} not found",
+                    error_code="ROUTE_NOT_FOUND",
+                ),
             )
 
-        current_booking_ids = [c.booking_id for c in current_links]
+        route, shift_time, shift_type = route
 
-        # --- Step 2: Convert request list into a lookup dictionary ---
-        incoming_changes = {b.booking_id: b.new_order_id for b in request.bookings}
+        # Sort bookings by requested order
+        ordered_bookings = sorted(request.bookings, key=lambda x: x.new_order_id)
+        logger.debug(f"Ordered bookings for route {route_id}: {ordered_bookings}")
+        booking_ids = [b.booking_id for b in ordered_bookings]
+        logger.debug(f"Booking IDs for route {route_id}: {booking_ids}")
+        
+        # Fetch full booking details
+        bookings = []
 
-        # --- Step 3: Assign temporary order ids ---
-        # If frontend didn't send a booking → keep its old order
-        enriched = []
-        for current in current_links:
-            enriched.append({
-                "booking_id": current.booking_id,
-                "new_order_id": incoming_changes.get(current.booking_id, current.order_id)
-            })
+        for booking_id in ordered_bookings:
+            booking_details = get_booking_by_id(booking_id.booking_id, db)
+            bookings.append(booking_details)
 
-        # --- Step 4: Sort by new_order_id (full list reordered) ---
-        enriched = sorted(enriched, key=lambda x: x["new_order_id"])
-
-        # --- Step 5: Fetch full booking objects in the new order ---
-        full_bookings = [get_booking_by_id(item["booking_id"], db) for item in enriched]
-
-        # --- Step 6: Call optimizer ---
+        # Generate optimal route based on shift type
         from app.services.optimal_roiute_generation import generate_optimal_route, generate_drop_route
 
         if shift_type == "IN":
             optimized = generate_optimal_route(
                 shift_time=shift_time,
-                group=full_bookings,
-                drop_lat=full_bookings[-1]["drop_latitude"],
-                drop_lng=full_bookings[-1]["drop_longitude"],
-                drop_address=full_bookings[-1]["drop_location"],
+                group=bookings,
+                drop_lat=bookings[-1]["drop_latitude"],
+                drop_lng=bookings[-1]["drop_longitude"],
+                drop_address=bookings[-1]["drop_location"],
                 use_centroid=False
             )
         else:
             optimized = generate_drop_route(
-                group=full_bookings,
+                group=bookings,
                 start_time_minutes=datetime_to_minutes(shift_time),
-                office_lat=full_bookings[0]["pickup_latitude"],
-                office_lng=full_bookings[0]["pickup_longitude"],
-                office_address=full_bookings[0]["pickup_location"],
-                optimize_route="false"
+                office_lat=bookings[0]["pickup_latitude"],
+                office_lng=bookings[0]["pickup_longitude"],
+                office_address=bookings[0]["pickup_location"],
+                optimize_route = "false"
             )
 
         if not optimized:
-            raise HTTPException(500, ResponseWrapper.error("Route optimization failed", "OPT_FAIL"))
+            raise HTTPException(
+                status_code=500,
+                detail=ResponseWrapper.error(
+                    message="Route optimization failed",
+                    error_code="OPTIMIZATION_FAILED",
+                ),
+            )
 
-        optimized = optimized[0]
+        optimized = optimized[0]  # first candidate
 
-        # --- Step 7: Update route metrics ---
+        # Update route metrics
         route.estimated_total_time = float(optimized["estimated_time"].split()[0])
         route.estimated_total_distance = float(optimized["estimated_distance"].split()[0])
         route.buffer_time = float(optimized["buffer_time"].split()[0])
 
-        # --- Step 8: Replace mapping ---
+        # Delete existing route-booking mappings
         db.query(RouteManagementBooking).filter(
             RouteManagementBooking.route_id == route_id
         ).delete(synchronize_session=False)
 
-        new_links = []
-        for idx, stop in enumerate(optimized["pickup_order"]):
-            new_links.append(
-                RouteManagementBooking(
-                    route_id=route_id,
-                    booking_id=stop["booking_id"],
-                    order_id=idx + 1,
-                    estimated_pick_up_time=stop["estimated_pickup_time_formatted"],
-                    estimated_drop_time=stop.get("estimated_drop_time_formatted"),
-                    estimated_distance=stop["estimated_distance_km"],
-                )
-            )
+        # Create new route-booking mappings with updated order and estimates
+        new_mappings = []
+        for idx, booking in enumerate(optimized["pickup_order"]):
+            new_mappings.append(RouteManagementBooking(
+                route_id=route_id,
+                booking_id=booking["booking_id"],
+                order_id=idx + 1,
+                estimated_pick_up_time=booking["estimated_pickup_time_formatted"],
+                estimated_drop_time=booking.get("estimated_drop_time_formatted"),
+                estimated_distance=booking["estimated_distance_km"],
+            ))
 
-        db.add_all(new_links)
+        db.add_all(new_mappings)
         db.commit()
 
-        # --- Step 9: Prepare response ---
-        response = [
+        # Prepare response data
+        response_data = [
             {
-                "booking_id": link.booking_id,
-                "order_id": link.order_id,
-                "estimated_pick_up_time": link.estimated_pick_up_time,
-                "estimated_drop_time": link.estimated_drop_time,
-                "estimated_distance": link.estimated_distance,
+                "booking_id": rb.booking_id,
+                "order_id": rb.order_id,
+                "estimated_pick_up_time": rb.estimated_pick_up_time,
+                "estimated_drop_time": rb.estimated_drop_time,
+                "estimated_distance": rb.estimated_distance,
             }
-            for link in new_links
+            for rb in new_mappings
         ]
 
-        return ResponseWrapper.success(response, f"Route {route_id} booking order updated")
+        return ResponseWrapper.success(
+            data=response_data,
+            message=f"Route {route_id} order updated and optimized successfully",
+        )
 
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"Update booking order error: {e}", exc_info=True)
+        logger.error(f"Error updating booking order for route {route_id}: {e}", exc_info=True)
         raise HTTPException(
-            500,
-            ResponseWrapper.error("Unexpected error", "UPDATE_BOOKING_ORDER_ERROR", {"error": str(e)})
+            status_code=500,
+            detail=ResponseWrapper.error(
+                message="Error updating booking order",
+                error_code="UPDATE_BOOKING_ORDER_ERROR",
+                details={"error": str(e)},
+            ),
         )
 
 @router.delete("/bulk")
