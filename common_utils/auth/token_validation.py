@@ -17,6 +17,7 @@ from app.database.session import SessionLocal
 from app.models.iam import Permission, Policy, Role
 from sqlalchemy.orm import Session, joinedload
 from app.config import settings
+from app.utils.response_utils import ResponseWrapper
 
 # Configuration - use centralized settings
 SECRET_KEY = settings.SECRET_KEY
@@ -411,64 +412,116 @@ class Oauth2AsAccessor:
         return None
 
     def validate_oauth2_token(self, oauth_token, opaque_token=None, use_cache=True):
-        # Check if token is in the cache
+
+        # ------------------------
+        # Extract payload
+        # ------------------------
+        try:
+            payload = jwt.decode(oauth_token, SECRET_KEY, algorithms=[ALGORITHM])
+            user_id = str(payload.get("user_id"))
+            user_type = payload.get("user_type")
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error(
+                    message="Invalid token payload",
+                    error_code="INVALID_TOKEN_PAYLOAD",
+                ),
+            )
+
+        # Determine session key (employee/driver)
+        if user_type == "employee":
+            session_key = f"employee_session:{user_id}"
+        elif user_type == "driver":
+            session_key = f"driver_session:{user_id}"
+        else:
+            session_key = None
+
+        # ----------------------------------------------
+        # 1) CHECK ACTIVE SESSION BEFORE CACHE VALIDATION
+        # ----------------------------------------------
+        if session_key and opaque_token:
+            active_token = self.redis_manager.client.get(session_key)
+            if active_token and active_token != opaque_token:
+                logging.warning(
+                    f"❌ Session mismatch: active={active_token} provided={opaque_token}"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=ResponseWrapper.error(
+                        message="Session expired due to login on another device",
+                        error_code="SESSION_EXPIRED",
+                    ),
+                )
+
+        # ------------------------
+        # 2) Try cache
+        # ------------------------
         if use_cache:
             cached_response = self.get_cached_oauth2_token(opaque_token)
             if cached_response:
+
+                if session_key:
+                    active_token = self.redis_manager.client.get(session_key)
+                    if active_token and active_token != opaque_token:
+                        logging.warning("❌ Cached token rejected (other device logged in)")
+                        raise HTTPException(
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail=ResponseWrapper.error(
+                                message="Session expired due to login on another device",
+                                error_code="SESSION_EXPIRED",
+                            ),
+                        )
+
                 logging.info("Cache hit")
                 return cached_response
 
+        # -------------------------------------------------
+        # 3) Cache miss → direct introspection
+        # -------------------------------------------------
         logging.info("Cache miss - calling introspection directly")
-        
+
         try:
-            # Instead of making HTTP request to ourselves, call introspection logic directly
             from app.routes.auth_router import introspect_token_direct
-            
-            # Call the introspection function directly
+
             response_data = introspect_token_direct(oauth_token)
-            
-            # Only cache if response is successful and contains 'exp'
+
+            # Store if valid
             if response_data:
-                # Calculate the expiry time based on the 'exp' field
                 expiry_time = response_data.get("exp", int(time.time()) + 3600)
                 current_time = int(time.time())
+                ttl = max(1, expiry_time - current_time)
 
-                if expiry_time > current_time:
-                    ttl = expiry_time - current_time
-                    if use_cache:
-                        # Store in Redis if available
-                        if self.use_redis:
-                            self.redis_manager.store_token(opaque_token, response_data, ttl)
-                        else:
-                            self.store_token_inmem_cache(opaque_token, response_data, ttl)
-                        
-                        logging.info(
-                            "Response cached for token: %s, TTL: %s seconds",
-                            opaque_token,
-                            ttl,
-                        )
+                if use_cache:
+                    if self.use_redis:
+                        self.redis_manager.store_token(opaque_token, response_data, ttl)
+                    else:
+                        self.store_token_inmem_cache(opaque_token, response_data, ttl)
 
-            # Indicate the source is a direct call
+            # enforce single session again
+            if session_key:
+                active_token = self.redis_manager.client.get(session_key)
+                if active_token and active_token != opaque_token:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail=ResponseWrapper.error(
+                            message="Session expired due to login on another device",
+                            error_code="SESSION_EXPIRED",
+                        ),
+                    )
+
             response_data["source"] = "introspect-direct"
-            
             return response_data
-        
-        except HTTPException as e:
-            raise e
-        
+
+        except HTTPException:
+            raise
         except ImportError:
-            logging.error("Could not import introspect_token_direct function. Falling back to external validation.")
-            # Fallback to external HTTP call if direct function is not available
             return self._validate_oauth2_token_http(oauth_token, opaque_token, use_cache)
-            
         except Exception as ex:
-            logging.error(
-                "Error occurred in validate_oauth2_token direct call: %s", str(ex),
-                exc_info=True
-            )
+            logging.error(f"Error validating OAuth token: {ex}", exc_info=True)
             raise HTTPException(
                 status_code=500,
-                detail="Authentication process failed. Please try again or contact support."
+                detail="Authentication process failed"
             )
 
     def _validate_oauth2_token_http(self, oauth_token, opaque_token=None, use_cache=True):
@@ -522,14 +575,20 @@ class Oauth2AsAccessor:
             logging.error("Request to OAuth2 server timed out. Server might be down or unreachable.")
             raise HTTPException(
                 status_code=503,
-                detail="Authentication server is not responding. Please try again later."
+                detail=ResponseWrapper.error(
+                    message="Authentication server is not responding. Please try again later.",
+                    error_code="AUTH_SERVER_UNAVAILABLE",
+                ),
             )
             
         except requests.exceptions.ConnectionError as ex:
             logging.error(f"Connection error to OAuth2 server: {str(ex)}")
             raise HTTPException(
                 status_code=503,
-                detail="Could not connect to authentication server. Please check your network."
+                detail=ResponseWrapper.error(
+                    message="Authentication server is not responding. Please try again later.",
+                    error_code="AUTH_SERVER_UNAVAILABLE",
+                ),
             )
             
         except Exception as ex:
@@ -538,9 +597,12 @@ class Oauth2AsAccessor:
                 exc_info=True
             )
             raise HTTPException(
-                status_code=500,
-                detail="Authentication process failed. Please try again or contact support."
-            )
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=ResponseWrapper.error(
+                            message="Authentication process failed. Please try again or contact support.",
+                            error_code="AUTH_PROCESS_FAILED",
+                        ),
+                    )
 
     def revoke_token(self, token):
         """Mark a token as inactive/revoked"""
@@ -613,7 +675,10 @@ def validate_bearer_token(use_cache: bool = True):
             if not user_id:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid authentication token",
+                    detail=ResponseWrapper.error(
+                        message="Invalid authentication token",
+                        error_code="INVALID_TOKEN",
+                    ),
                 )
 
             # Return the token data with permissions from validation result
@@ -625,18 +690,27 @@ def validate_bearer_token(use_cache: bool = True):
                 "permissions": validation_result.get("permissions", []),
                 "user_type": validation_result.get("user_type"),
             }
-            
+        
+        except HTTPException:
+            # 🔥 IMPORTANT: DO NOT WRAP — bubble up original session-expired or invalid-password errors.
+            raise
         except PyJWTError as e:
             logger.error(f"JWT validation error: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid authentication token",
+                detail=ResponseWrapper.error(
+                    message="Invalid authentication token",
+                    error_code="INVALID_TOKEN",
+                ),
             )
         except Exception as e:
             logger.error(f"Unexpected error in token validation: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Authentication error",
+                detail=ResponseWrapper.error(
+                    message="Internal server error during token validation",
+                    error_code="INTERNAL_SERVER_ERROR",
+                ),
             )
             
     return get_token_data
