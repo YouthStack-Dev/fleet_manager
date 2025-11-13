@@ -196,6 +196,7 @@ def seed_iam(db: Session):
         "VendorAdmin": [
             "DriverPolicy",
             "RoutebookingPolicy",
+            "RoutePolicy",
             "VehiclePolicy",
             "VehicletypePolicy",
             "VendoruserPolicy",
