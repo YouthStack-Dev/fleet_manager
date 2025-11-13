@@ -227,6 +227,15 @@ async def employee_login(
 
         tenant = employee.tenant
         logger.debug(f"Tenant validation successful - ID: {tenant.tenant_id}")
+        tenant_details = {
+            "tenant_id": tenant.tenant_id,
+            "name": tenant.name,
+            "address": tenant.address,
+            "latitude": tenant.latitude,
+            "longitude": tenant.longitude,
+            "logo_url": tenant.logo_url if hasattr(tenant, "logo_url") else None,
+        }
+
 
         if not verify_password(hash_password(form_data.password), employee.password):
             logger.warning(f"🔒 Login failed - Invalid password for employee: {employee.employee_id} ({form_data.username})")
@@ -311,7 +320,8 @@ async def employee_login(
             "token_type": "bearer",
             "user": {"employee": employee_to_schema(employee),
                      "roles": roles,
-                     "permissions": all_permissions
+                     "permissions": all_permissions,
+                     "tenant": tenant_details
             }
         }
 
