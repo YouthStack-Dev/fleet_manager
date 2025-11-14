@@ -1186,3 +1186,203 @@ async def get_current_user_profile(
             ),
         )
 
+
+@router.post("/driver/new/login")
+async def driver_login_initial(
+    license_number: str = Body(...),
+    password: str = Body(...),
+    db: Session = Depends(get_db)
+):
+    logger.info(f"Driver login attempt via DL={license_number}")
+
+    license_number = license_number.strip()
+    password = password.strip()
+
+    # Fetch all accounts for this DL
+    drivers = (
+        db.query(Driver)
+        .join(Vendor, Vendor.vendor_id == Driver.vendor_id)
+        .join(Tenant, Tenant.tenant_id == Vendor.tenant_id)
+        .filter(Driver.license_number == license_number)
+        .all()
+    )
+
+    if not drivers:
+        raise HTTPException(
+            status_code=401,
+            detail=ResponseWrapper.error("Invalid DL or password", "INVALID_LOGIN")
+        )
+
+    # Verify password on the first entry
+    driver = drivers[0]
+    if not verify_password(hash_password(password), driver.password):
+        raise HTTPException(
+            status_code=401,
+            detail=ResponseWrapper.error("Invalid password", "INVALID_PASSWORD")
+        )
+
+    # Build account list
+    accounts = []
+    for d in drivers:
+        v, t = d.vendor, d.vendor.tenant
+        accounts.append({
+            "driver_id": d.driver_id,
+            "vendor_id": v.vendor_id,
+            "vendor_name": v.name,
+            "tenant_id": t.tenant_id,
+            "tenant_name": t.name
+        })
+
+    # ============ TEMP JWT =============
+    temp_payload = {
+        "driver_id": driver.driver_id,
+        "license_number": driver.license_number,
+        "type": "driver_temp_login",
+        "exp": int(time.time()) + 3000,  # 50 minutes expiry
+    }
+
+    temp_token = jwt.encode(temp_payload, SECRET_KEY, algorithm=ALGORITHM)
+
+    return ResponseWrapper.success(
+        message="Select vendor/tenant to continue",
+        data={
+            "temp_token": temp_token,
+            "driver": {
+                "name": driver.name,
+                "license_number": driver.license_number,
+                "phone": driver.phone,
+                "email": driver.email,
+            },
+            "accounts": accounts
+        }
+    )
+
+@router.post("/driver/login/confirm")
+async def driver_login_confirm(
+    temp_token: str = Body(...),
+    tenant_id: str = Body(...),
+    vendor_id: int = Body(...),
+    db: Session = Depends(get_db)
+):
+    # ---------------------------------
+    # 1. Decode temp token
+    # ---------------------------------
+    try:
+        temp_payload = jwt.decode(temp_token, SECRET_KEY, algorithms=[ALGORITHM])
+        if temp_payload.get("type") != "driver_temp_login":
+            raise ValueError("Invalid token type")
+        driver_id = temp_payload["driver_id"]
+    except Exception:
+        raise HTTPException(
+            status_code=401,
+            detail=ResponseWrapper.error("Invalid or expired temporary token", "INVALID_TEMP_TOKEN")
+        )
+
+    # ---------------------------------
+    # 2. Get exact driver/vendor/tenant
+    # ---------------------------------
+    driver = (
+        db.query(Driver)
+        .join(Vendor, Vendor.vendor_id == Driver.vendor_id)
+        .join(Tenant, Tenant.tenant_id == Vendor.tenant_id)
+        .filter(
+            Driver.driver_id == driver_id,
+            Vendor.vendor_id == vendor_id,
+            Tenant.tenant_id == tenant_id
+        )
+        .first()
+    )
+
+    if not driver:
+        raise HTTPException(
+            status_code=404,
+            detail=ResponseWrapper.error("Invalid selection", "INVALID_ACCOUNT")
+        )
+
+    vendor = driver.vendor
+    tenant = vendor.tenant
+
+    # Active checks
+    if not driver.is_active or not vendor.is_active or not tenant.is_active:
+        raise HTTPException(
+            status_code=403,
+            detail=ResponseWrapper.error("Account inactive", "ACCOUNT_INACTIVE")
+        )
+
+    # ---------------------------------
+    # 3. Fetch roles/permissions
+    # ---------------------------------
+    driver_with_roles, roles, all_permissions = driver_crud.get_driver_roles_and_permissions(
+        db, driver_id=driver.driver_id, tenant_id=tenant.tenant_id
+    )
+
+    if not driver_with_roles:
+        raise HTTPException(
+            status_code=500,
+            detail=ResponseWrapper.error("Failed to fetch roles", "ROLE_FETCH_ERROR")
+        )
+
+    # ---------------------------------
+    # 4. Generate final JWT + Opaque + Single Session (your exact logic)
+    # ---------------------------------
+    current_time = int(time.time())
+    expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
+    opaque_token = secrets.token_hex(16)
+
+    token_payload = {
+        "user_id": str(driver.driver_id),
+        "tenant_id": str(tenant.tenant_id),
+        "vendor_id": str(vendor.vendor_id),
+        "opaque_token": opaque_token,
+        "roles": roles,
+        "permissions": all_permissions,
+        "user_type": "driver",
+        "iat": current_time,
+        "exp": expiry_time,
+    }
+
+    # --- SINGLE SESSION REUSE YOUR LOGIC HERE ---
+    oauth_accessor = Oauth2AsAccessor()
+    ttl = expiry_time - current_time
+    driver_session_key = f"driver_session:{driver.driver_id}"
+
+    # delete previous opaque token if exists
+    if oauth_accessor.use_redis:
+        client = oauth_accessor.redis_manager.client
+        old = client.get(driver_session_key)
+        if old:
+            old = old.decode() if isinstance(old, bytes) else old
+            client.delete(f"opaque_token:{old}")
+            client.delete(f"opaque_token_metadata:{old}")
+        client.setex(driver_session_key, ttl, opaque_token)
+
+    oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl)
+
+    # Final JWT
+    access_token = create_access_token(
+        user_id=str(driver.driver_id),
+        tenant_id=str(tenant_id),
+        vendor_id=str(vendor_id),
+        opaque_token=opaque_token,
+        user_type="driver"
+    )
+
+    refresh_token = create_refresh_token(
+        user_id=str(driver.driver_id),
+        user_type="driver"
+    )
+
+    return ResponseWrapper.success(
+        message="Driver login successful",
+        data={
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "user": {
+                "driver": DriverResponse.model_validate(driver),
+                "tenant": TenantResponse.model_validate(tenant),
+                "roles": roles,
+                "permissions": all_permissions,
+            },
+        }
+    )
