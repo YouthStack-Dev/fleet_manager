@@ -1241,9 +1241,15 @@ async def driver_login_initial(
             "license_number": driver.license_number,
             "type": "driver_temp_login",
             "iat": int(time.time()),
-            "exp": int(time.time()) + 300,  # 5 min
+            "exp": int(time.time()) + 300,
         }
         temp_token = jwt.encode(temp_payload, SECRET_KEY, algorithm=ALGORITHM)
+
+        # STORE TEMP TOKEN (ONE TIME USE)
+        redis_client = Oauth2AsAccessor().redis_manager.client
+        temp_key = f"temp_driver_login:{driver.license_number}"
+        redis_client.setex(temp_key, 300, temp_token)
+
 
         return ResponseWrapper.success(
             message="Select vendor/tenant to continue",
@@ -1278,7 +1284,9 @@ async def driver_login_confirm(
     db: Session = Depends(get_db)
 ):
     try:
-        # Decode temp token
+        # =====================================================
+        # 1. Decode temp token
+        # =====================================================
         try:
             temp_payload = jwt.decode(temp_token, SECRET_KEY, algorithms=[ALGORITHM])
             if temp_payload.get("type") != "driver_temp_login":
@@ -1290,7 +1298,45 @@ async def driver_login_confirm(
                 detail=ResponseWrapper.error("Invalid or expired temporary token", "INVALID_TEMP_TOKEN")
             )
 
-        # Fetch the EXACT driver row for the selected vendor/tenant
+        # =====================================================
+        # 2. Validate temp token from Redis (ONE-TIME USE)
+        # =====================================================
+        redis_client = Oauth2AsAccessor().redis_manager.client
+        temp_key = f"temp_driver_login:{license_number}"
+        saved_temp = redis_client.get(temp_key)
+
+        if not saved_temp:
+            raise HTTPException(
+                status_code=401,
+                detail=ResponseWrapper.error(
+                    "Temporary token expired or already used",
+                    "TEMP_TOKEN_INVALID"
+                )
+            )
+
+        # ✔ Normalize type (bytes → str)
+        if isinstance(saved_temp, bytes):
+            saved_temp = saved_temp.decode()
+        else:
+            saved_temp = str(saved_temp)
+
+        # Compare stored temp token with input token
+        if saved_temp != temp_token:
+            raise HTTPException(
+                status_code=401,
+                detail=ResponseWrapper.error(
+                    "Temporary token mismatch",
+                    "TEMP_TOKEN_INVALID"
+                )
+            )
+
+        # ✔ DELETE TEMP TOKEN NOW — cannot reuse
+        redis_client.delete(temp_key)
+
+
+        # =====================================================
+        # 3. Fetch EXACT driver row for selected vendor/tenant
+        # =====================================================
         driver = (
             db.query(Driver)
             .join(Vendor, Vendor.vendor_id == Driver.vendor_id)
@@ -1312,15 +1358,22 @@ async def driver_login_confirm(
         vendor = driver.vendor
         tenant = vendor.tenant
 
+        # =====================================================
+        # 4. Active checks
+        # =====================================================
         if not driver.is_active or not vendor.is_active or not tenant.is_active:
             raise HTTPException(
                 status_code=403,
                 detail=ResponseWrapper.error("Account inactive", "ACCOUNT_INACTIVE")
             )
 
-        # Roles + permissions
+        # =====================================================
+        # 5. Roles + permissions
+        # =====================================================
         driver_with_roles, roles, all_permissions = driver_crud.get_driver_roles_and_permissions(
-            db, driver_id=driver.driver_id, tenant_id=tenant.tenant_id
+            db,
+            driver_id=driver.driver_id,
+            tenant_id=tenant.tenant_id
         )
 
         if not driver_with_roles:
@@ -1329,7 +1382,9 @@ async def driver_login_confirm(
                 detail=ResponseWrapper.error("Failed to fetch roles", "ROLE_FETCH_ERROR")
             )
 
-        # Opaque + final JWT
+        # =====================================================
+        # 6. Generate final JWT + Opaque token
+        # =====================================================
         current_time = int(time.time())
         expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
         opaque_token = secrets.token_hex(16)
@@ -1346,35 +1401,40 @@ async def driver_login_confirm(
             "exp": expiry_time,
         }
 
-        # SINGLE SESSION ENFORCEMENT (your original logic)
+        # =====================================================
+        # 7. SINGLE SESSION ENFORCEMENT
+        # =====================================================
         oauth_accessor = Oauth2AsAccessor()
         ttl = expiry_time - current_time
-        driver_session_key = f"driver_session:{driver.driver_id}"
-        metadata_prefix = "opaque_token_metadata:"
+
+        session_key = f"driver_session:{driver.driver_id}"
+        meta_prefix = "opaque_token_metadata:"
         basic_prefix = "opaque_token:"
 
         try:
             if oauth_accessor.use_redis:
-                redis_client = oauth_accessor.redis_manager.client
+                r = oauth_accessor.redis_manager.client
 
-                old_token = redis_client.get(driver_session_key)
+                # Delete previous active session
+                old_token = r.get(session_key)
                 if old_token:
                     old_token = old_token.decode() if isinstance(old_token, bytes) else old_token
-                    redis_client.delete(f"{metadata_prefix}{old_token}")
-                    redis_client.delete(f"{basic_prefix}{old_token}")
-                    redis_client.delete(old_token)
+                    r.delete(f"{meta_prefix}{old_token}")
+                    r.delete(f"{basic_prefix}{old_token}")
+                    r.delete(old_token)
 
+                # Store new session token
                 stored = oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl)
-                redis_client.setex(driver_session_key, int(ttl), opaque_token)
+                r.setex(session_key, ttl, opaque_token)
 
                 if not stored:
                     raise HTTPException(
                         status_code=500,
-                        detail=ResponseWrapper.error("Failed to store authentication token", "TOKEN_STORE_FAILED")
+                        detail=ResponseWrapper.error(
+                            "Failed to store authentication token",
+                            "TOKEN_STORE_FAILED"
+                        )
                     )
-            else:
-                # in-memory fallback
-                pass
 
         except Exception as e:
             raise HTTPException(
@@ -1382,7 +1442,9 @@ async def driver_login_confirm(
                 detail=ResponseWrapper.error("Login failed (session error)", "SESSION_ERROR", {"error": str(e)})
             )
 
-        # Final JWT
+        # =====================================================
+        # 8. Final Access/Refresh JWT generation
+        # =====================================================
         access_token = create_access_token(
             user_id=str(driver.driver_id),
             tenant_id=str(tenant.tenant_id),
@@ -1390,8 +1452,15 @@ async def driver_login_confirm(
             opaque_token=opaque_token,
             user_type="driver"
         )
-        refresh_token = create_refresh_token(user_id=str(driver.driver_id), user_type="driver")
 
+        refresh_token = create_refresh_token(
+            user_id=str(driver.driver_id),
+            user_type="driver"
+        )
+
+        # =====================================================
+        # 9. Response
+        # =====================================================
         return ResponseWrapper.success(
             message="Driver login successful",
             data={
