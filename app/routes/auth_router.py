@@ -1485,3 +1485,223 @@ async def driver_login_confirm(
     except Exception as e:
         db.rollback()
         raise handle_http_error(e)
+
+
+@router.post("/driver/switch-company")
+async def driver_switch_company(
+    tenant_id: str = Body(...),
+    vendor_id: int = Body(...),
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(validate_bearer_token())
+):
+    """
+    Allow an authenticated driver to switch to another company.
+    Requires current valid access token + new company selection.
+    Invalidates old token and generates new one for selected company.
+    """
+    try:
+        # =====================================================
+        # 1. Extract driver info from current token
+        # =====================================================
+        current_driver_id = int(token_data.get("user_id"))
+        current_tenant_id = token_data.get("tenant_id")
+        current_vendor_id = token_data.get("vendor_id")
+        user_type = token_data.get("user_type")
+
+        if user_type != "driver":
+            raise HTTPException(
+                status_code=403,
+                detail=ResponseWrapper.error("Only drivers can switch companies", "INVALID_USER_TYPE")
+            )
+
+        logger.info(f"Driver {current_driver_id} switching from company {current_vendor_id} to {vendor_id}")
+
+        # =====================================================
+        # 2. Fetch current driver to get license number
+        # =====================================================
+        current_driver = db.query(Driver).filter(
+            Driver.driver_id == current_driver_id
+        ).first()
+
+        if not current_driver:
+            raise HTTPException(
+                status_code=404,
+                detail=ResponseWrapper.error("Driver not found", "DRIVER_NOT_FOUND")
+            )
+
+        license_number = current_driver.license_number
+
+        # =====================================================
+        # 3. Fetch target driver record for new company
+        # =====================================================
+        driver = (
+            db.query(Driver)
+            .join(Vendor, Vendor.vendor_id == Driver.vendor_id)
+            .join(Tenant, Tenant.tenant_id == Vendor.tenant_id)
+            .filter(
+                Driver.license_number == license_number,
+                Vendor.vendor_id == vendor_id,
+                Tenant.tenant_id == tenant_id
+            )
+            .first()
+        )
+
+        if not driver:
+            raise HTTPException(
+                status_code=404,
+                detail=ResponseWrapper.error("Invalid company selection", "INVALID_ACCOUNT")
+            )
+
+        vendor = driver.vendor
+        tenant = vendor.tenant
+
+        # =====================================================
+        # 4. Active checks
+        # =====================================================
+        if not driver.is_active or not vendor.is_active or not tenant.is_active:
+            raise HTTPException(
+                status_code=403,
+                detail=ResponseWrapper.error("Account inactive", "ACCOUNT_INACTIVE")
+            )
+
+        # =====================================================
+        # 5. Roles + permissions for new company
+        # =====================================================
+        driver_with_roles, roles, all_permissions = driver_crud.get_driver_roles_and_permissions(
+            db,
+            driver_id=driver.driver_id,
+            tenant_id=tenant.tenant_id
+        )
+
+        if not driver_with_roles:
+            raise HTTPException(
+                status_code=500,
+                detail=ResponseWrapper.error("Failed to fetch roles", "ROLE_FETCH_ERROR")
+            )
+
+        # =====================================================
+        # 6. Generate NEW token for new company
+        # =====================================================
+        current_time = int(time.time())
+        expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
+        opaque_token = secrets.token_hex(16)
+
+        token_payload = {
+            "user_id": str(driver.driver_id),
+            "tenant_id": str(tenant.tenant_id),
+            "vendor_id": str(vendor.vendor_id),
+            "opaque_token": opaque_token,
+            "roles": roles,
+            "permissions": all_permissions,
+            "user_type": "driver",
+            "iat": current_time,
+            "exp": expiry_time,
+        }
+
+        # =====================================================
+        # 7. SINGLE SESSION ENFORCEMENT - Delete old session
+        # =====================================================
+        oauth_accessor = Oauth2AsAccessor()
+        ttl = expiry_time - current_time
+
+        session_key = f"driver_session:{driver.driver_id}"
+        meta_prefix = "opaque_token_metadata:"
+        basic_prefix = "opaque_token:"
+
+        try:
+            if oauth_accessor.use_redis:
+                r = oauth_accessor.redis_manager.client
+
+                # Delete previous active session from OLD company
+                old_token = r.get(session_key)
+                if old_token:
+                    old_token = old_token.decode() if isinstance(old_token, bytes) else old_token
+                    r.delete(f"{meta_prefix}{old_token}")
+                    r.delete(f"{basic_prefix}{old_token}")
+                    r.delete(old_token)
+                    logger.info(f"Invalidated previous session for driver {driver.driver_id}")
+
+                # Store new session token for NEW company
+                stored = oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl)
+                r.setex(session_key, ttl, opaque_token)
+
+                if not stored:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=ResponseWrapper.error(
+                            "Failed to store authentication token",
+                            "TOKEN_STORE_FAILED"
+                        )
+                    )
+
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=ResponseWrapper.error("Switch failed (session error)", "SESSION_ERROR", {"error": str(e)})
+            )
+
+        # =====================================================
+        # 8. UPDATE last-used company to new selection
+        # =====================================================
+        try:
+            last_company_key = f"driver_last_company:{license_number}"
+            last_company_value = f"{vendor.vendor_id}:{tenant.tenant_id}"
+            redis_client = oauth_accessor.redis_manager.client
+            redis_client.setex(last_company_key, 30 * 24 * 3600, last_company_value)
+            logger.info(f"Updated last company for driver {license_number}: {last_company_value}")
+        except Exception as e:
+            logger.warning(f"Failed to update last company for driver {license_number}: {e}")
+
+        # =====================================================
+        # 9. Generate NEW access/refresh tokens
+        # =====================================================
+        access_token = create_access_token(
+            user_id=str(driver.driver_id),
+            tenant_id=str(tenant.tenant_id),
+            vendor_id=str(vendor.vendor_id),
+            opaque_token=opaque_token,
+            user_type="driver"
+        )
+
+        refresh_token = create_refresh_token(
+            user_id=str(driver.driver_id),
+            user_type="driver"
+        )
+
+        # =====================================================
+        # 10. Response
+        # =====================================================
+        logger.info(f"🔄 Driver {driver.driver_id} switched to company {vendor.vendor_id} ({tenant.tenant_id})")
+        
+        return ResponseWrapper.success(
+            message="Company switched successfully",
+            data={
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "token_type": "bearer",
+                "user": {
+                    "driver": DriverResponse.model_validate(driver),
+                    "tenant": TenantResponse.model_validate(tenant),
+                    "roles": roles,
+                    "permissions": all_permissions,
+                },
+            }
+        )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as e:
+        db.rollback()
+        raise handle_db_error(e)
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Company switch failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=ResponseWrapper.error(
+                message="Company switch failed due to server error",
+                error_code="SERVER_ERROR",
+                details={"error": str(e)}
+            )
+        )
