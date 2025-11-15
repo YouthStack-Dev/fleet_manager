@@ -446,6 +446,7 @@ async def get_all_routes(
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     shift_id: Optional[int] = Query(None, description="Filter by shift ID"),
     booking_date: Optional[date] = Query(None, description="Filter by booking date"),
+    status: Optional[RouteManagementStatusEnum] = Query(None, description="Filter by route status (e.g. PLANNED,VENDOR_ASSIGNED,DRIVER_ASSIGNED)"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["route.read"], check_tenant=True)),
 ):
@@ -542,6 +543,10 @@ async def get_all_routes(
             logger.info(f"[get_all_routes] Applying vendor filter: {vendor_id}")
             routes_q = routes_q.filter(RouteManagement.assigned_vendor_id == vendor_id)
 
+        # Apply status filter if provided
+        if status:
+            logger.info(f"[get_all_routes] Applying status filter: {status}")
+            routes_q = routes_q.filter(RouteManagement.status == status)
 
         if shift_id or booking_date:
             routes_q = (
