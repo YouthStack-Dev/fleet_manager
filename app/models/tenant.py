@@ -22,6 +22,7 @@ class Tenant(Base):
     bookings = relationship("Booking", back_populates="tenant", cascade="all, delete-orphan")
     # policy = relationship("Policy", back_populates="tenant", cascade="all, delete-orphan")
     cutoff = relationship("Cutoff", back_populates="tenant", uselist=False, cascade="all, delete-orphan")
+    drivers = relationship("Driver", back_populates="tenant")
 
     # ✅ One-to-many Tenant → Vendor
     vendors = relationship("Vendor", back_populates="tenant", cascade="all, delete-orphan")
