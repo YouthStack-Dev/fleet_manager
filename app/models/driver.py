@@ -19,16 +19,20 @@ class VerificationStatusEnum(str, PyEnum):
 class Driver(Base):
     __tablename__ = "drivers"
     __table_args__ = (
-        UniqueConstraint("vendor_id", "email", name="uq_vendor_driver_email"),
-        UniqueConstraint("vendor_id", "phone", name="uq_vendor_driver_phone"),
-        UniqueConstraint("vendor_id", "badge_number", name="uq_vendor_driver_badge"),
-        UniqueConstraint("vendor_id", "license_number", name="uq_vendor_driver_license"),
-        UniqueConstraint("vendor_id", "code", name="uq_vendor_driver_code"),
-        UniqueConstraint("vendor_id", "alt_govt_id_number", name="uq_vendor_driver_alt_govt_id"),
+        UniqueConstraint("tenant_id", "email"),
+        UniqueConstraint("tenant_id",  "phone"),
+        UniqueConstraint("tenant_id", "license_number"),
+        UniqueConstraint("tenant_id", "badge_number"),
+        UniqueConstraint("vendor_id", "code", name="uq_driver_code_per_vendor"),
+        UniqueConstraint("tenant_id", "alt_govt_id_number"),
         {"extend_existing": True},
     )
 
     driver_id = Column(Integer, primary_key=True, index=True)
+
+    # NEW COLUMN: tenant_id
+    tenant_id = Column(String(50), ForeignKey("tenants.tenant_id", ondelete="CASCADE"), nullable=False)
+
     vendor_id = Column(Integer, ForeignKey("vendors.vendor_id", ondelete="CASCADE"), nullable=False)
     role_id = Column(Integer, ForeignKey("iam_roles.role_id", ondelete="CASCADE"), nullable=False)
     # Personal info
@@ -90,6 +94,7 @@ class Driver(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
     # Relationships
-    vendor = relationship("app.models.vendor.Vendor", back_populates="drivers")
-    vehicles = relationship("app.models.vehicle.Vehicle", back_populates="driver")
+    tenant = relationship("Tenant", back_populates="drivers")
+    vendor = relationship("Vendor", back_populates="drivers")
+    vehicles = relationship("Vehicle", back_populates="driver")
     role = relationship("Role", back_populates="drivers")

@@ -80,6 +80,7 @@ class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
         if role_id is None:
             raise ValueError("System role 'Driver' not found in DB")
         db_obj = Driver(
+            tenant_id=vendor_exists.tenant_id,
             vendor_id=vendor_id,
             role_id=role_id,
             name=obj_in.name.strip(),
