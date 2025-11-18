@@ -1342,6 +1342,19 @@ async def merge_routes(
                 estimated_distance=b["estimated_distance_km"]
             ))
 
+        # Update all merged bookings to SCHEDULED (if they are in REQUEST)
+        db.query(Booking).filter(
+            Booking.booking_id.in_(all_booking_ids),
+            Booking.status == BookingStatusEnum.REQUEST
+        ).update(
+            {
+                Booking.status: BookingStatusEnum.SCHEDULED,
+                Booking.updated_at: func.now(),
+            },
+            synchronize_session=False
+        )
+        logger.info(f"Updated {len(all_booking_ids)} bookings to SCHEDULED status in merged route")
+
         # ---- Delete old routes ----
         db.query(RouteManagementBooking).filter(
             RouteManagementBooking.route_id.in_(request.route_ids)
@@ -1550,6 +1563,10 @@ async def update_route(
 
 
         # --- Safely replace stops without deleting the route row (avoid StaleDataError) ---
+        # Get bookings that will be removed from this route
+        removed_booking_ids = current_booking_ids - set(all_booking_ids)
+        added_booking_ids = set(all_booking_ids) - current_booking_ids
+        
         # Delete existing route-booking mappings for this route_id
         db.query(RouteManagementBooking).filter(
             RouteManagementBooking.route_id == route_id
@@ -1565,6 +1582,35 @@ async def update_route(
                 estimated_distance=b.get("estimated_distance_km"),
                 estimated_drop_time=b.get("estimated_drop_time_formatted"),
             ))
+
+        # Update booking statuses
+        # 1. Set removed bookings back to REQUEST (if they were SCHEDULED)
+        if removed_booking_ids:
+            db.query(Booking).filter(
+                Booking.booking_id.in_(removed_booking_ids),
+                Booking.status == BookingStatusEnum.SCHEDULED
+            ).update(
+                {
+                    Booking.status: BookingStatusEnum.REQUEST,
+                    Booking.updated_at: func.now(),
+                },
+                synchronize_session=False
+            )
+            logger.info(f"Reverted {len(removed_booking_ids)} bookings to REQUEST status")
+
+        # 2. Set added bookings to SCHEDULED (if they are in REQUEST)
+        if added_booking_ids:
+            db.query(Booking).filter(
+                Booking.booking_id.in_(added_booking_ids),
+                Booking.status == BookingStatusEnum.REQUEST
+            ).update(
+                {
+                    Booking.status: BookingStatusEnum.SCHEDULED,
+                    Booking.updated_at: func.now(),
+                },
+                synchronize_session=False
+            )
+            logger.info(f"Updated {len(added_booking_ids)} bookings to SCHEDULED status")
 
         # Commit once so both route updates and new mappings are persisted together
         db.commit()
@@ -1731,6 +1777,21 @@ async def update_booking_order(
             ))
 
         db.add_all(new_mappings)
+        
+        # Update all bookings in this route to SCHEDULED (if they are in REQUEST)
+        booking_ids_in_route = [b.booking_id for b in ordered_bookings]
+        db.query(Booking).filter(
+            Booking.booking_id.in_(booking_ids_in_route),
+            Booking.status == BookingStatusEnum.REQUEST
+        ).update(
+            {
+                Booking.status: BookingStatusEnum.SCHEDULED,
+                Booking.updated_at: func.now(),
+            },
+            synchronize_session=False
+        )
+        logger.info(f"Updated {len(booking_ids_in_route)} bookings to SCHEDULED status after reordering")
+        
         db.commit()
 
         # Prepare response data
