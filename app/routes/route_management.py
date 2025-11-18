@@ -714,31 +714,19 @@ async def get_unrouted_bookings(
             f"Fetching unrouted bookings for tenant {tenant_id}, shift_id: {shift_id}, booking_date: {booking_date}"
         )
 
-        # ---- Get all booking_ids that are already mapped in any route ----
-        routed_booking_ids = (
-            db.query(RouteManagementBooking.booking_id)
-            .join(RouteManagement, RouteManagement.route_id == RouteManagementBooking.route_id)
-            .filter(
-                RouteManagement.tenant_id == tenant_id
-            )
-            .distinct()
-            .all()
-        )
-
-        routed_booking_ids = [b.booking_id for b in routed_booking_ids]
-
-        # ---- Fetch bookings NOT IN routed list ----
+        # ---- Fetch all bookings with REQUEST status ----
         unrouted_bookings = (
             db.query(Booking)
             .filter(
                 Booking.tenant_id == tenant_id,
                 Booking.shift_id == shift_id,
                 Booking.booking_date == booking_date,
-                Booking.status == BookingStatusEnum.REQUEST,
-                ~Booking.booking_id.in_(routed_booking_ids) if routed_booking_ids else True,
+                Booking.status == BookingStatusEnum.REQUEST
             )
             .all()
         )
+
+        logger.info(f"[unrouted_bookings] Found {len(unrouted_bookings)} bookings with REQUEST status")
 
         if not unrouted_bookings:
             logger.info(f"No unrouted bookings found for tenant {tenant_id}, shift {shift_id} on {booking_date}")
