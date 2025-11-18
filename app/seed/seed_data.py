@@ -109,6 +109,9 @@ def seed_iam(db: Session):
         "permissions",
         "policy",
         "role",
+        "route_merge",
+        "route_vendor_assignment",
+        "route_vehicle_assignment",
     ]
 
     actions = ["create", "read", "update", "delete"]
@@ -190,7 +193,10 @@ def seed_iam(db: Session):
             "RoutebookingPolicy",
             "RoutePolicy",
             "ShiftPolicy",
-            "WeekoffconfigPolicy"
+            "WeekoffconfigPolicy",
+            "RouteMergePolicy",
+            "RouteVendorAssignmentPolicy",
+            "RouteVehicleAssignmentPolicy",
         ],
         "Driver": ["AppdriverPolicy"],
         "VendorAdmin": [

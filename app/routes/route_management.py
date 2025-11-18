@@ -758,7 +758,7 @@ async def assign_vendor_to_route(
     vendor_id: int = Query(..., description="Vendor ID to assign"),
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["route.update"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["route_vendor_assignment.update", "route_vendor_assignment.create", "route_vendor_assignment.delete", "route_vendor_assignment.read"], check_tenant=True))
 ):
     """
     Assign a vendor to a specific route.
@@ -858,7 +858,7 @@ async def assign_vehicle_to_route(
     route_id: int = Query(..., description="Route ID"),
     vehicle_id: int = Query(..., description="Vehicle ID to assign"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["route.update"], check_tenant=True)),
+    user_data=Depends(PermissionChecker(["route_vehicle_assignment.update", "route_vehicle_assignment.create", "route_vehicle_assignment.delete", "route_vehicle_assignment.read"], check_tenant=True)),
 ):
     """
     Assign a vehicle (and implicitly driver) to a route.
@@ -1200,7 +1200,7 @@ async def merge_routes(
     request: MergeRoutesRequest,
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["route.create"], check_tenant=True)),
+    user_data=Depends(PermissionChecker(["route_merge.create", "route_merge.read", "route_merge.update", "route_merge.delete"], check_tenant=True)),
 ):
     """
     Merge multiple routes into a single optimized route.
