@@ -418,7 +418,9 @@ async def export_bookings_report(
             output,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={
-                "Content-Disposition": f'attachment; filename="{filename}"'
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "Access-Control-Expose-Headers": "Content-Disposition"
             }
         )
 
