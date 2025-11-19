@@ -653,7 +653,7 @@ def get_file(
     """
     try:
         user_type = user_data.get("user_type")
-        token_vendor_id = int(user_data.get("vendor_id"))
+        token_vendor_id = user_data.get("vendor_id")
         user_id = user_data.get("user_id")
         
         print("Inside get file route")
@@ -667,9 +667,18 @@ def get_file(
                 detail=ResponseWrapper.error("File not found", "FILE_NOT_FOUND"),
             )
         
-        # For vendor users, validate they can access this file by checking if it belongs to their vehicles
+        # Validate file access based on user type
         if user_type == "vendor":
-            # Extract vendor_id from file path (format: vendor_{vendor_id}/vehicle_{rc_number}/...)
+            # Vendor users can only access files from their own vehicles
+            if token_vendor_id is None:
+                logger.warning(f"[FileAccess] Vendor user missing vendor_id in token")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error("Invalid vendor credentials", "FORBIDDEN"),
+                )
+            
+            token_vendor_id = int(token_vendor_id)
+            
             try:
                 path_parts = file_path.split("/")
                 if len(path_parts) >= 1 and path_parts[0].startswith("vendor_"):
@@ -685,7 +694,6 @@ def get_file(
                             detail=ResponseWrapper.error("You don't have permission to access this file", "FORBIDDEN"),
                         )
                 else:
-                    # If path doesn't follow expected format, deny access for vendor users
                     logger.warning(f"[FileAccess] Invalid file path format for vendor user: {file_path}")
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
@@ -697,6 +705,16 @@ def get_file(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=ResponseWrapper.error("Invalid file path format", "FORBIDDEN"),
                 )
+        elif user_type in {"admin", "employee"}:
+            # Admin and employee users can access any file
+            logger.info(f"[FileAccess] {user_type} user accessing file: {file_path}")
+        else:
+            # Other user types are not allowed
+            logger.warning(f"[FileAccess] Unauthorized user type attempting file access: {user_type}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error("You don't have permission to access files", "FORBIDDEN"),
+            )
         
         # Get full file URL
         file_url = storage_service.get_file_url(file_path)
