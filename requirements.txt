@@ -23,6 +23,7 @@ fsspec[s3,gcs,azure]>=2023.12.0
 numpy
 geopy
 scikit-learn
+openpyxl
 # fsspec with optional cloud storage backends
 # s3 - for AWS S3 and S3-compatible storage
 # gcs - for Google Cloud Storage  
