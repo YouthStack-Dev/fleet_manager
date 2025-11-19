@@ -14,6 +14,7 @@ from app.routes import (
     route_router,
     route_booking_router,
     weekoff_config_router,
+    reports_router,
     seed,
     # Include any additional routers here
 )
@@ -36,3 +37,4 @@ api_router.include_router(booking_router.router, prefix="/api")
 api_router.include_router(route_router.router, prefix="/api")
 api_router.include_router(route_booking_router.router, prefix="/api")
 api_router.include_router(weekoff_config_router.router, prefix="/api")
+api_router.include_router(reports_router.router, prefix="/api")
