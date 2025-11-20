@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_
+from sqlalchemy import and_
 from typing import Optional, List
 from datetime import datetime
 from app.models.audit_log import AuditLog
@@ -23,32 +23,6 @@ class CRUDAuditLog:
         """
         return db.query(AuditLog).filter(AuditLog.audit_id == audit_id).first()
 
-    def get_by_entity(
-        self, 
-        db: Session, 
-        *, 
-        entity_type: str, 
-        entity_id: str,
-        skip: int = 0,
-        limit: int = 100
-    ) -> List[AuditLog]:
-        """
-        Get all audit logs for a specific entity
-        """
-        return (
-            db.query(AuditLog)
-            .filter(
-                and_(
-                    AuditLog.entity_type == entity_type,
-                    AuditLog.entity_id == entity_id
-                )
-            )
-            .order_by(AuditLog.created_at.desc())
-            .offset(skip)
-            .limit(limit)
-            .all()
-        )
-
     def get_filtered(
         self,
         db: Session,
@@ -64,23 +38,11 @@ class CRUDAuditLog:
         # Apply filters
         conditions = []
         
-        if filters.entity_type:
-            conditions.append(AuditLog.entity_type == filters.entity_type)
-        
-        if filters.entity_id:
-            conditions.append(AuditLog.entity_id == filters.entity_id)
-        
-        if filters.action:
-            conditions.append(AuditLog.action == filters.action)
-        
-        if filters.performed_by_type:
-            conditions.append(AuditLog.performed_by_type == filters.performed_by_type)
-        
-        if filters.performed_by_id:
-            conditions.append(AuditLog.performed_by_id == filters.performed_by_id)
-        
         if filters.tenant_id:
             conditions.append(AuditLog.tenant_id == filters.tenant_id)
+        
+        if filters.module:
+            conditions.append(AuditLog.module == filters.module)
         
         if filters.start_date:
             conditions.append(AuditLog.created_at >= filters.start_date)
@@ -106,46 +68,26 @@ class CRUDAuditLog:
         
         return records, total_count
 
-    def get_by_performer(
+    def get_by_module(
         self,
         db: Session,
         *,
-        performed_by_type: str,
-        performed_by_id: int,
-        skip: int = 0,
-        limit: int = 100
-    ) -> List[AuditLog]:
-        """
-        Get all audit logs for a specific user (performer)
-        """
-        return (
-            db.query(AuditLog)
-            .filter(
-                and_(
-                    AuditLog.performed_by_type == performed_by_type,
-                    AuditLog.performed_by_id == performed_by_id
-                )
-            )
-            .order_by(AuditLog.created_at.desc())
-            .offset(skip)
-            .limit(limit)
-            .all()
-        )
-
-    def get_by_tenant(
-        self,
-        db: Session,
-        *,
+        module: str,
         tenant_id: str,
         skip: int = 0,
         limit: int = 100
     ) -> List[AuditLog]:
         """
-        Get all audit logs for a specific tenant
+        Get all audit logs for a specific module and tenant
         """
         return (
             db.query(AuditLog)
-            .filter(AuditLog.tenant_id == tenant_id)
+            .filter(
+                and_(
+                    AuditLog.module == module,
+                    AuditLog.tenant_id == tenant_id
+                )
+            )
             .order_by(AuditLog.created_at.desc())
             .offset(skip)
             .limit(limit)

@@ -15,6 +15,7 @@ from app.core.logging_config import get_logger
 from app.crud.tenant import tenant_crud
 from app.crud.vendor import vendor_crud
 from common_utils.auth.utils import hash_password
+from app.utils.audit_helper import log_audit
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/vendors", tags=["vendors"])

@@ -12,7 +12,7 @@ from app.models.shift import Shift
 from app.models.booking import Booking
 from app.models.weekoff_config import WeekoffConfig
 from app.models.cutoff import Cutoff
-from app.models.audit_log import AuditLog, ActionEnum, EntityTypeEnum
+from app.models.audit_log import AuditLog
 
 # IAM models
 from app.models.iam.permission import Permission

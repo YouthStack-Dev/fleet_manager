@@ -1,14 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from typing import Optional, List
-from datetime import datetime
+from typing import Optional
 from app.database.session import get_db
-from app.schemas.audit_log import (
-    AuditLogResponse, 
-    AuditLogFilter, 
-    EntityTypeEnum, 
-    ActionEnum
-)
+from app.schemas.audit_log import AuditLogResponse, AuditLogFilter
 from app.crud.audit_log import audit_log
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
@@ -32,7 +26,6 @@ def get_audit_by_module(
     Get all audit logs for a specific module (employee, driver, vehicle, etc.)
     
     Automatically filters by tenant_id from user's token.
-    Returns all actions (CREATE, UPDATE, DELETE, etc.) for that module.
     
     Example: GET /api/audit-logs/module/employee
     """
@@ -40,8 +33,8 @@ def get_audit_by_module(
         user_type = user_data.get("user_type")
         token_tenant_id = user_data.get("tenant_id")
 
-        # 🚫 Vendors/Drivers forbidden
-        if user_type in {"driver"}:
+        # 🚫 Drivers forbidden
+        if user_type == "driver":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
@@ -50,25 +43,12 @@ def get_audit_by_module(
                 ),
             )
 
-        # Map module name to entity type
-        module_mapping = {
-            "employee": EntityTypeEnum.EMPLOYEE,
-            "admin": EntityTypeEnum.ADMIN,
-            "driver": EntityTypeEnum.DRIVER,
-            "vehicle": EntityTypeEnum.VEHICLE,
-            "vendor": EntityTypeEnum.VENDOR,
-            "vendor_user": EntityTypeEnum.VENDOR_USER,
-            "booking": EntityTypeEnum.BOOKING,
-            "team": EntityTypeEnum.TEAM,
-            "tenant": EntityTypeEnum.TENANT,
-            "shift": EntityTypeEnum.SHIFT,
-            "cutoff": EntityTypeEnum.CUTOFF,
-            "vehicle_type": EntityTypeEnum.VEHICLE_TYPE,
-            "weekoff_config": EntityTypeEnum.WEEKOFF_CONFIG,
-        }
-
-        entity_type = module_mapping.get(module_name.lower())
-        if not entity_type:
+        # Validate module name
+        allowed_modules = [
+            "employee", "admin", "driver", "vehicle", "vendor", "vendor_user",
+            "booking", "team", "tenant", "shift", "cutoff", "vehicle_type", "weekoff_config"
+        ]
+        if module_name.lower() not in allowed_modules:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ResponseWrapper.error(
@@ -116,9 +96,9 @@ def get_audit_by_module(
                     ),
                 )
 
-        # Create filter with entity type and tenant
+        # Create filter with module and tenant
         filters = AuditLogFilter(
-            entity_type=entity_type,
+            module=module_name.lower(),
             tenant_id=tenant_filter,
             page=page,
             page_size=page_size

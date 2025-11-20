@@ -14,8 +14,7 @@ from app.crud.team import team_crud
 from app.crud.tenant import tenant_crud
 from sqlalchemy.exc import SQLAlchemyError
 from app.core.logging_config import get_logger
-from app.services.audit_service import audit_service
-from app.models.audit_log import EntityTypeEnum, ActionEnum
+from app.utils.audit_helper import log_audit
 logger = get_logger(__name__)
 router = APIRouter(prefix="/employees", tags=["employees"])
 
@@ -122,30 +121,8 @@ def create_employee(
 
         # 🔍 Audit Log: Employee Creation
         try:
-            # Fetch user details from database
-            user_id = user_data.get("user_id")
-            user_name = "Unknown"
-            user_email = None
-            
-            if user_type == "admin":
-                from app.models.admin import Admin
-                user_obj = db.query(Admin).filter(Admin.admin_id == user_id).first()
-                if user_obj:
-                    user_name = user_obj.name
-                    user_email = user_obj.email
-            elif user_type == "employee":
-                user_obj = db.query(Employee).filter(Employee.employee_id == user_id).first()
-                if user_obj:
-                    user_name = user_obj.name
-                    user_email = user_obj.email
-            
-            performed_by = {
-                "type": user_type,
-                "id": user_id,
-                "name": user_name,
-                "email": user_email
-            }
             employee_data_for_audit = {
+                "employee_id": db_employee.employee_id,
                 "name": db_employee.name,
                 "email": db_employee.email,
                 "phone": db_employee.phone,
@@ -153,15 +130,16 @@ def create_employee(
                 "team_id": db_employee.team_id,
                 "is_active": db_employee.is_active
             }
-            audit_service.log_employee_created(
+            log_audit(
                 db=db,
-                employee_id=db_employee.employee_id,
-                employee_data=employee_data_for_audit,
-                performed_by=performed_by,
-                request=request,
-                tenant_id=tenant_id
+                tenant_id=tenant_id,
+                module="employee",
+                action="CREATE",
+                user_data=user_data,
+                description=f"Created employee '{db_employee.name}' ({db_employee.email})",
+                new_values=employee_data_for_audit,
+                request=request
             )
-            db.commit()
         except Exception as audit_error:
             logger.error(f"Failed to create audit log for employee creation: {str(audit_error)}")
 
@@ -473,46 +451,21 @@ def update_employee(
 
         # 🔍 Audit Log: Employee Update
         try:
-            # Fetch user details from database
-            user_id = user_data.get("user_id")
-            user_name = "Unknown"
-            user_email = None
+            # Build description with changed fields
+            changed_fields = list(update_data.keys())
+            fields_str = ", ".join(changed_fields) if changed_fields else "details"
             
-            if user_type == "admin":
-                from app.models.admin import Admin
-                admin_user = db.query(Admin).filter(Admin.admin_id == user_id).first()
-                if admin_user:
-                    user_name = admin_user.name
-                    user_email = admin_user.email
-                else:
-                    logger.warning(f"Admin user with ID {user_id} not found in database")
-            elif user_type == "employee":
-                emp_user = db.query(Employee).filter(Employee.employee_id == user_id).first()
-                if emp_user:
-                    user_name = emp_user.name
-                    user_email = emp_user.email
-                else:
-                    logger.warning(f"Employee user with ID {user_id} not found in database")
-            
-            performed_by = {
-                "type": user_type,
-                "id": user_id,
-                "name": user_name,
-                "email": user_email
-            }
-            
-            # Log the audit trail
-            audit_service.log_employee_updated(
+            log_audit(
                 db=db,
-                employee_id=employee_id,
-                old_data=old_values,
-                new_data=new_values,
-                performed_by=performed_by,
-                request=request,
-                tenant_id=db_employee.tenant_id
+                tenant_id=db_employee.tenant_id,
+                module="employee",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Updated employee '{db_employee.name}' - changed fields: {fields_str}",
+                new_values={"old": old_values, "new": new_values},
+                request=request
             )
-            db.commit()
-            logger.info(f"Audit log created for employee update by {user_name} ({user_type})")
+            logger.info(f"Audit log created for employee update")
         except Exception as audit_error:
             logger.error(f"Failed to create audit log for employee update: {str(audit_error)}", exc_info=True)
 
@@ -603,43 +556,17 @@ def toggle_employee_status(
 
         # 🔍 Audit Log: Status Toggle
         try:
-            # Fetch user details from database
-            user_id = user_data.get("user_id")
-            user_name = "Unknown"
-            user_email = None
-            
-            if user_type == "admin":
-                from app.models.admin import Admin
-                user_obj = db.query(Admin).filter(Admin.admin_id == user_id).first()
-                if user_obj:
-                    user_name = user_obj.name
-                    user_email = user_obj.email
-            elif user_type == "employee":
-                user_obj = db.query(Employee).filter(Employee.employee_id == user_id).first()
-                if user_obj:
-                    user_name = user_obj.name
-                    user_email = user_obj.email
-            
-            performed_by = {
-                "type": user_type,
-                "id": user_id,
-                "name": user_name,
-                "email": user_email
-            }
-            description = f"{performed_by.get('name')} ({performed_by.get('email')}) toggled employee status to {'active' if db_employee.is_active else 'inactive'}"
-            audit_service.log_action(
+            status_text = 'active' if db_employee.is_active else 'inactive'
+            log_audit(
                 db=db,
-                entity_type=EntityTypeEnum.EMPLOYEE,
-                entity_id=employee_id,
-                action=ActionEnum.UPDATE,
-                performed_by=performed_by,
-                old_values=None,
-                new_values=None,
-                description=description,
-                request=request,
-                tenant_id=db_employee.tenant_id
+                tenant_id=db_employee.tenant_id,
+                module="employee",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Toggled employee '{db_employee.name}' status to {status_text}",
+                new_values={"old_status": old_status, "new_status": db_employee.is_active},
+                request=request
             )
-            db.commit()
         except Exception as audit_error:
             logger.error(f"Failed to create audit log for status toggle: {str(audit_error)}")
 

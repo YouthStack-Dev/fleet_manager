@@ -2,7 +2,7 @@ from datetime import date
 from app.models.vendor import Vendor
 from app.utils.validition import validate_future_dates
 from common_utils.auth.utils import hash_password
-from fastapi import APIRouter, Depends, UploadFile, Form, HTTPException, status , Query
+from fastapi import APIRouter, Depends, UploadFile, Form, HTTPException, status , Query, Request
 from sqlalchemy.orm import Session
 from typing import Optional
 import io
@@ -20,6 +20,7 @@ from app.core.logging_config import get_logger
 from app.services.storage_service import storage_service
 from app.firebase.driver_location import push_driver_location_to_firebase
 from fastapi.encoders import jsonable_encoder
+from app.utils.audit_helper import log_audit
 logger = get_logger(__name__)
 router = APIRouter(prefix="/drivers", tags=["drivers"])
 
@@ -114,7 +115,7 @@ def validate_vendor_and_tenant(db: Session, vendor_id: int, user_data: dict):
 
 @router.post("/create", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_driver(
-
+    request: Request,
     vendor_id: Optional[int] = Form(None),
     name: str = Form(...),
     code: str = Form(...),
@@ -311,6 +312,21 @@ async def create_driver(
         except Exception as firebase_error:
             logger.error(f"⚠️ Firebase push failed for driver {driver_code}: {str(firebase_error)}")
             # Continue - don't fail the entire operation if Firebase push fails
+
+        # 🔍 Audit Log: Driver Creation
+        try:
+            log_audit(
+                db=db,
+                tenant_id=db_obj.vendor.tenant_id if db_obj.vendor else None,
+                module="driver",
+                action="CREATE",
+                user_data=user_data,
+                description=f"Created driver '{name}' with code '{driver_code}'",
+                new_values={"name": name, "code": driver_code, "vendor_id": vendor_id, "driver_id": db_obj.driver_id},
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for driver creation: {str(audit_error)}")
 
         logger.info(f"✅ Driver '{driver_code}' created successfully (ID={db_obj.driver_id})")
         return ResponseWrapper.success(

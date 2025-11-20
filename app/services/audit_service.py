@@ -1,170 +1,105 @@
 from sqlalchemy.orm import Session
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any
 from fastapi import Request
-from app.models.audit_log import AuditLog, ActionEnum, EntityTypeEnum
+from datetime import datetime
+from app.models.audit_log import AuditLog
 from app.schemas.audit_log import AuditLogCreate
 from app.crud.audit_log import audit_log
 
 
 class AuditService:
     """
-    Service for easy audit logging across the application
+    Simplified audit service - stores all data in JSON
     """
     
     @staticmethod
-    def log_action(
+    def log_audit(
         db: Session,
-        entity_type: EntityTypeEnum,
-        entity_id: Union[str, int],
-        action: ActionEnum,
-        performed_by: Dict[str, Any],
-        old_values: Optional[Dict[str, Any]] = None,
-        new_values: Optional[Dict[str, Any]] = None,
+        tenant_id: str,
+        module: str,
+        action: str,
+        user_type: str,
+        user_id: int,
+        user_name: str,
+        user_email: Optional[str] = None,
         description: Optional[str] = None,
-        request: Optional[Request] = None,
-        tenant_id: Optional[str] = None
+        new_values: Optional[Dict[str, Any]] = None,
+        request: Optional[Request] = None
     ) -> AuditLog:
         """
-        Log an audit action
+        Log an audit entry with all data in JSON
         
         Args:
             db: Database session
-            entity_type: Type of entity being audited (EMPLOYEE, ADMIN, etc.)
-            entity_id: ID of the entity
-            action: Action performed (CREATE, UPDATE, DELETE, etc.)
-            performed_by: Dict containing user info:
-                - type: 'admin', 'employee', 'vendor_user'
-                - id: User ID
-                - name: User name
-                - email: User email (optional)
-            old_values: Previous values (for UPDATE actions)
-            new_values: New values (for CREATE/UPDATE actions)
-            description: Additional description
-            request: FastAPI request object (to extract IP and user agent)
-            tenant_id: Tenant ID if applicable
+            tenant_id: Tenant ID
+            module: Module name ('employee', 'driver', 'vehicle', etc.)
+            action: Action performed ('CREATE', 'UPDATE', 'DELETE', etc.)
+            user_type: Type of user ('admin', 'employee', 'vendor')
+            user_id: User ID
+            user_name: User name
+            user_email: User email
+            description: Human-readable description
+            new_values: New values/details
+            request: FastAPI request for IP/user agent
         """
         
-        # Extract IP address and user agent from request if available
-        ip_address = None
-        user_agent = None
+        # Build audit_data JSON
+        audit_data_json = {
+            "action": action,
+            "user": {
+                "type": user_type,
+                "id": user_id,
+                "name": user_name,
+                "email": user_email
+            },
+            "description": description,
+            "new_values": new_values,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        # Add request info if available
         if request:
-            ip_address = request.client.host if request.client else None
-            user_agent = request.headers.get("user-agent", None)
+            audit_data_json["ip_address"] = request.client.host if request.client else None
+            audit_data_json["user_agent"] = request.headers.get("user-agent", None)
         
         # Create audit log entry
-        audit_data = AuditLogCreate(
-            entity_type=entity_type,
-            entity_id=str(entity_id),
-            action=action,
-            performed_by_type=performed_by.get("type"),
-            performed_by_id=performed_by.get("id"),
-            performed_by_name=performed_by.get("name"),
-            performed_by_email=performed_by.get("email"),
+        audit_log_data = AuditLogCreate(
             tenant_id=tenant_id,
-            old_values=old_values,
-            new_values=new_values,
-            description=description,
-            ip_address=ip_address,
-            user_agent=user_agent
+            module=module,
+            audit_data=audit_data_json
         )
         
-        return audit_log.create(db=db, audit_log_data=audit_data)
+        return audit_log.create(db=db, audit_log_data=audit_log_data)
     
     @staticmethod
-    def log_employee_created(
-        db: Session,
-        employee_id: int,
-        employee_data: Dict[str, Any],
-        performed_by: Dict[str, Any],
-        request: Optional[Request] = None,
-        tenant_id: Optional[str] = None
-    ) -> AuditLog:
+    def get_user_details(db: Session, user_type: str, user_id: int) -> Dict[str, Any]:
         """
-        Convenience method to log employee creation
+        Helper to fetch user details from database
+        Returns dict with name and email
         """
-        description = f"{performed_by.get('name')} ({performed_by.get('email')}) created employee '{employee_data.get('name')}'"
-        return AuditService.log_action(
-            db=db,
-            entity_type=EntityTypeEnum.EMPLOYEE,
-            entity_id=employee_id,
-            action=ActionEnum.CREATE,
-            performed_by=performed_by,
-            new_values=employee_data,
-            description=description,
-            request=request,
-            tenant_id=tenant_id
-        )
-    
-    @staticmethod
-    def log_employee_updated(
-        db: Session,
-        employee_id: int,
-        old_data: Dict[str, Any],
-        new_data: Dict[str, Any],
-        performed_by: Dict[str, Any],
-        request: Optional[Request] = None,
-        tenant_id: Optional[str] = None
-    ) -> AuditLog:
-        """
-        Convenience method to log employee update
-        """
-        # Build description with changed fields
-        changed_fields = list(new_data.keys()) if new_data else []
-        fields_str = ", ".join(changed_fields) if changed_fields else "details"
-        description = f"{performed_by.get('name')} ({performed_by.get('email')}) updated employee {fields_str}"
+        user_name = "Unknown"
+        user_email = None
         
-        return AuditService.log_action(
-            db=db,
-            entity_type=EntityTypeEnum.EMPLOYEE,
-            entity_id=employee_id,
-            action=ActionEnum.UPDATE,
-            performed_by=performed_by,
-            old_values=old_data,
-            new_values=new_data,
-            description=description,
-            request=request,
-            tenant_id=tenant_id
-        )
-    
-    @staticmethod
-    def log_employee_deleted(
-        db: Session,
-        employee_id: int,
-        employee_data: Dict[str, Any],
-        performed_by: Dict[str, Any],
-        request: Optional[Request] = None,
-        tenant_id: Optional[str] = None
-    ) -> AuditLog:
-        """
-        Convenience method to log employee deletion
-        """
-        description = f"{performed_by.get('name')} ({performed_by.get('email')}) deleted employee '{employee_data.get('name')}'"
-        return AuditService.log_action(
-            db=db,
-            entity_type=EntityTypeEnum.EMPLOYEE,
-            entity_id=employee_id,
-            action=ActionEnum.DELETE,
-            performed_by=performed_by,
-            old_values=None,  # Simplified - no JSON data
-            description=description,
-            request=request,
-            tenant_id=tenant_id
-        )
-    
-    @staticmethod
-    def sanitize_data(data: Dict[str, Any], fields_to_exclude: list = None) -> Dict[str, Any]:
-        """
-        Sanitize data before logging (remove sensitive fields like passwords)
-        """
-        if fields_to_exclude is None:
-            fields_to_exclude = ['password', 'token', 'secret', 'api_key']
+        if user_type == "admin":
+            from app.models.admin import Admin
+            user_obj = db.query(Admin).filter(Admin.admin_id == user_id).first()
+            if user_obj:
+                user_name = user_obj.name
+                user_email = user_obj.email
+        elif user_type == "employee":
+            from app.models.employee import Employee
+            user_obj = db.query(Employee).filter(Employee.employee_id == user_id).first()
+            if user_obj:
+                user_name = user_obj.name
+                user_email = user_obj.email
+        elif user_type == "vendor":
+            from app.models.vendor_user import VendorUser
+            user_obj = db.query(VendorUser).filter(VendorUser.vendor_user_id == user_id).first()
+            if user_obj:
+                user_name = user_obj.name
+                user_email = user_obj.email
         
-        sanitized = data.copy()
-        for field in fields_to_exclude:
-            if field in sanitized:
-                sanitized[field] = "***REDACTED***"
-        
-        return sanitized
+        return {"name": user_name, "email": user_email}
 
 
 audit_service = AuditService()
