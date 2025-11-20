@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query, Request
 from app.core.email_service import get_email_service
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -14,6 +14,8 @@ from app.crud.team import team_crud
 from app.crud.tenant import tenant_crud
 from sqlalchemy.exc import SQLAlchemyError
 from app.core.logging_config import get_logger
+from app.services.audit_service import audit_service
+from app.models.audit_log import EntityTypeEnum, ActionEnum
 logger = get_logger(__name__)
 router = APIRouter(prefix="/employees", tags=["employees"])
 
@@ -21,6 +23,7 @@ router = APIRouter(prefix="/employees", tags=["employees"])
 def create_employee(
     employee: EmployeeCreate,
     background_tasks: BackgroundTasks,
+    request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["employee.create"], check_tenant=True)),
 ):
@@ -116,6 +119,51 @@ def create_employee(
         )
         db.commit()
         db.refresh(db_employee)
+
+        # 🔍 Audit Log: Employee Creation
+        try:
+            # Fetch user details from database
+            user_id = user_data.get("user_id")
+            user_name = "Unknown"
+            user_email = None
+            
+            if user_type == "admin":
+                from app.models.admin import Admin
+                user_obj = db.query(Admin).filter(Admin.admin_id == user_id).first()
+                if user_obj:
+                    user_name = user_obj.name
+                    user_email = user_obj.email
+            elif user_type == "employee":
+                user_obj = db.query(Employee).filter(Employee.employee_id == user_id).first()
+                if user_obj:
+                    user_name = user_obj.name
+                    user_email = user_obj.email
+            
+            performed_by = {
+                "type": user_type,
+                "id": user_id,
+                "name": user_name,
+                "email": user_email
+            }
+            employee_data_for_audit = {
+                "name": db_employee.name,
+                "email": db_employee.email,
+                "phone": db_employee.phone,
+                "employee_code": db_employee.employee_code,
+                "team_id": db_employee.team_id,
+                "is_active": db_employee.is_active
+            }
+            audit_service.log_employee_created(
+                db=db,
+                employee_id=db_employee.employee_id,
+                employee_data=employee_data_for_audit,
+                performed_by=performed_by,
+                request=request,
+                tenant_id=tenant_id
+            )
+            db.commit()
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for employee creation: {str(audit_error)}")
 
         logger.info(
             f"Employee created successfully under tenant {tenant_id}: "
@@ -319,6 +367,7 @@ def read_employee(
 def update_employee(
     employee_id: int,
     employee_update: EmployeeUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["employee.update"], check_tenant=True)),
 ):
@@ -353,6 +402,15 @@ def update_employee(
                 ),
             )
 
+        # 🔍 Capture old values before update
+        old_values = {}
+        update_data = employee_update.dict(exclude_unset=True)
+        for key in update_data.keys():
+            if key != "password":  # Don't log password
+                old_val = getattr(db_employee, key, None)
+                if old_val is not None:
+                    old_values[key] = str(old_val) if not isinstance(old_val, (str, int, float, bool)) else old_val
+
         # 🔒 Tenant enforcement
         if user_type == "employee":
             if db_employee.tenant_id != token_tenant_id:
@@ -382,9 +440,7 @@ def update_employee(
                     ),
                 )
 
-        # Apply updates
-        update_data = employee_update.dict(exclude_unset=True)
-
+        # Apply updates (already captured above)
         if "password" in update_data:
             update_data["password"] = hash_password(update_data["password"])
 
@@ -407,6 +463,53 @@ def update_employee(
         db.commit()
         db.refresh(db_employee)
 
+        # 🔍 Capture new values after update
+        new_values = {}
+        for key in update_data.keys():
+            if key != "password":  # Don't log password
+                new_val = getattr(db_employee, key, None)
+                if new_val is not None:
+                    new_values[key] = str(new_val) if not isinstance(new_val, (str, int, float, bool)) else new_val
+
+        # 🔍 Audit Log: Employee Update
+        try:
+            # Fetch user details from database
+            user_id = user_data.get("user_id")
+            user_name = "Unknown"
+            user_email = None
+            
+            if user_type == "admin":
+                from app.models.admin import Admin
+                user_obj = db.query(Admin).filter(Admin.admin_id == user_id).first()
+                if user_obj:
+                    user_name = user_obj.name
+                    user_email = user_obj.email
+            elif user_type == "employee":
+                user_obj = db.query(Employee).filter(Employee.employee_id == user_id).first()
+                if user_obj:
+                    user_name = user_obj.name
+                    user_email = user_obj.email
+            
+            performed_by = {
+                "type": user_type,
+                "id": user_id,
+                "name": user_name,
+                "email": user_email
+            }
+            
+            audit_service.log_employee_updated(
+                db=db,
+                employee_id=employee_id,
+                old_data=old_values,
+                new_data=new_values,
+                performed_by=performed_by,
+                request=request,
+                tenant_id=db_employee.tenant_id
+            )
+            db.commit()
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for employee update: {str(audit_error)}")
+
         logger.info(
             f"Employee updated successfully: employee_id={employee_id}, tenant_id={db_employee.tenant_id}"
         )
@@ -427,6 +530,7 @@ def update_employee(
 @router.patch("/{employee_id}/toggle-status", status_code=status.HTTP_200_OK)
 def toggle_employee_status(
     employee_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["employee.update"], check_tenant=True)),
 ):
@@ -461,6 +565,9 @@ def toggle_employee_status(
                 ),
             )
 
+        # 🔍 Capture old status for audit
+        old_status = db_employee.is_active
+
         # 🔒 Tenant enforcement
         if user_type == "employee":
             if db_employee.tenant_id != token_tenant_id:
@@ -483,9 +590,52 @@ def toggle_employee_status(
                 )
 
         # 🚦 Toggle status
+        old_status = db_employee.is_active
         db_employee.is_active = not db_employee.is_active
         db.commit()
         db.refresh(db_employee)
+
+        # 🔍 Audit Log: Status Toggle
+        try:
+            # Fetch user details from database
+            user_id = user_data.get("user_id")
+            user_name = "Unknown"
+            user_email = None
+            
+            if user_type == "admin":
+                from app.models.admin import Admin
+                user_obj = db.query(Admin).filter(Admin.admin_id == user_id).first()
+                if user_obj:
+                    user_name = user_obj.name
+                    user_email = user_obj.email
+            elif user_type == "employee":
+                user_obj = db.query(Employee).filter(Employee.employee_id == user_id).first()
+                if user_obj:
+                    user_name = user_obj.name
+                    user_email = user_obj.email
+            
+            performed_by = {
+                "type": user_type,
+                "id": user_id,
+                "name": user_name,
+                "email": user_email
+            }
+            description = f"{performed_by.get('name')} ({performed_by.get('email')}) toggled employee status to {'active' if db_employee.is_active else 'inactive'}"
+            audit_service.log_action(
+                db=db,
+                entity_type=EntityTypeEnum.EMPLOYEE,
+                entity_id=employee_id,
+                action=ActionEnum.UPDATE,
+                performed_by=performed_by,
+                old_values=None,
+                new_values=None,
+                description=description,
+                request=request,
+                tenant_id=db_employee.tenant_id
+            )
+            db.commit()
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for status toggle: {str(audit_error)}")
 
         logger.info(
             f"Employee {employee_id} status toggled to "
