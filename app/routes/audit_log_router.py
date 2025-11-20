@@ -41,7 +41,7 @@ def get_audit_by_module(
         token_tenant_id = user_data.get("tenant_id")
 
         # 🚫 Vendors/Drivers forbidden
-        if user_type in {"vendor", "driver"}:
+        if user_type in {"driver"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(

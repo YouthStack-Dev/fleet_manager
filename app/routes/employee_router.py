@@ -480,15 +480,19 @@ def update_employee(
             
             if user_type == "admin":
                 from app.models.admin import Admin
-                user_obj = db.query(Admin).filter(Admin.admin_id == user_id).first()
-                if user_obj:
-                    user_name = user_obj.name
-                    user_email = user_obj.email
+                admin_user = db.query(Admin).filter(Admin.admin_id == user_id).first()
+                if admin_user:
+                    user_name = admin_user.name
+                    user_email = admin_user.email
+                else:
+                    logger.warning(f"Admin user with ID {user_id} not found in database")
             elif user_type == "employee":
-                user_obj = db.query(Employee).filter(Employee.employee_id == user_id).first()
-                if user_obj:
-                    user_name = user_obj.name
-                    user_email = user_obj.email
+                emp_user = db.query(Employee).filter(Employee.employee_id == user_id).first()
+                if emp_user:
+                    user_name = emp_user.name
+                    user_email = emp_user.email
+                else:
+                    logger.warning(f"Employee user with ID {user_id} not found in database")
             
             performed_by = {
                 "type": user_type,
@@ -497,6 +501,7 @@ def update_employee(
                 "email": user_email
             }
             
+            # Log the audit trail
             audit_service.log_employee_updated(
                 db=db,
                 employee_id=employee_id,
@@ -507,8 +512,9 @@ def update_employee(
                 tenant_id=db_employee.tenant_id
             )
             db.commit()
+            logger.info(f"Audit log created for employee update by {user_name} ({user_type})")
         except Exception as audit_error:
-            logger.error(f"Failed to create audit log for employee update: {str(audit_error)}")
+            logger.error(f"Failed to create audit log for employee update: {str(audit_error)}", exc_info=True)
 
         logger.info(
             f"Employee updated successfully: employee_id={employee_id}, tenant_id={db_employee.tenant_id}"
