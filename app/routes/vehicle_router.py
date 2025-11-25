@@ -2,7 +2,7 @@ from datetime import date
 from app.models.vendor import Vendor
 from app.utils.file_utils import file_size_validator
 from app.services.storage_service import storage_service
-from fastapi import APIRouter, Depends, HTTPException, status, Query , UploadFile, Form
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, Form, Request
 from fastapi.responses import FileResponse, StreamingResponse, Response
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -31,6 +31,7 @@ router = APIRouter(prefix="/vehicles", tags=["vehicles"])
 
 @router.post("/", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_vehicle(
+    request: Request,
     vehicle_type_id: int = Form(...),
     vendor_id: Optional[int] = Form(None),
     rc_number: str = Form(...),
@@ -160,6 +161,30 @@ async def create_vehicle(
         db_obj = vehicle_crud.create_with_vendor(db, vendor_id=vendor_id, obj_in=vehicle_in)
         db.commit()
         db.refresh(db_obj)
+
+        # 🔍 Audit Log: Vehicle Creation
+        try:
+            vehicle_data = {
+                "vehicle_id": db_obj.vehicle_id,
+                "rc_number": db_obj.rc_number,
+                "vehicle_type_id": db_obj.vehicle_type_id,
+                "vendor_id": db_obj.vendor_id,
+                "driver_id": db_obj.driver_id,
+                "rc_expiry_date": str(db_obj.rc_expiry_date) if db_obj.rc_expiry_date else None,
+                "is_active": db_obj.is_active
+            }
+            log_audit(
+                db=db,
+                tenant_id=db_obj.vendor.tenant_id if db_obj.vendor else None,
+                module="vehicle",
+                action="CREATE",
+                user_data=user_data,
+                description=f"Created vehicle '{db_obj.rc_number}' for vendor {vendor_id}",
+                new_values=vehicle_data,
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for vehicle creation: {str(audit_error)}")
 
         logger.info(
             f"Vehicle '{vehicle_in.rc_number}' created for vendor {vendor_id} by user {user_data.get('user_id')}"
@@ -330,6 +355,7 @@ def read_vehicles(
 @router.put("/{vehicle_id}", response_model=dict, status_code=status.HTTP_200_OK)
 async def update_vehicle(
     vehicle_id: int,
+    request: Request,
     vehicle_type_id: Optional[int] = Form(None),
     vendor_id: Optional[int] = Form(None),
     rc_number: Optional[str] = Form(None),
@@ -495,12 +521,48 @@ async def update_vehicle(
             "permit_expiry_date": permit_expiry_date,
             "password": password,
         }
+        
+        # 🔍 Capture old values before update
+        old_values = {}
+        for key, value in update_fields.items():
+            if value is not None and key != "password":
+                old_val = getattr(db_vehicle, key, None)
+                if old_val is not None:
+                    old_values[key] = str(old_val) if not isinstance(old_val, (str, int, float, bool)) else old_val
+        
         for key, value in update_fields.items():
             if value is not None:
                 setattr(db_vehicle, key, value)
 
         db.commit()
         db.refresh(db_vehicle)
+
+        # 🔍 Capture new values after update
+        new_values = {}
+        for key, value in update_fields.items():
+            if value is not None and key != "password":
+                new_val = getattr(db_vehicle, key, None)
+                if new_val is not None:
+                    new_values[key] = str(new_val) if not isinstance(new_val, (str, int, float, bool)) else new_val
+
+        # 🔍 Audit Log: Vehicle Update
+        try:
+            changed_fields = [k for k, v in update_fields.items() if v is not None]
+            fields_str = ", ".join(changed_fields) if changed_fields else "details"
+            
+            log_audit(
+                db=db,
+                tenant_id=db_vehicle.vendor.tenant_id if db_vehicle.vendor else None,
+                module="vehicle",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Updated vehicle '{db_vehicle.rc_number}' - changed fields: {fields_str}",
+                new_values={"old": old_values, "new": new_values},
+                request=request
+            )
+            logger.info(f"Audit log created for vehicle update")
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for vehicle update: {str(audit_error)}", exc_info=True)
 
         logger.info(f"Vehicle '{db_vehicle.rc_number}' updated by user {user_id}")
 
@@ -526,6 +588,7 @@ async def update_vehicle(
 def update_vehicle_status(
     vehicle_id: int,
     is_active: bool,
+    request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vehicle.update"], check_tenant=True)),
 ):
@@ -570,11 +633,29 @@ def update_vehicle_status(
             )
 
         # --- Update status ---
+        old_status = db_vehicle.is_active
         db_vehicle.is_active = is_active
         db.commit()
         db.refresh(db_vehicle)
 
         status_str = "activated" if is_active else "deactivated"
+        
+        # 🔍 Audit Log: Status Toggle
+        try:
+            status_text = 'active' if is_active else 'inactive'
+            log_audit(
+                db=db,
+                tenant_id=db_vehicle.vendor.tenant_id if db_vehicle.vendor else None,
+                module="vehicle",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Toggled vehicle '{db_vehicle.rc_number}' status to {status_text}",
+                new_values={"old_status": old_status, "new_status": is_active},
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for status toggle: {str(audit_error)}")
+        
         logger.info(f"[VehicleStatusUpdate] Vehicle ID={vehicle_id} {status_str} by user_id={user_id}")
 
         return ResponseWrapper.success(

@@ -2,7 +2,7 @@ from app.models.employee import Employee
 from app.models.team import Team
 from app.models.weekoff_config import WeekoffConfig
 from app.utils.pagination import paginate_query
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.crud.team import team_crud
@@ -259,6 +259,7 @@ def get_weekoffs_by_tenant(
 def update_weekoff_by_employee(
     employee_id: int,
     update_in: WeekoffConfigUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["weekoff-config.update"])),
 ):
@@ -318,6 +319,17 @@ def update_weekoff_by_employee(
         db_obj = weekoff_crud.ensure_weekoff_config(db, employee_id=employee_id)
         logger.debug(f"Existing weekoff config found for employee {employee_id}: weekoff_id={db_obj.weekoff_id}")
 
+        # 🔍 Capture old values before update
+        old_values = {
+            "monday": db_obj.monday,
+            "tuesday": db_obj.tuesday,
+            "wednesday": db_obj.wednesday,
+            "thursday": db_obj.thursday,
+            "friday": db_obj.friday,
+            "saturday": db_obj.saturday,
+            "sunday": db_obj.sunday
+        }
+
         # Update via CRUD
         db_obj = weekoff_crud.update_by_employee(db, employee_id=employee_id, obj_in=update_in)
         logger.info(f"Weekoff config updated for employee {employee_id}: {update_in.dict(exclude_unset=True)}")
@@ -325,6 +337,32 @@ def update_weekoff_by_employee(
         db.commit()
         db.refresh(db_obj)
         logger.info(f"Committed weekoff update for employee {employee_id}")
+
+        # 🔍 Capture new values after update
+        new_values = {
+            "monday": db_obj.monday,
+            "tuesday": db_obj.tuesday,
+            "wednesday": db_obj.wednesday,
+            "thursday": db_obj.thursday,
+            "friday": db_obj.friday,
+            "saturday": db_obj.saturday,
+            "sunday": db_obj.sunday
+        }
+
+        # 🔍 Audit Log: Weekoff Config Update
+        try:
+            log_audit(
+                db=db,
+                tenant_id=employee.tenant_id,
+                module="weekoff_config",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Updated weekoff config for employee '{employee.name}' (ID: {employee_id})",
+                new_values={"old": old_values, "new": new_values},
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for weekoff update: {str(audit_error)}")
 
         return ResponseWrapper.success(
             data={"weekoff_config": WeekoffConfigResponse.model_validate(db_obj, from_attributes=True)},
@@ -344,6 +382,7 @@ def update_weekoff_by_employee(
 def update_weekoff_by_team(
     team_id: int,
     update_in: WeekoffConfigUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["weekoff-config.update"])),
 ):
@@ -408,6 +447,26 @@ def update_weekoff_by_team(
             db.refresh(obj)
         logger.info(f"Committed bulk weekoff update for team {team_id}")
 
+        # 🔍 Audit Log: Team Weekoff Config Update
+        try:
+            log_audit(
+                db=db,
+                tenant_id=team.tenant_id,
+                module="weekoff_config",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Bulk updated weekoff configs for team '{team.team_name}' (ID: {team_id}) - {len(db_objs)} employees affected",
+                new_values={
+                    "team_id": team_id,
+                    "team_name": team.team_name,
+                    "employees_updated": len(db_objs),
+                    "changes": update_in.dict(exclude_unset=True)
+                },
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for team weekoff update: {str(audit_error)}")
+
         return ResponseWrapper.success(
             data={
                 "weekoff_configs": [
@@ -433,6 +492,7 @@ def update_weekoff_by_team(
 def update_weekoff_by_tenant(
     tenant_id: Optional[str],
     update_in: WeekoffConfigUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["weekoff-config.update"])),
 ):
@@ -489,6 +549,26 @@ def update_weekoff_by_tenant(
         for obj in db_objs:
             db.refresh(obj)
         logger.info(f"Committed bulk weekoff update for tenant {tenant_id}")
+
+        # 🔍 Audit Log: Tenant Weekoff Config Update
+        try:
+            log_audit(
+                db=db,
+                tenant_id=tenant_id,
+                module="weekoff_config",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Bulk updated weekoff configs for tenant '{tenant.company_name}' (ID: {tenant_id}) - {len(db_objs)} employees affected",
+                new_values={
+                    "tenant_id": tenant_id,
+                    "company_name": tenant.company_name,
+                    "employees_updated": len(db_objs),
+                    "changes": update_in.dict(exclude_unset=True)
+                },
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for tenant weekoff update: {str(audit_error)}")
 
         return ResponseWrapper.success(
             data={

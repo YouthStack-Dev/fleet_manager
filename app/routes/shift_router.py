@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from typing import Literal, Optional
@@ -12,6 +12,7 @@ from app.utils.pagination import paginate_query
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
+from app.utils.audit_helper import log_audit
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/shifts", tags=["shifts"])
@@ -20,6 +21,7 @@ router = APIRouter(prefix="/shifts", tags=["shifts"])
 @router.post("/", response_model=dict, status_code=status.HTTP_201_CREATED)
 def create_shift(
     shift_in: ShiftCreate,
+    request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["shift.create"], check_tenant=True)),
 ):
@@ -108,6 +110,30 @@ def create_shift(
         # commit/refresh
         db.commit()
         db.refresh(new_shift)
+
+        # 🔍 Audit Log: Shift Creation
+        try:
+            shift_data = {
+                "shift_id": new_shift.shift_id,
+                "shift_code": new_shift.shift_code,
+                "shift_name": new_shift.shift_name,
+                "log_type": new_shift.log_type,
+                "start_time": str(new_shift.start_time) if new_shift.start_time else None,
+                "end_time": str(new_shift.end_time) if new_shift.end_time else None,
+                "is_active": new_shift.is_active
+            }
+            log_audit(
+                db=db,
+                tenant_id=tenant_id,
+                module="shift",
+                action="CREATE",
+                user_data=user_data,
+                description=f"Created shift '{new_shift.shift_code}' ({new_shift.shift_name}) for tenant {tenant_id}",
+                new_values=shift_data,
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for shift creation: {str(audit_error)}")
 
         logger.info(f"Shift created for tenant {tenant_id}: {new_shift.shift_code} by user {user_data.get('user_id')}")
 
@@ -294,6 +320,7 @@ def read_shift(
 def update_shift(
     shift_id: int,
     shift_update: ShiftUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["shift.update"], check_tenant=True)),
 ):
@@ -344,11 +371,46 @@ def update_shift(
         # ---- Admin/Superadmin -> allowed ----
         # No tenant check needed, they can update any shift
 
+        # 🔍 Capture old values before update
+        old_values = {
+            "shift_code": db_shift.shift_code,
+            "shift_name": db_shift.shift_name,
+            "log_type": db_shift.log_type,
+            "start_time": str(db_shift.start_time) if db_shift.start_time else None,
+            "end_time": str(db_shift.end_time) if db_shift.end_time else None,
+            "is_active": db_shift.is_active
+        }
+
         # ---- Perform update ----
         db_shift = shift_crud.update(db, db_obj=db_shift, obj_in=shift_update)
 
         db.commit()
         db.refresh(db_shift)
+
+        # 🔍 Capture new values after update
+        new_values = {
+            "shift_code": db_shift.shift_code,
+            "shift_name": db_shift.shift_name,
+            "log_type": db_shift.log_type,
+            "start_time": str(db_shift.start_time) if db_shift.start_time else None,
+            "end_time": str(db_shift.end_time) if db_shift.end_time else None,
+            "is_active": db_shift.is_active
+        }
+
+        # 🔍 Audit Log: Shift Update
+        try:
+            log_audit(
+                db=db,
+                tenant_id=db_shift.tenant_id,
+                module="shift",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Updated shift '{db_shift.shift_code}' ({db_shift.shift_name})",
+                new_values={"old": old_values, "new": new_values},
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for shift update: {str(audit_error)}")
 
         logger.info(
             f"Shift {shift_id} updated by user {user_data.get('user_id')} ({user_type}), "
@@ -371,6 +433,7 @@ def update_shift(
 @router.patch("/{shift_id}/toggle-status", status_code=status.HTTP_200_OK)
 def toggle_shift_status(
     shift_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["shift.update"], check_tenant=True)),
 ):
@@ -418,9 +481,26 @@ def toggle_shift_status(
             )
 
         # ---- Toggle status ----
+        old_status = db_shift.is_active
         db_shift.is_active = not db_shift.is_active
         db.commit()
         db.refresh(db_shift)
+
+        # 🔍 Audit Log: Status Toggle
+        try:
+            status_text = 'active' if db_shift.is_active else 'inactive'
+            log_audit(
+                db=db,
+                tenant_id=db_shift.tenant_id,
+                module="shift",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Toggled shift '{db_shift.shift_code}' status to {status_text}",
+                new_values={"old_status": old_status, "new_status": db_shift.is_active},
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for shift status toggle: {str(audit_error)}")
 
         logger.info(
             f"Shift {shift_id} toggled to {'active' if db_shift.is_active else 'inactive'} "

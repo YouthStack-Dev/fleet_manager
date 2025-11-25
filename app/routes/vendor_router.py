@@ -1,5 +1,5 @@
 import json
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from typing import Optional
@@ -22,6 +22,7 @@ router = APIRouter(prefix="/vendors", tags=["vendors"])
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def create_vendor(
     vendor: VendorCreate,
+    request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.create"], check_tenant=False)),
 ):
@@ -137,6 +138,30 @@ def create_vendor(
         # --- Commit transaction ---
         db.commit()
         db.refresh(db_vendor)
+
+        # 🔍 Audit Log: Vendor Creation
+        try:
+            vendor_data_for_audit = {
+                "vendor_id": db_vendor.vendor_id,
+                "name": db_vendor.name,
+                "vendor_code": db_vendor.vendor_code,
+                "email": db_vendor.email,
+                "phone": db_vendor.phone,
+                "tenant_id": db_vendor.tenant_id,
+                "is_active": db_vendor.is_active
+            }
+            log_audit(
+                db=db,
+                tenant_id=db_vendor.tenant_id,
+                module="vendor",
+                action="CREATE",
+                user_data=user_data,
+                description=f"Created vendor '{db_vendor.name}' ({db_vendor.vendor_code})",
+                new_values=vendor_data_for_audit,
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for vendor creation: {str(audit_error)}")
 
         logger.info(f"Vendor creation completed: {db_vendor.vendor_id}")
 
@@ -395,6 +420,7 @@ def read_vendor(
 def update_vendor(
     vendor_id: int,
     vendor_update: VendorUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.update"], check_tenant=True))
 ):
@@ -472,12 +498,45 @@ def update_vendor(
                 ),
             )
 
+        # 🔍 Capture old values before update
+        old_values = {}
+        for key in update_data.keys():
+            old_val = getattr(db_vendor, key, None)
+            if old_val is not None:
+                old_values[key] = str(old_val) if not isinstance(old_val, (str, int, float, bool)) else old_val
+
         # Apply updates
         for key, value in update_data.items():
             setattr(db_vendor, key, value)
 
         db.commit()
         db.refresh(db_vendor)
+
+        # 🔍 Capture new values after update
+        new_values = {}
+        for key in update_data.keys():
+            new_val = getattr(db_vendor, key, None)
+            if new_val is not None:
+                new_values[key] = str(new_val) if not isinstance(new_val, (str, int, float, bool)) else new_val
+
+        # 🔍 Audit Log: Vendor Update
+        try:
+            changed_fields = list(update_data.keys())
+            fields_str = ", ".join(changed_fields) if changed_fields else "details"
+            
+            log_audit(
+                db=db,
+                tenant_id=db_vendor.tenant_id,
+                module="vendor",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Updated vendor '{db_vendor.name}' - changed fields: {fields_str}",
+                new_values={"old": old_values, "new": new_values},
+                request=request
+            )
+            logger.info(f"Audit log created for vendor update")
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for vendor update: {str(audit_error)}", exc_info=True)
 
         return ResponseWrapper.success(
             data=VendorResponse.model_validate(db_vendor, from_attributes=True),
@@ -493,6 +552,7 @@ def update_vendor(
 @router.patch("/{vendor_id}/toggle-status", status_code=status.HTTP_200_OK)
 def toggle_vendor_status(
     vendor_id: int,
+    request: Request,
     tenant_id: Optional[str] = Query(None, description="Tenant ID (Admin only)"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.update"], check_tenant=True))
@@ -563,9 +623,26 @@ def toggle_vendor_status(
             )
 
         # Toggle status
+        old_status = db_vendor.is_active
         db_vendor = vendor_crud.toggle_active(db, vendor_id=vendor_id)
         db.commit()
         db.refresh(db_vendor)
+
+        # 🔍 Audit Log: Status Toggle
+        try:
+            status_text = 'active' if db_vendor.is_active else 'inactive'
+            log_audit(
+                db=db,
+                tenant_id=db_vendor.tenant_id,
+                module="vendor",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Toggled vendor '{db_vendor.name}' status to {status_text}",
+                new_values={"old_status": old_status, "new_status": db_vendor.is_active},
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for status toggle: {str(audit_error)}")
 
         logger.info(
             f"Toggled vendor {vendor_id} status to "
