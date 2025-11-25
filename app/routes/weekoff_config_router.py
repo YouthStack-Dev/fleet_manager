@@ -14,6 +14,7 @@ from common_utils.auth.permission_checker import PermissionChecker
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from sqlalchemy.exc import SQLAlchemyError
 from app.core.logging_config import get_logger
+from app.utils.audit_helper import log_audit
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/weekoff-configs", tags=["weekoff configs"])

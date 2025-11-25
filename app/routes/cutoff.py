@@ -1,5 +1,5 @@
 from ast import List
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from typing import Optional
 from app.database.session import get_db
@@ -10,6 +10,7 @@ from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_ht
 from common_utils.auth.permission_checker import PermissionChecker
 from sqlalchemy.exc import SQLAlchemyError
 from app.core.logging_config import get_logger
+from app.utils.audit_helper import log_audit
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/cutoffs", tags=["cutoffs"])
@@ -83,6 +84,7 @@ def get_cutoffs(
 @router.put("/",status_code=status.HTTP_200_OK)
 def update_cutoff(
     update_in: CutoffUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["cutoff.update"], check_tenant=True)),
 ):
@@ -127,6 +129,24 @@ def update_cutoff(
         cutoff = cutoff_crud.update_by_tenant(db, tenant_id=tenant_id, obj_in=update_in)
         db.commit()
         db.refresh(cutoff)
+
+        # 🔍 Audit Log: Cutoff Update
+        try:
+            log_audit(
+                db=db,
+                tenant_id=tenant_id,
+                module="cutoff",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Updated cutoff times for tenant {tenant_id}",
+                new_values={
+                    "booking_cutoff": str(update_in.booking_cutoff) if update_in.booking_cutoff else None,
+                    "cancel_cutoff": str(update_in.cancel_cutoff) if update_in.cancel_cutoff else None,
+                },
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for cutoff update: {str(audit_error)}")
 
         return ResponseWrapper.success(
             data={"cutoff": CutoffOut.model_validate(cutoff, from_attributes=True)},
