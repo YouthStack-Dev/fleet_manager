@@ -148,8 +148,15 @@ def create_employee(
             f"employee_id={db_employee.employee_id}, name={db_employee.name}"
         )
 
+        employee_response = EmployeeResponse.model_validate(db_employee, from_attributes=True).dict()
+        # Add tenant location details
+        if db_employee.tenant:
+            employee_response["tenant_latitude"] = float(db_employee.tenant.latitude) if db_employee.tenant.latitude else None
+            employee_response["tenant_longitude"] = float(db_employee.tenant.longitude) if db_employee.tenant.longitude else None
+            employee_response["tenant_address"] = db_employee.tenant.address
+
         return ResponseWrapper.success(
-            data={"employee": EmployeeResponse.model_validate(db_employee, from_attributes=True)},
+            data={"employee": employee_response},
             message="Employee created successfully",
         )   
 
@@ -268,10 +275,15 @@ def read_employees(
 
         total, items = paginate_query(query, skip, limit)
 
-        employees = [
-            EmployeeResponse.model_validate(emp, from_attributes=True).dict()
-            for emp in items
-        ]
+        employees = []
+        for emp in items:
+            emp_dict = EmployeeResponse.model_validate(emp, from_attributes=True).dict()
+            # Add tenant location details
+            if emp.tenant:
+                emp_dict["tenant_latitude"] = float(emp.tenant.latitude) if emp.tenant.latitude else None
+                emp_dict["tenant_longitude"] = float(emp.tenant.longitude) if emp.tenant.longitude else None
+                emp_dict["tenant_address"] = emp.tenant.address
+            employees.append(emp_dict)
 
         return ResponseWrapper.success(
             data={"total": total, "items": employees},
@@ -328,6 +340,11 @@ def read_employee(
             )
 
         employee_data = EmployeeResponse.model_validate(db_employee, from_attributes=True).dict()
+        # Add tenant location details
+        if db_employee.tenant:
+            employee_data["tenant_latitude"] = float(db_employee.tenant.latitude) if db_employee.tenant.latitude else None
+            employee_data["tenant_longitude"] = float(db_employee.tenant.longitude) if db_employee.tenant.longitude else None
+            employee_data["tenant_address"] = db_employee.tenant.address
 
         return ResponseWrapper.success(
             data={"employee": employee_data}, message="Employee fetched successfully"
@@ -473,8 +490,15 @@ def update_employee(
             f"Employee updated successfully: employee_id={employee_id}, tenant_id={db_employee.tenant_id}"
         )
 
+        employee_response = EmployeeResponse.model_validate(db_employee, from_attributes=True).dict()
+        # Add tenant location details
+        if db_employee.tenant:
+            employee_response["tenant_latitude"] = float(db_employee.tenant.latitude) if db_employee.tenant.latitude else None
+            employee_response["tenant_longitude"] = float(db_employee.tenant.longitude) if db_employee.tenant.longitude else None
+            employee_response["tenant_address"] = db_employee.tenant.address
+
         return ResponseWrapper.success(
-            data={"employee": EmployeeResponse.model_validate(db_employee, from_attributes=True)},
+            data={"employee": employee_response},
             message="Employee updated successfully",
         )
 

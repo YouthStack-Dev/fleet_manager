@@ -219,6 +219,9 @@ class EmployeeResponse(EmployeeBase):
     employee_id: int
     created_at: datetime
     updated_at: datetime
+    tenant_latitude: Optional[float] = None
+    tenant_longitude: Optional[float] = None
+    tenant_address: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
