@@ -1,5 +1,5 @@
 import random as random
-from fastapi import APIRouter, Depends, HTTPException, Path, Query ,status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict
@@ -19,6 +19,7 @@ from app.schemas.route import RouteWithEstimations, RouteEstimations, RouteManag
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger, setup_logging
 from app.utils.response_utils import ResponseWrapper, handle_db_error
+from app.utils.audit_helper import log_audit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -754,6 +755,7 @@ async def get_unrouted_bookings(
 
 @router.put("/assign-vendor", status_code=status.HTTP_200_OK)
 async def assign_vendor_to_route(
+    request: Request,
     route_id: int = Query(..., description="Route ID"),
     vendor_id: int = Query(..., description="Vendor ID to assign"),
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
@@ -833,6 +835,27 @@ async def assign_vendor_to_route(
         db.commit()
         db.refresh(route)
 
+        # 🔍 Audit Log: Vendor Assignment
+        try:
+            log_audit(
+                db=db,
+                tenant_id=tenant_id,
+                module="route_management",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Assigned vendor '{vendor.name}' (ID: {vendor_id}) to route '{route.route_code}' (ID: {route_id})",
+                new_values={
+                    "route_id": route_id,
+                    "route_code": route.route_code,
+                    "assigned_vendor_id": vendor_id,
+                    "vendor_name": vendor.name,
+                    "status": route.status.value
+                },
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for vendor assignment: {str(audit_error)}")
+
         logger.info(
             f"[assign_vendor_to_route] Vendor={vendor_id} assigned successfully to Route={route_id} (Tenant={tenant_id})"
         )
@@ -855,6 +878,7 @@ async def assign_vendor_to_route(
 
 @router.put("/assign-vehicle", status_code=status.HTTP_200_OK)
 async def assign_vehicle_to_route(
+    request: Request,
     route_id: int = Query(..., description="Route ID"),
     vehicle_id: int = Query(..., description="Vehicle ID to assign"),
     db: Session = Depends(get_db),
@@ -1004,6 +1028,29 @@ async def assign_vehicle_to_route(
 
         db.commit()
         db.refresh(route)
+
+        # 🔍 Audit Log: Vehicle/Driver Assignment
+        try:
+            log_audit(
+                db=db,
+                tenant_id=tenant_id,
+                module="route_management",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Assigned vehicle '{vehicle.rc_number}' and driver '{driver.name}' to route '{route.route_code}' (ID: {route_id})",
+                new_values={
+                    "route_id": route_id,
+                    "route_code": route.route_code,
+                    "assigned_vehicle_id": vehicle.vehicle_id,
+                    "vehicle_rc_number": vehicle.rc_number,
+                    "assigned_driver_id": driver.driver_id,
+                    "driver_name": driver.name,
+                    "status": route.status.value
+                },
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for vehicle/driver assignment: {str(audit_error)}")
 
         logger.info(
             f"[assign_vehicle_to_route] Vehicle={vehicle_id} (Driver={driver.driver_id}) assigned to Route={route_id} (Tenant={tenant_id})"
@@ -1197,7 +1244,8 @@ async def get_route_by_id(
 
 @router.post("/merge")
 async def merge_routes(
-    request: MergeRoutesRequest,
+    merge_request: MergeRoutesRequest,
+    request: Request,
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["route_merge.create", "route_merge.read", "route_merge.update", "route_merge.delete"], check_tenant=True)),
@@ -1231,9 +1279,9 @@ async def merge_routes(
                 ),
             )
 
-        logger.info(f"[MERGE] tenant={tenant_id}, user={user_id}, route_ids={request.route_ids}")
+        logger.info(f"[MERGE] tenant={tenant_id}, user={user_id}, route_ids={merge_request.route_ids}")
 
-        if not request.route_ids:
+        if not merge_request.route_ids:
             raise HTTPException(
                 400,
                 ResponseWrapper.error("No route ids provided", "NO_ROUTE_IDS")
@@ -1241,7 +1289,7 @@ async def merge_routes(
 
         # --- Load routes & collect bookings ---
         routes = db.query(RouteManagement).filter(
-            RouteManagement.route_id.in_(request.route_ids),
+            RouteManagement.route_id.in_(merge_request.route_ids),
             RouteManagement.tenant_id == tenant_id
         ).all()
 
@@ -1357,14 +1405,37 @@ async def merge_routes(
 
         # ---- Delete old routes ----
         db.query(RouteManagementBooking).filter(
-            RouteManagementBooking.route_id.in_(request.route_ids)
+            RouteManagementBooking.route_id.in_(merge_request.route_ids)
         ).delete(synchronize_session=False)
 
         db.query(RouteManagement).filter(
-            RouteManagement.route_id.in_(request.route_ids)
+            RouteManagement.route_id.in_(merge_request.route_ids)
         ).delete(synchronize_session=False)
 
         db.commit()
+
+        # 🔍 Audit Log: Route Merge
+        try:
+            log_audit(
+                db=db,
+                tenant_id=tenant_id,
+                module="route_management",
+                action="CREATE",
+                user_data=user_data,
+                description=f"Merged {len(merge_request.route_ids)} routes into new route '{route.route_code}' (ID: {route.route_id})",
+                new_values={
+                    "new_route_id": route.route_id,
+                    "new_route_code": route.route_code,
+                    "merged_route_ids": merge_request.route_ids,
+                    "total_bookings": len(all_booking_ids),
+                    "shift_id": shift_id,
+                    "estimated_distance_km": route.estimated_total_distance,
+                    "estimated_time_min": route.estimated_total_time
+                },
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for route merge: {str(audit_error)}")
 
         return ResponseWrapper.success(
             {"route_id": route.route_id},
@@ -1386,7 +1457,8 @@ async def merge_routes(
 @router.put("/{route_id}")
 async def update_route(
     route_id: int,
-    request: UpdateRouteRequest,
+    update_request: UpdateRouteRequest,
+    request: Request,
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["route.update"], check_tenant=True)),
@@ -1435,7 +1507,7 @@ async def update_route(
                 ),
             )
 
-        logger.info(f"Updating route {route_id} with operation '{request.operation}' for {len(request.booking_ids)} bookings, user: {user_data.get('user_id', 'unknown')}")
+        logger.info(f"Updating route {route_id} with operation '{update_request.operation}' for {len(update_request.booking_ids)} bookings, user: {user_data.get('user_id', 'unknown')}")
 
         # Validate tenant exists
         tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
@@ -1450,7 +1522,7 @@ async def update_route(
                 )
             )
     
-        if not request.booking_ids:
+        if not update_request.booking_ids:
             raise HTTPException(
                 status_code=400,
                 detail=ResponseWrapper.error(
@@ -1483,7 +1555,7 @@ async def update_route(
         logger.debug(f"Current route bookings: {current_rbs}")
 
         current_booking_ids = {rb.booking_id for rb in current_rbs}
-        request_booking_ids = set(request.booking_ids)  
+        request_booking_ids = set(update_request.booking_ids)  
         logger.debug(f"Current booking IDs: {current_booking_ids}, Requested booking IDs: {request_booking_ids}")
 
         request_bookings = []
@@ -1492,7 +1564,7 @@ async def update_route(
             request_bookings.append(booking_details)
 
         # --- Remove booking from any other active route before adding ---
-        if request.operation == "add":
+        if update_request.operation == "add":
             for booking_id in request_booking_ids:
                 existing_links = db.query(RouteManagementBooking).join(RouteManagement).filter(
                     RouteManagementBooking.booking_id == booking_id,
@@ -1615,6 +1687,29 @@ async def update_route(
         # Commit once so both route updates and new mappings are persisted together
         db.commit()
 
+        # 🔍 Audit Log: Route Update
+        try:
+            log_audit(
+                db=db,
+                tenant_id=tenant_id,
+                module="route_management",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"{update_request.operation.upper()} bookings in route '{route.route_code}' (ID: {route_id}) - {len(update_request.booking_ids)} bookings affected",
+                new_values={
+                    "route_id": route_id,
+                    "route_code": route.route_code,
+                    "operation": update_request.operation,
+                    "booking_ids_affected": update_request.booking_ids,
+                    "total_bookings_in_route": len(all_booking_ids),
+                    "added_count": len(added_booking_ids) if added_booking_ids else 0,
+                    "removed_count": len(removed_booking_ids) if removed_booking_ids else 0
+                },
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for route update: {str(audit_error)}")
+
         logger.info(f"Route {route_id} updated successfully with {len(all_booking_ids)} bookings")
 
         return ResponseWrapper.success(
@@ -1644,7 +1739,8 @@ async def update_route(
 @router.put("/{route_id}/update-booking-order", status_code=status.HTTP_200_OK)
 async def update_booking_order(
     route_id: int,
-    request: UpdateBookingOrderRequest,
+    order_request: UpdateBookingOrderRequest,
+    request: Request,
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["route.update"], check_tenant=True)),
@@ -1709,7 +1805,7 @@ async def update_booking_order(
         route, shift_time, shift_type = route
 
         # Sort bookings by requested order
-        ordered_bookings = sorted(request.bookings, key=lambda x: x.new_order_id)
+        ordered_bookings = sorted(order_request.bookings, key=lambda x: x.new_order_id)
         logger.debug(f"Ordered bookings for route {route_id}: {ordered_bookings}")
         booking_ids = [b.booking_id for b in ordered_bookings]
         logger.debug(f"Booking IDs for route {route_id}: {booking_ids}")
@@ -1794,6 +1890,27 @@ async def update_booking_order(
         
         db.commit()
 
+        # 🔍 Audit Log: Booking Order Update
+        try:
+            log_audit(
+                db=db,
+                tenant_id=tenant_id,
+                module="route_management",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Updated booking order for route (ID: {route_id}) - {len(ordered_bookings)} bookings reordered",
+                new_values={
+                    "route_id": route_id,
+                    "bookings_count": len(ordered_bookings),
+                    "new_order": [{"booking_id": b.booking_id, "order": b.new_order_id} for b in ordered_bookings],
+                    "estimated_distance_km": route.estimated_total_distance,
+                    "estimated_time_min": route.estimated_total_time
+                },
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for booking order update: {str(audit_error)}")
+
         # Prepare response data
         response_data = [
             {
@@ -1827,6 +1944,7 @@ async def update_booking_order(
 
 @router.delete("/bulk")
 async def bulk_delete_routes(
+    request: Request,
     shift_id: int = Query(..., description="Shift ID"),
     route_date: date = Query(..., description="Booking date (YYYY-MM-DD)"),
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
@@ -1947,6 +2065,27 @@ async def bulk_delete_routes(
 
         db.commit()
 
+        # 🔍 Audit Log: Bulk Route Deletion
+        try:
+            log_audit(
+                db=db,
+                tenant_id=tenant_id,
+                module="route_management",
+                action="DELETE",
+                user_data=user_data,
+                description=f"Bulk deleted {deleted_routes_count} routes for shift {shift_id} on {route_date}",
+                new_values={
+                    "shift_id": shift_id,
+                    "route_date": str(route_date),
+                    "deleted_route_ids": route_ids,
+                    "deleted_routes_count": deleted_routes_count,
+                    "reverted_bookings_count": len(booking_ids)
+                },
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for bulk route deletion: {str(audit_error)}")
+
         logger.info(
             f"✅ Hard deleted {deleted_routes_count} routes, {deleted_bookings_count} mappings, reverted {len(booking_ids)} bookings."
         )
@@ -1987,6 +2126,7 @@ async def bulk_delete_routes(
 @router.delete("/{route_id}")
 async def delete_route(
     route_id: int,
+    request: Request,
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["route.delete"], check_tenant=True)),
@@ -2089,8 +2229,29 @@ async def delete_route(
             )
 
         # --- Delete route itself ---
+        route_code = route.route_code
         db.delete(route)
         db.commit()
+
+        # 🔍 Audit Log: Route Deletion
+        try:
+            log_audit(
+                db=db,
+                tenant_id=tenant_id,
+                module="route_management",
+                action="DELETE",
+                user_data=user_data,
+                description=f"Deleted route '{route_code}' (ID: {route_id}) - {len(booking_ids)} bookings reverted to REQUEST",
+                new_values={
+                    "route_id": route_id,
+                    "route_code": route_code,
+                    "reverted_bookings_count": len(booking_ids),
+                    "reverted_booking_ids": booking_ids
+                },
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for route deletion: {str(audit_error)}")
 
         logger.info(
             f"✅ Route {route_id} deleted. {len(booking_ids)} bookings reverted to REQUEST."

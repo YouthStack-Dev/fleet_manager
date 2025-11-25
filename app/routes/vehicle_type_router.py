@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from typing import Optional
@@ -14,6 +14,7 @@ from app.crud.vehicle_type import vehicle_type_crud
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
+from app.utils.audit_helper import log_audit
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/vehicle-types", tags=["vehicle types"])
@@ -114,6 +115,7 @@ def validate_vendor_and_tenant(db: Session, vendor_id: int, user_data: dict):
 @router.post("/", response_model=dict, status_code=status.HTTP_201_CREATED)
 def create_vehicle_type(
     vehicle_in: VehicleTypeCreate,
+    request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vehicle-type.create"], check_tenant=False)),
 ):
@@ -151,6 +153,28 @@ def create_vehicle_type(
         db_obj = vehicle_type_crud.create_with_vendor(db, vendor_id=vendor_id, obj_in=vehicle_in)
         db.commit()
         db.refresh(db_obj)
+
+        # 🔍 Audit Log: Vehicle Type Creation
+        try:
+            vehicle_type_data = {
+                "vehicle_type_id": db_obj.vehicle_type_id,
+                "name": db_obj.name,
+                "vendor_id": db_obj.vendor_id,
+                "capacity": db_obj.capacity,
+                "is_active": db_obj.is_active
+            }
+            log_audit(
+                db=db,
+                tenant_id=db_obj.vendor.tenant_id if db_obj.vendor else None,
+                module="vehicle_type",
+                action="CREATE",
+                user_data=user_data,
+                description=f"Created vehicle type '{db_obj.name}' for vendor {vendor_id}",
+                new_values=vehicle_type_data,
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for vehicle type creation: {str(audit_error)}")
 
         logger.info(
             f"Vehicle type '{vehicle_in.name}' created for vendor {vendor_id} by user {user_data.get('user_id')}"
@@ -268,6 +292,8 @@ def update_vehicle_type(
     vehicle_type_id: int,
     update_in: VehicleTypeUpdate,
     vendor_id: Optional[int] = None,
+    *,
+    request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vehicle-type.update"], check_tenant=False)),
 ):
@@ -304,11 +330,45 @@ def update_vehicle_type(
                 )
 
         update_data = update_in.model_dump(exclude_unset=True)
+        
+        # 🔍 Capture old values before update
+        old_values = {}
+        for field in update_data.keys():
+            old_val = getattr(db_obj, field, None)
+            if old_val is not None:
+                old_values[field] = str(old_val) if not isinstance(old_val, (str, int, float, bool)) else old_val
+        
         for field, value in update_data.items():
             setattr(db_obj, field, value)
 
         db.commit()
         db.refresh(db_obj)
+
+        # 🔍 Capture new values after update
+        new_values = {}
+        for field in update_data.keys():
+            new_val = getattr(db_obj, field, None)
+            if new_val is not None:
+                new_values[field] = str(new_val) if not isinstance(new_val, (str, int, float, bool)) else new_val
+
+        # 🔍 Audit Log: Vehicle Type Update
+        try:
+            changed_fields = list(update_data.keys())
+            fields_str = ", ".join(changed_fields) if changed_fields else "details"
+            
+            log_audit(
+                db=db,
+                tenant_id=db_obj.vendor.tenant_id if db_obj.vendor else None,
+                module="vehicle_type",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Updated vehicle type '{db_obj.name}' - changed fields: {fields_str}",
+                new_values={"old": old_values, "new": new_values},
+                request=request
+            )
+            logger.info(f"Audit log created for vehicle type update")
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for vehicle type update: {str(audit_error)}", exc_info=True)
 
         logger.info(f"Vehicle type {vehicle_type_id} updated by user {user_data.get('user_id')} with data={update_data}")
 
@@ -336,6 +396,7 @@ def update_vehicle_type(
 @router.patch("/{vehicle_type_id}/toggle-status", response_model=dict, status_code=status.HTTP_200_OK)
 def toggle_vehicle_type_status(
     vehicle_type_id: int,
+    request: Request,
     vendor_id: Optional[int] = None,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vehicle-type.update"], check_tenant=False)),
@@ -360,11 +421,29 @@ def toggle_vehicle_type_status(
                 detail=ResponseWrapper.error("Vehicle type not found", "VEHICLE_TYPE_NOT_FOUND"),
             )
 
+        old_status = db_obj.is_active
         db_obj.is_active = not db_obj.is_active
         db.commit()
         db.refresh(db_obj)
 
         status_text = "activated" if db_obj.is_active else "deactivated"
+        
+        # 🔍 Audit Log: Status Toggle
+        try:
+            status_text_log = 'active' if db_obj.is_active else 'inactive'
+            log_audit(
+                db=db,
+                tenant_id=db_obj.vendor.tenant_id if db_obj.vendor else None,
+                module="vehicle_type",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Toggled vehicle type '{db_obj.name}' status to {status_text_log}",
+                new_values={"old_status": old_status, "new_status": db_obj.is_active},
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for status toggle: {str(audit_error)}")
+        
         logger.info(f"Vehicle type {vehicle_type_id} {status_text} by user {user_data.get('user_id')}")
 
         return ResponseWrapper.success(
