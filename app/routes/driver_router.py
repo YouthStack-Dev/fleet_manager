@@ -557,6 +557,7 @@ def get_drivers(
 @router.put("/update", response_model=dict)
 async def update_driver(
     driver_id: int,
+    request: Request,
     vendor_id: Optional[int] = Form(None),
     name: Optional[str] = Form(None),
     code: Optional[str] = Form(None),
@@ -658,6 +659,31 @@ async def update_driver(
             )
 
         # ------------------------------------------------------
+        # 🔍 Capture old values before update
+        # ------------------------------------------------------
+        old_values = {}
+        update_params = {
+            "name": name, "code": code, "email": email, "phone": phone,
+            "gender": gender, "date_of_birth": date_of_birth, "date_of_joining": date_of_joining,
+            "permanent_address": permanent_address, "current_address": current_address,
+            "license_number": license_number, "license_expiry_date": license_expiry_date,
+            "badge_number": badge_number, "badge_expiry_date": badge_expiry_date,
+            "alt_govt_id_number": alt_govt_id_number, "alt_govt_id_type": alt_govt_id_type,
+            "induction_date": induction_date, "bg_expiry_date": bg_expiry_date,
+            "police_expiry_date": police_expiry_date, "medical_expiry_date": medical_expiry_date,
+            "training_expiry_date": training_expiry_date, "eye_expiry_date": eye_expiry_date,
+            "bg_verify_status": bg_verify_status, "police_verify_status": police_verify_status,
+            "medical_verify_status": medical_verify_status, "training_verify_status": training_verify_status,
+            "eye_verify_status": eye_verify_status
+        }
+        
+        for field, value in update_params.items():
+            if value is not None and field != "password":
+                old_val = getattr(db_obj, field, None)
+                if old_val is not None:
+                    old_values[field] = str(old_val) if not isinstance(old_val, (str, int, float, bool)) else old_val
+
+        # ------------------------------------------------------
         # 4️⃣ Handle file uploads
         # ------------------------------------------------------
         allowed_docs = ["image/jpeg", "image/png", "application/pdf"]
@@ -743,6 +769,37 @@ async def update_driver(
         db.commit()
         db.refresh(db_obj)
 
+        # ------------------------------------------------------
+        # 🔍 Capture new values after update
+        # ------------------------------------------------------
+        new_values = {}
+        for field in update_params.keys():
+            if update_params[field] is not None and field != "password":
+                new_val = getattr(db_obj, field, None)
+                if new_val is not None:
+                    new_values[field] = str(new_val) if not isinstance(new_val, (str, int, float, bool)) else new_val
+
+        # ------------------------------------------------------
+        # 🔍 Audit Log: Driver Update
+        # ------------------------------------------------------
+        try:
+            changed_fields = [k for k, v in update_params.items() if v is not None]
+            fields_str = ", ".join(changed_fields) if changed_fields else "details"
+            
+            log_audit(
+                db=db,
+                tenant_id=db_obj.vendor.tenant_id if db_obj.vendor else None,
+                module="driver",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Updated driver '{db_obj.name}' - changed fields: {fields_str}",
+                new_values={"old": old_values, "new": new_values},
+                request=request
+            )
+            logger.info(f"Audit log created for driver update")
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for driver update: {str(audit_error)}", exc_info=True)
+
         logger.info(f"[UPDATE DRIVER] Driver updated successfully: {driver_id}")
 
         return ResponseWrapper.success(
@@ -765,6 +822,7 @@ async def update_driver(
 @router.patch("/{driver_id}/toggle-active", response_model=dict)
 def toggle_driver_active(
     driver_id: int,
+    request: Request,
     vendor_id: Optional[int] = None,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["driver.update"]))
@@ -814,6 +872,7 @@ def toggle_driver_active(
         # ------------------------------------------------------
         # 4️⃣ Toggle active flag
         # ------------------------------------------------------
+        old_status = driver.is_active
         driver.is_active = not driver.is_active
 
         db.flush()
@@ -821,6 +880,24 @@ def toggle_driver_active(
         db.refresh(driver)
 
         status_str = "activated" if driver.is_active else "deactivated"
+
+        # ------------------------------------------------------
+        # 🔍 Audit Log: Status Toggle
+        # ------------------------------------------------------
+        try:
+            status_text = 'active' if driver.is_active else 'inactive'
+            log_audit(
+                db=db,
+                tenant_id=driver.vendor.tenant_id if driver.vendor else None,
+                module="driver",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Toggled driver '{driver.name}' status to {status_text}",
+                new_values={"old_status": old_status, "new_status": driver.is_active},
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for status toggle: {str(audit_error)}")
 
         logger.info(
             f"[TOGGLE DRIVER ACTIVE] Driver {driver_id} -> {status_str} "
