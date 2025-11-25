@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query, Request
 from app.core.email_service import get_email_service
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -14,6 +14,7 @@ from app.crud.team import team_crud
 from app.crud.tenant import tenant_crud
 from sqlalchemy.exc import SQLAlchemyError
 from app.core.logging_config import get_logger
+from app.utils.audit_helper import log_audit
 logger = get_logger(__name__)
 router = APIRouter(prefix="/employees", tags=["employees"])
 
@@ -21,6 +22,7 @@ router = APIRouter(prefix="/employees", tags=["employees"])
 def create_employee(
     employee: EmployeeCreate,
     background_tasks: BackgroundTasks,
+    request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["employee.create"], check_tenant=True)),
 ):
@@ -116,6 +118,30 @@ def create_employee(
         )
         db.commit()
         db.refresh(db_employee)
+
+        # 🔍 Audit Log: Employee Creation
+        try:
+            employee_data_for_audit = {
+                "employee_id": db_employee.employee_id,
+                "name": db_employee.name,
+                "email": db_employee.email,
+                "phone": db_employee.phone,
+                "employee_code": db_employee.employee_code,
+                "team_id": db_employee.team_id,
+                "is_active": db_employee.is_active
+            }
+            log_audit(
+                db=db,
+                tenant_id=tenant_id,
+                module="employee",
+                action="CREATE",
+                user_data=user_data,
+                description=f"Created employee '{db_employee.name}' ({db_employee.email})",
+                new_values=employee_data_for_audit,
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for employee creation: {str(audit_error)}")
 
         logger.info(
             f"Employee created successfully under tenant {tenant_id}: "
@@ -319,6 +345,7 @@ def read_employee(
 def update_employee(
     employee_id: int,
     employee_update: EmployeeUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["employee.update"], check_tenant=True)),
 ):
@@ -353,6 +380,15 @@ def update_employee(
                 ),
             )
 
+        # 🔍 Capture old values before update
+        old_values = {}
+        update_data = employee_update.dict(exclude_unset=True)
+        for key in update_data.keys():
+            if key != "password":  # Don't log password
+                old_val = getattr(db_employee, key, None)
+                if old_val is not None:
+                    old_values[key] = str(old_val) if not isinstance(old_val, (str, int, float, bool)) else old_val
+
         # 🔒 Tenant enforcement
         if user_type == "employee":
             if db_employee.tenant_id != token_tenant_id:
@@ -382,9 +418,7 @@ def update_employee(
                     ),
                 )
 
-        # Apply updates
-        update_data = employee_update.dict(exclude_unset=True)
-
+        # Apply updates (already captured above)
         if "password" in update_data:
             update_data["password"] = hash_password(update_data["password"])
 
@@ -407,6 +441,34 @@ def update_employee(
         db.commit()
         db.refresh(db_employee)
 
+        # 🔍 Capture new values after update
+        new_values = {}
+        for key in update_data.keys():
+            if key != "password":  # Don't log password
+                new_val = getattr(db_employee, key, None)
+                if new_val is not None:
+                    new_values[key] = str(new_val) if not isinstance(new_val, (str, int, float, bool)) else new_val
+
+        # 🔍 Audit Log: Employee Update
+        try:
+            # Build description with changed fields
+            changed_fields = list(update_data.keys())
+            fields_str = ", ".join(changed_fields) if changed_fields else "details"
+            
+            log_audit(
+                db=db,
+                tenant_id=db_employee.tenant_id,
+                module="employee",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Updated employee '{db_employee.name}' - changed fields: {fields_str}",
+                new_values={"old": old_values, "new": new_values},
+                request=request
+            )
+            logger.info(f"Audit log created for employee update")
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for employee update: {str(audit_error)}", exc_info=True)
+
         logger.info(
             f"Employee updated successfully: employee_id={employee_id}, tenant_id={db_employee.tenant_id}"
         )
@@ -427,6 +489,7 @@ def update_employee(
 @router.patch("/{employee_id}/toggle-status", status_code=status.HTTP_200_OK)
 def toggle_employee_status(
     employee_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["employee.update"], check_tenant=True)),
 ):
@@ -461,6 +524,9 @@ def toggle_employee_status(
                 ),
             )
 
+        # 🔍 Capture old status for audit
+        old_status = db_employee.is_active
+
         # 🔒 Tenant enforcement
         if user_type == "employee":
             if db_employee.tenant_id != token_tenant_id:
@@ -483,9 +549,26 @@ def toggle_employee_status(
                 )
 
         # 🚦 Toggle status
+        old_status = db_employee.is_active
         db_employee.is_active = not db_employee.is_active
         db.commit()
         db.refresh(db_employee)
+
+        # 🔍 Audit Log: Status Toggle
+        try:
+            status_text = 'active' if db_employee.is_active else 'inactive'
+            log_audit(
+                db=db,
+                tenant_id=db_employee.tenant_id,
+                module="employee",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Toggled employee '{db_employee.name}' status to {status_text}",
+                new_values={"old_status": old_status, "new_status": db_employee.is_active},
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for status toggle: {str(audit_error)}")
 
         logger.info(
             f"Employee {employee_id} status toggled to "
