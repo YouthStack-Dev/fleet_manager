@@ -23,27 +23,56 @@ def create_vendor_user(
     vendor_user: VendorUserCreate,
     request: Request,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vendor-user.create"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["vendor-user.create"], check_tenant=False))
 ):
     """
     Create a new vendor user.
     
     Rules:
+    - Admin: Must provide tenant_id in request body
+    - Employee: tenant_id enforced from token
     - Validates vendor exists and belongs to the tenant
     - Checks for duplicate email/phone within tenant
     - Hashes password before storing
     - Creates audit log
     """
     try:
-        tenant_id = user_data.get("tenant_id")
-        if not tenant_id:
+        user_type = user_data.get("user_type")
+        tenant_id = None
+
+        # --- Tenant enforcement ---
+        if user_type == "employee":
+            tenant_id = user_data.get("tenant_id")
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED"
+                    )
+                )
+        elif user_type == "admin":
+            # Admin must provide tenant_id in body
+            if vendor_user.tenant_id:
+                tenant_id = vendor_user.tenant_id
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID is required in request body for admin",
+                        error_code="TENANT_ID_REQUIRED"
+                    )
+                )
+        else:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
-                    message="Tenant ID is required",
-                    error_code="TENANT_ID_REQUIRED"
+                    message="Only Admin and Employee users can create vendor users",
+                    error_code="UNAUTHORIZED_USER_TYPE"
                 )
             )
+
+        logger.debug(f"Creating vendor user under tenant_id: {tenant_id}")
 
         # Validate vendor exists and belongs to tenant
         vendor = vendor_crud.get(db, id=vendor_user.vendor_id)
@@ -161,11 +190,16 @@ def read_vendor_users(
     email: Optional[str] = None,
     vendor_id: Optional[int] = None,
     is_active: Optional[bool] = None,
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (required for admin, automatic for employee)"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vendor-user.read"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["vendor-user.read"], check_tenant=False))
 ):
     """
     Get all vendor users with pagination and filtering.
+    
+    Rules:
+    - Admin: Must provide tenant_id as query parameter
+    - Employee: tenant_id enforced from token
     
     Filters:
     - name: Search by name (case-insensitive partial match)
@@ -174,17 +208,41 @@ def read_vendor_users(
     - is_active: Filter by active status
     """
     try:
-        tenant_id = user_data.get("tenant_id")
-        if not tenant_id:
+        user_type = user_data.get("user_type")
+        resolved_tenant_id = None
+
+        # --- Tenant enforcement ---
+        if user_type == "employee":
+            resolved_tenant_id = user_data.get("tenant_id")
+            if not resolved_tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED"
+                    )
+                )
+        elif user_type == "admin":
+            if tenant_id:
+                resolved_tenant_id = tenant_id
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID is required as query parameter for admin",
+                        error_code="TENANT_ID_REQUIRED"
+                    )
+                )
+        else:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
-                    message="Tenant ID is required",
-                    error_code="TENANT_ID_REQUIRED"
+                    message="Unauthorized access",
+                    error_code="UNAUTHORIZED_USER_TYPE"
                 )
             )
 
-        query = db.query(VendorUser).filter(VendorUser.tenant_id == tenant_id)
+        query = db.query(VendorUser).filter(VendorUser.tenant_id == resolved_tenant_id)
         
         # Apply filters
         if name:
@@ -199,7 +257,7 @@ def read_vendor_users(
         total, items = paginate_query(query, skip, limit)
         
         logger.debug(
-            f"Retrieved {len(items)} vendor users out of {total} total for tenant {tenant_id}"
+            f"Retrieved {len(items)} vendor users out of {total} total for tenant {resolved_tenant_id}"
         )
 
         return ResponseWrapper.success(
@@ -221,30 +279,59 @@ def read_vendor_users(
 @router.get("/{vendor_user_id}")
 def read_vendor_user(
     vendor_user_id: int,
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (required for admin, automatic for employee)"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vendor-user.read"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["vendor-user.read"], check_tenant=False))
 ):
     """
     Get a specific vendor user by ID.
+    
+    Rules:
+    - Admin: Must provide tenant_id as query parameter
+    - Employee: tenant_id enforced from token
     
     Validates:
     - Vendor user exists
     - Vendor user belongs to the requester's tenant
     """
     try:
-        tenant_id = user_data.get("tenant_id")
-        if not tenant_id:
+        user_type = user_data.get("user_type")
+        resolved_tenant_id = None
+
+        # --- Tenant enforcement ---
+        if user_type == "employee":
+            resolved_tenant_id = user_data.get("tenant_id")
+            if not resolved_tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED"
+                    )
+                )
+        elif user_type == "admin":
+            if tenant_id:
+                resolved_tenant_id = tenant_id
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID is required as query parameter for admin",
+                        error_code="TENANT_ID_REQUIRED"
+                    )
+                )
+        else:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
-                    message="Tenant ID is required",
-                    error_code="TENANT_ID_REQUIRED"
+                    message="Unauthorized access",
+                    error_code="UNAUTHORIZED_USER_TYPE"
                 )
             )
 
         db_vendor_user = db.query(VendorUser).filter(
             VendorUser.vendor_user_id == vendor_user_id,
-            VendorUser.tenant_id == tenant_id
+            VendorUser.tenant_id == resolved_tenant_id
         ).first()
 
         if not db_vendor_user:
@@ -276,11 +363,16 @@ def update_vendor_user(
     vendor_user_id: int,
     vendor_user_update: VendorUserUpdate,
     request: Request,
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (required for admin, automatic for employee)"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vendor-user.update"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["vendor-user.update"], check_tenant=False))
 ):
     """
     Update a vendor user.
+    
+    Rules:
+    - Admin: Must provide tenant_id as query parameter
+    - Employee: tenant_id enforced from token
     
     Validates:
     - Vendor user exists and belongs to tenant
@@ -290,20 +382,44 @@ def update_vendor_user(
     - Creates audit log
     """
     try:
-        tenant_id = user_data.get("tenant_id")
-        if not tenant_id:
+        user_type = user_data.get("user_type")
+        resolved_tenant_id = None
+
+        # --- Tenant enforcement ---
+        if user_type == "employee":
+            resolved_tenant_id = user_data.get("tenant_id")
+            if not resolved_tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED"
+                    )
+                )
+        elif user_type == "admin":
+            if tenant_id:
+                resolved_tenant_id = tenant_id
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID is required as query parameter for admin",
+                        error_code="TENANT_ID_REQUIRED"
+                    )
+                )
+        else:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
-                    message="Tenant ID is required",
-                    error_code="TENANT_ID_REQUIRED"
+                    message="Unauthorized access",
+                    error_code="UNAUTHORIZED_USER_TYPE"
                 )
             )
 
         # Fetch existing vendor user
         db_vendor_user = db.query(VendorUser).filter(
             VendorUser.vendor_user_id == vendor_user_id,
-            VendorUser.tenant_id == tenant_id
+            VendorUser.tenant_id == resolved_tenant_id
         ).first()
 
         if not db_vendor_user:
@@ -337,7 +453,7 @@ def update_vendor_user(
                         error_code="VENDOR_NOT_FOUND"
                     )
                 )
-            if vendor.tenant_id != tenant_id:
+            if vendor.tenant_id != resolved_tenant_id:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=ResponseWrapper.error(
@@ -349,7 +465,7 @@ def update_vendor_user(
         # Check for duplicate email
         if "email" in update_data and update_data["email"] != db_vendor_user.email:
             existing_email = db.query(VendorUser).filter(
-                VendorUser.tenant_id == tenant_id,
+                VendorUser.tenant_id == resolved_tenant_id,
                 VendorUser.email == update_data["email"],
                 VendorUser.vendor_user_id != vendor_user_id
             ).first()
@@ -365,7 +481,7 @@ def update_vendor_user(
         # Check for duplicate phone
         if "phone" in update_data and update_data["phone"] != db_vendor_user.phone:
             existing_phone = db.query(VendorUser).filter(
-                VendorUser.tenant_id == tenant_id,
+                VendorUser.tenant_id == resolved_tenant_id,
                 VendorUser.phone == update_data["phone"],
                 VendorUser.vendor_user_id != vendor_user_id
             ).first()
@@ -404,7 +520,7 @@ def update_vendor_user(
                             for k in old_values if old_values[k] != new_values[k]}
             log_audit(
                 db=db,
-                tenant_id=tenant_id,
+                tenant_id=resolved_tenant_id,
                 module="vendor_user",
                 action="UPDATE",
                 user_data=user_data,
@@ -440,31 +556,60 @@ def update_vendor_user(
 def toggle_vendor_user_status(
     vendor_user_id: int,
     request: Request,
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (required for admin, automatic for employee)"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vendor-user.update"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["vendor-user.update"], check_tenant=False))
 ):
     """
     Toggle vendor user active status.
+    
+    Rules:
+    - Admin: Must provide tenant_id as query parameter
+    - Employee: tenant_id enforced from token
     
     Validates:
     - Vendor user exists and belongs to tenant
     - Creates audit log for status change
     """
     try:
-        tenant_id = user_data.get("tenant_id")
-        if not tenant_id:
+        user_type = user_data.get("user_type")
+        resolved_tenant_id = None
+
+        # --- Tenant enforcement ---
+        if user_type == "employee":
+            resolved_tenant_id = user_data.get("tenant_id")
+            if not resolved_tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED"
+                    )
+                )
+        elif user_type == "admin":
+            if tenant_id:
+                resolved_tenant_id = tenant_id
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID is required as query parameter for admin",
+                        error_code="TENANT_ID_REQUIRED"
+                    )
+                )
+        else:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
-                    message="Tenant ID is required",
-                    error_code="TENANT_ID_REQUIRED"
+                    message="Unauthorized access",
+                    error_code="UNAUTHORIZED_USER_TYPE"
                 )
             )
 
         # Fetch vendor user
         db_vendor_user = db.query(VendorUser).filter(
             VendorUser.vendor_user_id == vendor_user_id,
-            VendorUser.tenant_id == tenant_id
+            VendorUser.tenant_id == resolved_tenant_id
         ).first()
 
         if not db_vendor_user:
@@ -489,7 +634,7 @@ def toggle_vendor_user_status(
             status_text = 'active' if db_vendor_user.is_active else 'inactive'
             log_audit(
                 db=db,
-                tenant_id=tenant_id,
+                tenant_id=resolved_tenant_id,
                 module="vendor_user",
                 action="UPDATE",
                 user_data=user_data,
@@ -524,11 +669,16 @@ def toggle_vendor_user_status(
 @router.delete("/{vendor_user_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_vendor_user(
     vendor_user_id: int,
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (required for admin, automatic for employee)"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vendor-user.delete"], check_tenant=True))
+    user_data=Depends(PermissionChecker(["vendor-user.delete"], check_tenant=False))
 ):
     """
     Delete a vendor user by ID.
+    
+    Rules:
+    - Admin: Must provide tenant_id as query parameter
+    - Employee: tenant_id enforced from token
     
     Note: This is a hard delete. Consider using toggle-status for soft delete instead.
     
@@ -536,19 +686,43 @@ def delete_vendor_user(
     - Vendor user exists and belongs to tenant
     """
     try:
-        tenant_id = user_data.get("tenant_id")
-        if not tenant_id:
+        user_type = user_data.get("user_type")
+        resolved_tenant_id = None
+
+        # --- Tenant enforcement ---
+        if user_type == "employee":
+            resolved_tenant_id = user_data.get("tenant_id")
+            if not resolved_tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED"
+                    )
+                )
+        elif user_type == "admin":
+            if tenant_id:
+                resolved_tenant_id = tenant_id
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID is required as query parameter for admin",
+                        error_code="TENANT_ID_REQUIRED"
+                    )
+                )
+        else:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
-                    message="Tenant ID is required",
-                    error_code="TENANT_ID_REQUIRED"
+                    message="Unauthorized access",
+                    error_code="UNAUTHORIZED_USER_TYPE"
                 )
             )
 
         db_vendor_user = db.query(VendorUser).filter(
             VendorUser.vendor_user_id == vendor_user_id,
-            VendorUser.tenant_id == tenant_id
+            VendorUser.tenant_id == resolved_tenant_id
         ).first()
 
         if not db_vendor_user:
