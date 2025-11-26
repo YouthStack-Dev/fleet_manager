@@ -133,7 +133,7 @@ def get_psql_connection():
 
 
 from app.config import settings
-logger.info("Environment:", settings)
+logger.info("Environment: %s", settings)
 
 
 @app.get("/")

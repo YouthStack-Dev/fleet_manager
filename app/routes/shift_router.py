@@ -116,10 +116,11 @@ def create_shift(
             shift_data = {
                 "shift_id": new_shift.shift_id,
                 "shift_code": new_shift.shift_code,
-                "shift_name": new_shift.shift_name,
-                "log_type": new_shift.log_type,
-                "start_time": str(new_shift.start_time) if new_shift.start_time else None,
-                "end_time": str(new_shift.end_time) if new_shift.end_time else None,
+                "log_type": new_shift.log_type.value if hasattr(new_shift.log_type, 'value') else str(new_shift.log_type),
+                "shift_time": str(new_shift.shift_time) if new_shift.shift_time else None,
+                "pickup_type": new_shift.pickup_type.value if new_shift.pickup_type and hasattr(new_shift.pickup_type, 'value') else str(new_shift.pickup_type) if new_shift.pickup_type else None,
+                "gender": new_shift.gender.value if new_shift.gender and hasattr(new_shift.gender, 'value') else str(new_shift.gender) if new_shift.gender else None,
+                "waiting_time_minutes": new_shift.waiting_time_minutes,
                 "is_active": new_shift.is_active
             }
             log_audit(
@@ -128,7 +129,7 @@ def create_shift(
                 module="shift",
                 action="CREATE",
                 user_data=user_data,
-                description=f"Created shift '{new_shift.shift_code}' ({new_shift.shift_name}) for tenant {tenant_id}",
+                description=f"Created shift '{new_shift.shift_code}' for tenant {tenant_id}",
                 new_values=shift_data,
                 request=request
             )
@@ -374,10 +375,11 @@ def update_shift(
         # 🔍 Capture old values before update
         old_values = {
             "shift_code": db_shift.shift_code,
-            "shift_name": db_shift.shift_name,
-            "log_type": db_shift.log_type,
-            "start_time": str(db_shift.start_time) if db_shift.start_time else None,
-            "end_time": str(db_shift.end_time) if db_shift.end_time else None,
+            "log_type": db_shift.log_type.value if hasattr(db_shift.log_type, 'value') else str(db_shift.log_type),
+            "shift_time": str(db_shift.shift_time) if db_shift.shift_time else None,
+            "pickup_type": db_shift.pickup_type.value if db_shift.pickup_type and hasattr(db_shift.pickup_type, 'value') else str(db_shift.pickup_type) if db_shift.pickup_type else None,
+            "gender": db_shift.gender.value if db_shift.gender and hasattr(db_shift.gender, 'value') else str(db_shift.gender) if db_shift.gender else None,
+            "waiting_time_minutes": db_shift.waiting_time_minutes,
             "is_active": db_shift.is_active
         }
 
@@ -390,10 +392,11 @@ def update_shift(
         # 🔍 Capture new values after update
         new_values = {
             "shift_code": db_shift.shift_code,
-            "shift_name": db_shift.shift_name,
-            "log_type": db_shift.log_type,
-            "start_time": str(db_shift.start_time) if db_shift.start_time else None,
-            "end_time": str(db_shift.end_time) if db_shift.end_time else None,
+            "log_type": db_shift.log_type.value if hasattr(db_shift.log_type, 'value') else str(db_shift.log_type),
+            "shift_time": str(db_shift.shift_time) if db_shift.shift_time else None,
+            "pickup_type": db_shift.pickup_type.value if db_shift.pickup_type and hasattr(db_shift.pickup_type, 'value') else str(db_shift.pickup_type) if db_shift.pickup_type else None,
+            "gender": db_shift.gender.value if db_shift.gender and hasattr(db_shift.gender, 'value') else str(db_shift.gender) if db_shift.gender else None,
+            "waiting_time_minutes": db_shift.waiting_time_minutes,
             "is_active": db_shift.is_active
         }
 
@@ -405,7 +408,7 @@ def update_shift(
                 module="shift",
                 action="UPDATE",
                 user_data=user_data,
-                description=f"Updated shift '{db_shift.shift_code}' ({db_shift.shift_name})",
+                description=f"Updated shift '{db_shift.shift_code}'",
                 new_values={"old": old_values, "new": new_values},
                 request=request
             )
