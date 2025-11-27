@@ -101,6 +101,7 @@ class EmployeeBase(BaseModel):
     phone: str
     employee_code: str
     team_id: int
+    role_id: Optional[int] = None
     tenant_id: Optional[str] = None
     alternate_phone: Optional[str] = None
     special_needs: Optional[str] = None
@@ -182,6 +183,7 @@ class EmployeeUpdate(BaseModel, BaseValidatorsMixin):
     phone: Optional[str] = None
     employee_code: Optional[str] = None
     team_id: Optional[int] = None
+    role_id: Optional[int] = None
     alternate_phone: Optional[str] = None
     special_needs: Optional[SpecialNeedsEnum] = None
     special_needs_start_date: Optional[date] = None
@@ -201,6 +203,7 @@ class EmployeeUpdate(BaseModel, BaseValidatorsMixin):
                 "phone": "+1234567890",
                 "employee_code": "jdoe456",
                 "team_id": 2,
+                "role_id": 1,
                 "alternate_phone": "+1987654321",
                 "special_needs": "Wheelchair",
                 "special_needs_start_date": "2023-01-01",
