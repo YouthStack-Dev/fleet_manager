@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, field_validator
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Optional, List
 from enum import Enum
 
@@ -64,6 +64,7 @@ class BookingUpdate(BaseModel):
 
 class BookingResponse(BookingBase):
     booking_id: int
+    shift_time: Optional[time] = None
     created_at: datetime
     updated_at: datetime
 
