@@ -235,8 +235,16 @@ def create_booking(
             f"on dates={[b.booking_date for b in created_bookings]}"
         )
 
+        # Add shift_time to each created booking
+        bookings_with_shift = []
+        for booking in created_bookings:
+            booking_dict = BookingResponse.model_validate(booking).dict()
+            if shift:
+                booking_dict["shift_time"] = shift.shift_time
+            bookings_with_shift.append(booking_dict)
+
         return ResponseWrapper.created(
-            data=[BookingResponse.model_validate(b) for b in created_bookings],
+            data=bookings_with_shift,
             message=f"{len(created_bookings)} booking(s) created successfully",
         )
 
@@ -324,8 +332,16 @@ def get_bookings(
 
         total, items = paginate_query(query, skip, limit)
 
+        # Add shift_time to each booking
+        bookings_with_shift = []
+        for booking in items:
+            booking_dict = BookingResponse.model_validate(booking, from_attributes=True).dict()
+            if booking.shift:
+                booking_dict["shift_time"] = booking.shift.shift_time
+            bookings_with_shift.append(booking_dict)
+
         return ResponseWrapper.paginated(
-            items=[BookingResponse.model_validate(b, from_attributes=True) for b in items],
+            items=bookings_with_shift,
             total=total,
             page=(skip // limit) + 1,
             per_page=limit,
@@ -408,8 +424,16 @@ def get_bookings_by_employee(
 
         total, items = paginate_query(query, skip, limit)
 
+        # Add shift_time to each booking
+        bookings_with_shift = []
+        for booking in items:
+            booking_dict = BookingResponse.model_validate(booking, from_attributes=True).dict()
+            if booking.shift:
+                booking_dict["shift_time"] = booking.shift.shift_time
+            bookings_with_shift.append(booking_dict)
+
         return ResponseWrapper.paginated(
-            items=[BookingResponse.model_validate(b, from_attributes=True) for b in items],
+            items=bookings_with_shift,
             total=total,
             page=(skip // limit) + 1,
             per_page=limit,
@@ -454,8 +478,12 @@ def get_booking_by_id(
                 ),
             )
 
+        booking_dict = BookingResponse.model_validate(booking, from_attributes=True).dict()
+        if booking.shift:
+            booking_dict["shift_time"] = booking.shift.shift_time
+
         return ResponseWrapper.success(
-            data=BookingResponse.model_validate(booking, from_attributes=True),
+            data=booking_dict,
             message="Booking fetched successfully"
         )
 
@@ -564,8 +592,12 @@ def cancel_booking(
             f"Booking {booking.booking_id} cancelled successfully by employee {employee_id}"
         )
 
+        booking_dict = BookingResponse.model_validate(booking, from_attributes=True).dict()
+        if booking.shift:
+            booking_dict["shift_time"] = booking.shift.shift_time
+
         return ResponseWrapper.success(
-            data=BookingResponse.model_validate(booking, from_attributes=True),
+            data=booking_dict,
             message="Booking successfully cancelled",
         )
 

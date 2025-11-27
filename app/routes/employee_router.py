@@ -452,6 +452,28 @@ def update_employee(
                     ),
                 )
 
+        # 🔐 Role validation if updating role_id
+        if "role_id" in update_data and update_data["role_id"] is not None:
+            from app.crud.iam.role import role_crud
+            role = role_crud.get(db, id=update_data["role_id"])
+            if not role:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message=f"Role with ID {update_data['role_id']} not found",
+                        error_code="ROLE_NOT_FOUND",
+                    ),
+                )
+            # Validate role belongs to the same tenant (or is a system role)
+            if role.tenant_id and role.tenant_id != db_employee.tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message=f"Role {update_data['role_id']} does not belong to tenant {db_employee.tenant_id}",
+                        error_code="ROLE_TENANT_MISMATCH",
+                    ),
+                )
+
         for key, value in update_data.items():
             setattr(db_employee, key, value)
 
