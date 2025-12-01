@@ -87,7 +87,7 @@ def get_audit_by_module(
         
         # For vendors - only allow vendor-related modules
         elif user_type == "vendor":
-            allowed_vendor_modules = ["driver", "vehicle", "vehicle_type"]
+            allowed_vendor_modules = ["driver", "vehicle", "vehicle_type", "vendor_user"]
             if module_name.lower() not in allowed_vendor_modules:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
