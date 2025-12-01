@@ -238,7 +238,7 @@ def create_booking(
         # Add shift_time to each created booking
         bookings_with_shift = []
         for booking in created_bookings:
-            booking_dict = BookingResponse.model_validate(booking).dict()
+            booking_dict = BookingResponse.model_validate(booking).model_dump()
             if shift:
                 booking_dict["shift_time"] = shift.shift_time
             bookings_with_shift.append(booking_dict)
@@ -335,7 +335,7 @@ def get_bookings(
         # Add shift_time to each booking
         bookings_with_shift = []
         for booking in items:
-            booking_dict = BookingResponse.model_validate(booking, from_attributes=True).dict()
+            booking_dict = BookingResponse.model_validate(booking, from_attributes=True).model_dump()
             if booking.shift:
                 booking_dict["shift_time"] = booking.shift.shift_time
             bookings_with_shift.append(booking_dict)
@@ -427,7 +427,7 @@ def get_bookings_by_employee(
         # Add shift_time to each booking
         bookings_with_shift = []
         for booking in items:
-            booking_dict = BookingResponse.model_validate(booking, from_attributes=True).dict()
+            booking_dict = BookingResponse.model_validate(booking, from_attributes=True).model_dump()
             if booking.shift:
                 booking_dict["shift_time"] = booking.shift.shift_time
             bookings_with_shift.append(booking_dict)
@@ -478,7 +478,7 @@ def get_booking_by_id(
                 ),
             )
 
-        booking_dict = BookingResponse.model_validate(booking, from_attributes=True).dict()
+        booking_dict = BookingResponse.model_validate(booking, from_attributes=True).model_dump()
         if booking.shift:
             booking_dict["shift_time"] = booking.shift.shift_time
 
@@ -592,7 +592,7 @@ def cancel_booking(
             f"Booking {booking.booking_id} cancelled successfully by employee {employee_id}"
         )
 
-        booking_dict = BookingResponse.model_validate(booking, from_attributes=True).dict()
+        booking_dict = BookingResponse.model_validate(booking, from_attributes=True).model_dump()
         if booking.shift:
             booking_dict["shift_time"] = booking.shift.shift_time
 

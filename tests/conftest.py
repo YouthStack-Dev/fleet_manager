@@ -269,6 +269,30 @@ def seed_permissions(test_db):
             action="update",
             description="Update weekoff config"
         ),
+        Permission(
+            permission_id=21,
+            module="booking",
+            action="create",
+            description="Create booking"
+        ),
+        Permission(
+            permission_id=22,
+            module="booking",
+            action="read",
+            description="Read booking"
+        ),
+        Permission(
+            permission_id=23,
+            module="booking",
+            action="update",
+            description="Update booking"
+        ),
+        Permission(
+            permission_id=24,
+            module="booking",
+            action="delete",
+            description="Delete booking"
+        ),
     ]
     
     for perm in permissions:
@@ -493,7 +517,8 @@ def admin_token(admin_user):
                 "employee.create", "employee.read", "employee.update", "employee.delete",
                 "shift.create", "shift.read", "shift.update", "shift.delete",
                 "cutoff.read", "cutoff.update",
-                "weekoff-config.read", "weekoff-config.update"
+                "weekoff-config.read", "weekoff-config.update",
+                "booking.create", "booking.read", "booking.update", "booking.delete"
             ]
         }
     )
@@ -516,7 +541,8 @@ def employee_token(employee_user):
                 "team.create", "team.read", "team.update",
                 "shift.create", "shift.read", "shift.update",
                 "cutoff.read", "cutoff.update",
-                "weekoff-config.read", "weekoff-config.update"
+                "weekoff-config.read", "weekoff-config.update",
+                "booking.create", "booking.read", "booking.update"
             ]
         }
     )

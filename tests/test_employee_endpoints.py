@@ -25,8 +25,8 @@ class TestCreateEmployee:
             "email": "test.employee@example.com",
             "phone": "+1234567890",
             "employee_code": "emp001",
-            "team_id": test_team["team_id"],
-            "tenant_id": test_tenant["tenant_id"],
+            "team_id": test_team.team_id,
+            "tenant_id": test_tenant.tenant_id,
             "password": "TestPass123!",
             "address": "123 Test St",
             "latitude": 40.7128,
@@ -48,8 +48,8 @@ class TestCreateEmployee:
         assert "employee" in data["data"]
         assert data["data"]["employee"]["name"] == "Test Employee"
         assert data["data"]["employee"]["email"] == "test.employee@example.com"
-        assert data["data"]["employee"]["tenant_id"] == test_tenant["tenant_id"]
-        assert data["data"]["employee"]["team_id"] == test_team["team_id"]
+        assert data["data"]["employee"]["tenant_id"] == test_tenant.tenant_id
+        assert data["data"]["employee"]["team_id"] == test_team.team_id
 
     def test_create_employee_as_employee_with_tenant_enforcement(
         self, client: TestClient, employee_token: str, test_tenant, test_team
@@ -60,7 +60,7 @@ class TestCreateEmployee:
             "email": "new.member@example.com",
             "phone": "+1987654321",
             "employee_code": "emp002",
-            "team_id": test_team["team_id"],
+            "team_id": test_team.team_id,
             "password": "TestPass123!",
             "gender": "Female"
         }
@@ -75,7 +75,7 @@ class TestCreateEmployee:
         data = response.json()
         assert data["success"] is True
         # Tenant ID should be enforced from token, not payload
-        assert data["data"]["employee"]["tenant_id"] == test_tenant["tenant_id"]
+        assert data["data"]["employee"]["tenant_id"] == test_tenant.tenant_id
 
     def test_create_employee_as_admin_without_tenant_id(self, client: TestClient, admin_token: str, test_team):
         """Admin must provide tenant_id in payload"""
@@ -84,7 +84,7 @@ class TestCreateEmployee:
             "email": "test@example.com",
             "phone": "+1234567890",
             "employee_code": "emp003",
-            "team_id": test_team["team_id"],
+            "team_id": test_team.team_id,
             "password": "TestPass123!"
         }
 
@@ -106,7 +106,7 @@ class TestCreateEmployee:
             "phone": "+1234567890",
             "employee_code": "emp004",
             "team_id": 99999,  # Non-existent team
-            "tenant_id": test_tenant["tenant_id"],
+            "tenant_id": test_tenant.tenant_id,
             "password": "TestPass123!"
         }
 
@@ -129,8 +129,8 @@ class TestCreateEmployee:
             "email": "test@example.com",
             "phone": "+1234567890",
             "employee_code": "emp005",
-            "team_id": second_team["team_id"],  # Team from second tenant
-            "tenant_id": test_tenant["tenant_id"],  # But employee for first tenant
+            "team_id": second_team.team_id,  # Team from second tenant
+            "tenant_id": test_tenant.tenant_id,  # But employee for first tenant
             "password": "TestPass123!"
         }
 
@@ -152,9 +152,9 @@ class TestCreateEmployee:
             "name": "Duplicate Code Employee",
             "email": "different@example.com",
             "phone": "+1111111111",
-            "employee_code": test_employee["employee_code"],  # Duplicate code
-            "team_id": test_team["team_id"],
-            "tenant_id": test_tenant["tenant_id"],
+            "employee_code": test_employee["employee"].employee_code,  # Duplicate code
+            "team_id": test_team.team_id,
+            "tenant_id": test_tenant.tenant_id,
             "password": "TestPass123!"
         }
 
@@ -174,11 +174,11 @@ class TestCreateEmployee:
         """Cannot create employee with duplicate email"""
         payload = {
             "name": "Duplicate Email Employee",
-            "email": test_employee["email"],  # Duplicate email
+            "email": test_employee["employee"].email,  # Duplicate email
             "phone": "+1111111111",
             "employee_code": "unique_code_123",
-            "team_id": test_team["team_id"],
-            "tenant_id": test_tenant["tenant_id"],
+            "team_id": test_team.team_id,
+            "tenant_id": test_tenant.tenant_id,
             "password": "TestPass123!"
         }
 
@@ -199,8 +199,8 @@ class TestCreateEmployee:
             "email": "test@example.com",
             "phone": "invalid-phone",  # Invalid format
             "employee_code": "emp006",
-            "team_id": test_team["team_id"],
-            "tenant_id": test_tenant["tenant_id"],
+            "team_id": test_team.team_id,
+            "tenant_id": test_tenant.tenant_id,
             "password": "TestPass123!"
         }
 
@@ -221,8 +221,8 @@ class TestCreateEmployee:
             "email": "test@example.com",
             "phone": "+1234567890",
             "employee_code": "emp007",
-            "team_id": test_team["team_id"],
-            "tenant_id": test_tenant["tenant_id"],
+            "team_id": test_team.team_id,
+            "tenant_id": test_tenant.tenant_id,
             "password": "weak"  # Too weak
         }
 
@@ -248,8 +248,8 @@ class TestCreateEmployee:
             "email": "special@example.com",
             "phone": "+1234567890",
             "employee_code": "emp008",
-            "team_id": test_team["team_id"],
-            "tenant_id": test_tenant["tenant_id"],
+            "team_id": test_team.team_id,
+            "tenant_id": test_tenant.tenant_id,
             "password": "TestPass123!",
             "special_needs": "Wheelchair",
             "special_needs_start_date": start_date,
@@ -276,8 +276,8 @@ class TestCreateEmployee:
             "email": "test@example.com",
             "phone": "+1234567890",
             "employee_code": "emp009",
-            "team_id": test_team["team_id"],
-            "tenant_id": test_tenant["tenant_id"],
+            "team_id": test_team.team_id,
+            "tenant_id": test_tenant.tenant_id,
             "password": "TestPass123!",
             "special_needs": "Wheelchair"
             # Missing dates
@@ -305,8 +305,8 @@ class TestCreateEmployee:
             "email": "test@example.com",
             "phone": "+1234567890",
             "employee_code": "emp010",
-            "team_id": test_team["team_id"],
-            "tenant_id": test_tenant["tenant_id"],
+            "team_id": test_team.team_id,
+            "tenant_id": test_tenant.tenant_id,
             "password": "TestPass123!",
             "special_needs": "Wheelchair",
             "special_needs_start_date": past_date,
@@ -332,8 +332,8 @@ class TestCreateEmployee:
             "email": "test@example.com",
             "phone": "+1234567890",
             "employee_code": "emp011",
-            "team_id": test_team["team_id"],
-            "tenant_id": test_tenant["tenant_id"],
+            "team_id": test_team.team_id,
+            "tenant_id": test_tenant.tenant_id,
             "password": "TestPass123!",
             "latitude": 100.0,  # Invalid (must be -90 to 90)
             "longitude": -74.0060
@@ -356,8 +356,8 @@ class TestCreateEmployee:
             "email": "test@example.com",
             "phone": "+1234567890",
             "employee_code": "emp012",
-            "team_id": test_team["team_id"],
-            "tenant_id": test_tenant["tenant_id"],
+            "team_id": test_team.team_id,
+            "tenant_id": test_tenant.tenant_id,
             "password": "TestPass123!"
         }
 
@@ -378,8 +378,8 @@ class TestCreateEmployee:
             "email": "test@example.com",
             "phone": "+1234567890",
             "employee_code": "emp013",
-            "team_id": test_team["team_id"],
-            "tenant_id": test_tenant["tenant_id"],
+            "team_id": test_team.team_id,
+            "tenant_id": test_tenant.tenant_id,
             "password": "TestPass123!"
         }
 
@@ -394,7 +394,7 @@ class TestListEmployees:
     def test_list_employees_as_admin(self, client: TestClient, admin_token: str, test_tenant, test_employee):
         """Admin can list employees with tenant_id filter"""
         response = client.get(
-            f"/api/v1/employees/?tenant_id={test_tenant['tenant_id']}",
+            f"/api/v1/employees/?tenant_id={test_tenant.tenant_id}",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
 
@@ -420,7 +420,7 @@ class TestListEmployees:
         assert data["success"] is True
         # All employees should belong to same tenant
         for employee in data["data"]["items"]:
-            assert employee["tenant_id"] == test_tenant["tenant_id"]
+            assert employee["tenant_id"] == test_tenant.tenant_id
 
     def test_list_employees_as_admin_without_tenant_id(self, client: TestClient, admin_token: str):
         """Admin must provide tenant_id filter"""
@@ -436,7 +436,7 @@ class TestListEmployees:
     def test_list_employees_with_name_filter(self, client: TestClient, admin_token: str, test_tenant, test_employee):
         """Filter employees by name"""
         response = client.get(
-            f"/api/v1/employees/?tenant_id={test_tenant['tenant_id']}&name={test_employee['name'][:5]}",
+            f"/api/v1/employees/?tenant_id={test_tenant.tenant_id}&name={test_employee["employee"].name[:5]}",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
 
@@ -445,14 +445,14 @@ class TestListEmployees:
         assert data["success"] is True
         # All returned employees should have matching name
         for employee in data["data"]["items"]:
-            assert test_employee["name"][:5].lower() in employee["name"].lower()
+            assert test_employee["employee"].name[:5].lower() in employee["name"].lower()
 
     def test_list_employees_with_team_filter(
         self, client: TestClient, admin_token: str, test_tenant, test_team, test_employee
     ):
         """Filter employees by team_id"""
         response = client.get(
-            f"/api/v1/employees/?tenant_id={test_tenant['tenant_id']}&team_id={test_team['team_id']}",
+            f"/api/v1/employees/?tenant_id={test_tenant.tenant_id}&team_id={test_team.team_id}",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
 
@@ -461,14 +461,14 @@ class TestListEmployees:
         assert data["success"] is True
         # All returned employees should belong to specified team
         for employee in data["data"]["items"]:
-            assert employee["team_id"] == test_team["team_id"]
+            assert employee["team_id"] == test_team.team_id
 
     def test_list_employees_with_is_active_filter(
         self, client: TestClient, admin_token: str, test_tenant
     ):
         """Filter employees by is_active status"""
         response = client.get(
-            f"/api/v1/employees/?tenant_id={test_tenant['tenant_id']}&is_active=true",
+            f"/api/v1/employees/?tenant_id={test_tenant.tenant_id}&is_active=true",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
 
@@ -482,7 +482,7 @@ class TestListEmployees:
     def test_list_employees_with_pagination(self, client: TestClient, admin_token: str, test_tenant):
         """Pagination works correctly"""
         response = client.get(
-            f"/api/v1/employees/?tenant_id={test_tenant['tenant_id']}&skip=0&limit=5",
+            f"/api/v1/employees/?tenant_id={test_tenant.tenant_id}&skip=0&limit=5",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
 
@@ -496,7 +496,7 @@ class TestListEmployees:
     ):
         """Cannot filter by team_id from different tenant"""
         response = client.get(
-            f"/api/v1/employees/?tenant_id={test_tenant['tenant_id']}&team_id={second_team['team_id']}",
+            f"/api/v1/employees/?tenant_id={test_tenant.tenant_id}&team_id={second_team.team_id}",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
 
@@ -538,7 +538,7 @@ class TestGetSingleEmployee:
     def test_get_employee_as_admin(self, client: TestClient, admin_token: str, test_employee):
         """Admin can retrieve any employee"""
         response = client.get(
-            f"/api/v1/employees/{test_employee['employee_id']}",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
 
@@ -546,29 +546,29 @@ class TestGetSingleEmployee:
         data = response.json()
         assert data["success"] is True
         assert "employee" in data["data"]
-        assert data["data"]["employee"]["employee_id"] == test_employee["employee_id"]
-        assert data["data"]["employee"]["name"] == test_employee["name"]
+        assert data["data"]["employee"]["employee_id"] == test_employee["employee"].employee_id
+        assert data["data"]["employee"]["name"] == test_employee["employee"].name
 
     def test_get_employee_as_employee_own_tenant(
         self, client: TestClient, employee_token: str, test_employee
     ):
         """Employee can retrieve employee from their own tenant"""
         response = client.get(
-            f"/api/v1/employees/{test_employee['employee_id']}",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}",
             headers={"Authorization": f"Bearer {employee_token}"}
         )
 
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
-        assert data["data"]["employee"]["employee_id"] == test_employee["employee_id"]
+        assert data["data"]["employee"]["employee_id"] == test_employee["employee"].employee_id
 
     def test_get_employee_as_employee_other_tenant(
         self, client: TestClient, employee_token: str, second_employee
     ):
         """Employee cannot retrieve employee from different tenant"""
         response = client.get(
-            f"/api/v1/employees/{second_employee['employee_id']}",
+            f"/api/v1/employees/{second_employee["employee"].employee_id}",
             headers={"Authorization": f"Bearer {employee_token}"}
         )
 
@@ -590,7 +590,7 @@ class TestGetSingleEmployee:
     def test_get_employee_includes_tenant_location(self, client: TestClient, admin_token: str, test_employee):
         """Response includes tenant location details"""
         response = client.get(
-            f"/api/v1/employees/{test_employee['employee_id']}",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
 
@@ -605,7 +605,7 @@ class TestGetSingleEmployee:
     def test_get_employee_as_vendor_forbidden(self, client: TestClient, vendor_token: str, test_employee):
         """Vendors cannot retrieve employees"""
         response = client.get(
-            f"/api/v1/employees/{test_employee['employee_id']}",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}",
             headers={"Authorization": f"Bearer {vendor_token}"}
         )
 
@@ -615,7 +615,7 @@ class TestGetSingleEmployee:
 
     def test_get_employee_without_auth(self, client: TestClient, test_employee):
         """Cannot retrieve employee without authentication"""
-        response = client.get(f"/api/v1/employees/{test_employee['employee_id']}")
+        response = client.get(f"/api/v1/employees/{test_employee["employee"].employee_id}")
         assert response.status_code == 401
 
 
@@ -630,7 +630,7 @@ class TestUpdateEmployee:
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee['employee_id']}",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {admin_token}"}
         )
@@ -650,7 +650,7 @@ class TestUpdateEmployee:
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee['employee_id']}",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {employee_token}"}
         )
@@ -669,7 +669,7 @@ class TestUpdateEmployee:
         }
 
         response = client.put(
-            f"/api/v1/employees/{second_employee['employee_id']}",
+            f"/api/v1/employees/{second_employee["employee"].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {employee_token}"}
         )
@@ -680,13 +680,13 @@ class TestUpdateEmployee:
 
     def test_update_employee_partial_update(self, client: TestClient, admin_token: str, test_employee):
         """Partial update works correctly"""
-        original_email = test_employee["email"]
+        original_email = test_employee["employee"].email
         payload = {
             "name": "Partially Updated"
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee['employee_id']}",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {admin_token}"}
         )
@@ -703,11 +703,11 @@ class TestUpdateEmployee:
     ):
         """Can update employee to different team within same tenant"""
         payload = {
-            "team_id": second_team_same_tenant["team_id"]
+            "team_id": second_team_same_tenant.team_id
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee['employee_id']}",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {admin_token}"}
         )
@@ -715,18 +715,18 @@ class TestUpdateEmployee:
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
-        assert data["data"]["employee"]["team_id"] == second_team_same_tenant["team_id"]
+        assert data["data"]["employee"]["team_id"] == second_team_same_tenant.team_id
 
     def test_update_employee_with_team_from_different_tenant(
         self, client: TestClient, admin_token: str, test_employee, second_team
     ):
         """Cannot update employee to team from different tenant"""
         payload = {
-            "team_id": second_team["team_id"]  # Team from different tenant
+            "team_id": second_team.team_id  # Team from different tenant
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee['employee_id']}",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {admin_token}"}
         )
@@ -742,7 +742,7 @@ class TestUpdateEmployee:
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee['employee_id']}",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {admin_token}"}
         )
@@ -758,7 +758,7 @@ class TestUpdateEmployee:
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee['employee_id']}",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {admin_token}"}
         )
@@ -774,7 +774,7 @@ class TestUpdateEmployee:
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee['employee_id']}",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {admin_token}"}
         )
@@ -806,7 +806,7 @@ class TestUpdateEmployee:
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee['employee_id']}",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {vendor_token}"}
         )
@@ -822,7 +822,7 @@ class TestUpdateEmployee:
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee['employee_id']}",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}",
             json=payload
         )
 
@@ -834,10 +834,10 @@ class TestToggleEmployeeStatus:
 
     def test_toggle_employee_status_as_admin(self, client: TestClient, admin_token: str, test_employee):
         """Admin can toggle employee status"""
-        original_status = test_employee["is_active"]
+        original_status = test_employee["employee"].is_active
 
         response = client.patch(
-            f"/api/v1/employees/{test_employee['employee_id']}/toggle-status",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}/toggle-status",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
 
@@ -850,7 +850,7 @@ class TestToggleEmployeeStatus:
         """Toggle twice returns to original state"""
         # First toggle
         response1 = client.patch(
-            f"/api/v1/employees/{test_employee['employee_id']}/toggle-status",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}/toggle-status",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
         assert response1.status_code == 200
@@ -858,7 +858,7 @@ class TestToggleEmployeeStatus:
 
         # Second toggle
         response2 = client.patch(
-            f"/api/v1/employees/{test_employee['employee_id']}/toggle-status",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}/toggle-status",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
         assert response2.status_code == 200
@@ -871,7 +871,7 @@ class TestToggleEmployeeStatus:
     ):
         """Employee can toggle status within their tenant"""
         response = client.patch(
-            f"/api/v1/employees/{test_employee['employee_id']}/toggle-status",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}/toggle-status",
             headers={"Authorization": f"Bearer {employee_token}"}
         )
 
@@ -884,7 +884,7 @@ class TestToggleEmployeeStatus:
     ):
         """Employee cannot toggle status in different tenant"""
         response = client.patch(
-            f"/api/v1/employees/{second_employee['employee_id']}/toggle-status",
+            f"/api/v1/employees/{second_employee["employee"].employee_id}/toggle-status",
             headers={"Authorization": f"Bearer {employee_token}"}
         )
 
@@ -906,7 +906,7 @@ class TestToggleEmployeeStatus:
     def test_toggle_employee_status_as_vendor_forbidden(self, client: TestClient, vendor_token: str, test_employee):
         """Vendors cannot toggle employee status"""
         response = client.patch(
-            f"/api/v1/employees/{test_employee['employee_id']}/toggle-status",
+            f"/api/v1/employees/{test_employee["employee"].employee_id}/toggle-status",
             headers={"Authorization": f"Bearer {vendor_token}"}
         )
 
@@ -917,7 +917,7 @@ class TestToggleEmployeeStatus:
     def test_toggle_employee_status_without_auth(self, client: TestClient, test_employee):
         """Cannot toggle status without authentication"""
         response = client.patch(
-            f"/api/v1/employees/{test_employee['employee_id']}/toggle-status"
+            f"/api/v1/employees/{test_employee["employee"].employee_id}/toggle-status"
         )
 
         assert response.status_code == 401
@@ -934,8 +934,8 @@ class TestEmployeeIntegration:
             "email": "lifecycle@example.com",
             "phone": "+1111111111",
             "employee_code": "lifecycle001",
-            "team_id": test_team["team_id"],
-            "tenant_id": test_tenant["tenant_id"],
+            "team_id": test_team.team_id,
+            "tenant_id": test_tenant.tenant_id,
             "password": "TestPass123!",
             "gender": "Male"
         }
@@ -979,7 +979,7 @@ class TestEmployeeIntegration:
 
         # 5. Verify inactive in list
         list_response = client.get(
-            f"/api/v1/employees/?tenant_id={test_tenant['tenant_id']}&is_active=false",
+            f"/api/v1/employees/?tenant_id={test_tenant.tenant_id}&is_active=false",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
         assert list_response.status_code == 200
@@ -992,14 +992,14 @@ class TestEmployeeIntegration:
         """Verify employees cannot access data from different tenants"""
         # Try to get employee from different tenant
         get_response = client.get(
-            f"/api/v1/employees/{second_employee['employee_id']}",
+            f"/api/v1/employees/{second_employee["employee"].employee_id}",
             headers={"Authorization": f"Bearer {employee_token}"}
         )
         assert get_response.status_code == 404
 
         # Try to update employee from different tenant
         update_response = client.put(
-            f"/api/v1/employees/{second_employee['employee_id']}",
+            f"/api/v1/employees/{second_employee["employee"].employee_id}",
             json={"name": "Should Fail"},
             headers={"Authorization": f"Bearer {employee_token}"}
         )
@@ -1012,12 +1012,12 @@ class TestEmployeeIntegration:
         )
         assert list_response.status_code == 200
         for employee in list_response.json()["data"]["items"]:
-            assert employee["tenant_id"] == test_tenant["tenant_id"]
+            assert employee["tenant_id"] == test_tenant.tenant_id
 
     def test_employee_with_multiple_filters(self, client: TestClient, admin_token: str, test_tenant):
         """Test combining multiple filters"""
         response = client.get(
-            f"/api/v1/employees/?tenant_id={test_tenant['tenant_id']}&is_active=true&skip=0&limit=10",
+            f"/api/v1/employees/?tenant_id={test_tenant.tenant_id}&is_active=true&skip=0&limit=10",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
 
@@ -1026,5 +1026,5 @@ class TestEmployeeIntegration:
         assert data["success"] is True
         # Verify all employees match filters
         for employee in data["data"]["items"]:
-            assert employee["tenant_id"] == test_tenant["tenant_id"]
+            assert employee["tenant_id"] == test_tenant.tenant_id
             assert employee["is_active"] is True
