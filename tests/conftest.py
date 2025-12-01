@@ -221,6 +221,54 @@ def seed_permissions(test_db):
             action="delete",
             description="Delete employee"
         ),
+        Permission(
+            permission_id=13,
+            module="shift",
+            action="create",
+            description="Create shift"
+        ),
+        Permission(
+            permission_id=14,
+            module="shift",
+            action="read",
+            description="Read shift"
+        ),
+        Permission(
+            permission_id=15,
+            module="shift",
+            action="update",
+            description="Update shift"
+        ),
+        Permission(
+            permission_id=16,
+            module="shift",
+            action="delete",
+            description="Delete shift"
+        ),
+        Permission(
+            permission_id=17,
+            module="cutoff",
+            action="read",
+            description="Read cutoff"
+        ),
+        Permission(
+            permission_id=18,
+            module="cutoff",
+            action="update",
+            description="Update cutoff"
+        ),
+        Permission(
+            permission_id=19,
+            module="weekoff-config",
+            action="read",
+            description="Read weekoff config"
+        ),
+        Permission(
+            permission_id=20,
+            module="weekoff-config",
+            action="update",
+            description="Update weekoff config"
+        ),
     ]
     
     for perm in permissions:
@@ -442,7 +490,10 @@ def admin_token(admin_user):
             "permissions": [
                 "admin.tenant.create", "admin.tenant.read", "admin.tenant.update", "admin.tenant.delete",
                 "team.create", "team.read", "team.update", "team.delete",
-                "employee.create", "employee.read", "employee.update", "employee.delete"
+                "employee.create", "employee.read", "employee.update", "employee.delete",
+                "shift.create", "shift.read", "shift.update", "shift.delete",
+                "cutoff.read", "cutoff.update",
+                "weekoff-config.read", "weekoff-config.update"
             ]
         }
     )
@@ -462,7 +513,10 @@ def employee_token(employee_user):
             "email": employee_user["employee"].email,
             "permissions": [
                 "admin.tenant.read", "employee.read", "employee.create", "employee.update",
-                "team.create", "team.read", "team.update"
+                "team.create", "team.read", "team.update",
+                "shift.create", "shift.read", "shift.update",
+                "cutoff.read", "cutoff.update",
+                "weekoff-config.read", "weekoff-config.update"
             ]
         }
     )
@@ -514,10 +568,7 @@ def sample_tenant_data():
 @pytest.fixture(scope="function")
 def test_tenant(employee_user):
     """Return tenant from employee_user (TEST001) for consistent testing"""
-    return {
-        "tenant_id": employee_user["tenant"].tenant_id,
-        "name": employee_user["tenant"].name
-    }
+    return employee_user["tenant"]
 
 
 @pytest.fixture(scope="function")
@@ -534,10 +585,7 @@ def second_tenant(test_db):
     test_db.add(tenant)
     test_db.commit()
     test_db.refresh(tenant)
-    return {
-        "tenant_id": tenant.tenant_id,
-        "name": tenant.name
-    }
+    return tenant
 
 
 @pytest.fixture(scope="function")
@@ -553,11 +601,7 @@ def test_team(test_db, employee_user):
     test_db.add(team)
     test_db.commit()
     test_db.refresh(team)
-    return {
-        "team_id": team.team_id,
-        "name": team.name,
-        "tenant_id": team.tenant_id
-    }
+    return team
 
 
 @pytest.fixture(scope="function")
@@ -565,7 +609,7 @@ def second_team(test_db, second_tenant):
     """Create a team in the second tenant"""
     team = Team(
         team_id=11,  # Use ID 11
-        tenant_id=second_tenant["tenant_id"],
+        tenant_id=second_tenant.tenant_id,
         name="Second Tenant Team",
         description="Team for second tenant",
         is_active=True
@@ -573,11 +617,7 @@ def second_team(test_db, second_tenant):
     test_db.add(team)
     test_db.commit()
     test_db.refresh(team)
-    return {
-        "team_id": team.team_id,
-        "name": team.name,
-        "tenant_id": team.tenant_id
-    }
+    return team
 
 
 @pytest.fixture(scope="function")
@@ -593,11 +633,7 @@ def second_team_same_tenant(test_db, employee_user):
     test_db.add(team)
     test_db.commit()
     test_db.refresh(team)
-    return {
-        "team_id": team.team_id,
-        "name": team.name,
-        "tenant_id": team.tenant_id
-    }
+    return team
 
 
 @pytest.fixture(scope="function")
@@ -608,8 +644,8 @@ def test_employee(test_db, test_tenant, test_team):
     
     employee = Employee(
         employee_id=100,
-        tenant_id=test_tenant["tenant_id"],
-        team_id=test_team["team_id"],
+        tenant_id=test_tenant.tenant_id,
+        team_id=test_team.team_id,
         role_id=employee_role.role_id if employee_role else 3,
         name="Test Employee One",
         employee_code="TESTEMPLOYEE001",
@@ -626,14 +662,54 @@ def test_employee(test_db, test_tenant, test_team):
     test_db.commit()
     test_db.refresh(employee)
     return {
-        "employee_id": employee.employee_id,
-        "name": employee.name,
-        "email": employee.email,
-        "employee_code": employee.employee_code,
+        "employee": employee,
         "tenant_id": employee.tenant_id,
-        "team_id": employee.team_id,
-        "is_active": employee.is_active
+        "team_id": employee.team_id
     }
+
+
+@pytest.fixture(scope="function")
+def test_shift(test_db, test_tenant):
+    """Create a test shift in TEST001 tenant"""
+    from app.models.shift import Shift
+    from datetime import time
+    shift = Shift(
+        shift_id=20,
+        tenant_id=test_tenant.tenant_id,
+        shift_code="TEST_SHIFT_001",
+        log_type="IN",
+        shift_time=time(9, 0),
+        pickup_type="Pickup",
+        gender="Male",
+        waiting_time_minutes=15,
+        is_active=True
+    )
+    test_db.add(shift)
+    test_db.commit()
+    test_db.refresh(shift)
+    return shift
+
+
+@pytest.fixture(scope="function")
+def second_shift(test_db, second_tenant):
+    """Create a shift in second tenant for isolation testing"""
+    from app.models.shift import Shift
+    from datetime import time
+    shift = Shift(
+        shift_id=21,
+        tenant_id=second_tenant.tenant_id,
+        shift_code="TEST_SHIFT_002",
+        log_type="OUT",
+        shift_time=time(18, 0),
+        pickup_type="Nodal",
+        gender="Female",
+        waiting_time_minutes=20,
+        is_active=True
+    )
+    test_db.add(shift)
+    test_db.commit()
+    test_db.refresh(shift)
+    return shift
 
 
 @pytest.fixture(scope="function")
@@ -644,8 +720,8 @@ def second_employee(test_db, second_tenant, second_team):
     
     employee = Employee(
         employee_id=101,
-        tenant_id=second_tenant["tenant_id"],
-        team_id=second_team["team_id"],
+        tenant_id=second_tenant.tenant_id,
+        team_id=second_team.team_id,
         role_id=employee_role.role_id if employee_role else 3,
         name="Second Tenant Employee",
         employee_code="TESTEMPLOYEE002",
@@ -658,12 +734,8 @@ def second_employee(test_db, second_tenant, second_team):
     test_db.commit()
     test_db.refresh(employee)
     return {
-        "employee_id": employee.employee_id,
-        "name": employee.name,
-        "email": employee.email,
-        "employee_code": employee.employee_code,
+        "employee": employee,
         "tenant_id": employee.tenant_id,
-        "team_id": employee.team_id,
-        "is_active": employee.is_active
+        "team_id": employee.team_id
     }
 

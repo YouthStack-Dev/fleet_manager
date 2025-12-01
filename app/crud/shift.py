@@ -21,14 +21,14 @@ class CRUDShift(CRUDBase[Shift, ShiftCreate, ShiftUpdate]):
 
     def create(self, db: Session, *, obj_in: ShiftCreate) -> Shift:
         """Create a new shift"""
-        db_obj = Shift(**obj_in.dict())
+        db_obj = Shift(**obj_in.model_dump())
         db.add(db_obj)
         db.flush()
         return db_obj
     
     def create_with_tenant(self, db: Session, *, obj_in: ShiftCreate, tenant_id: str) -> Shift:
         """Create a shift tied to a tenant"""
-        data = obj_in.dict(exclude_unset=True)
+        data = obj_in.model_dump(exclude_unset=True)
         data["tenant_id"] = tenant_id
         db_obj = Shift(**data)
         db.add(db_obj)
@@ -39,7 +39,7 @@ class CRUDShift(CRUDBase[Shift, ShiftCreate, ShiftUpdate]):
         self, db: Session, *, db_obj: Shift, obj_in: Union[ShiftUpdate, Dict[str, Any]]
     ) -> Shift:
         """Update shift"""
-        update_data = obj_in if isinstance(obj_in, dict) else obj_in.dict(exclude_unset=True)
+        update_data = obj_in if isinstance(obj_in, dict) else obj_in.model_dump(exclude_unset=True)
         return super().update(db, db_obj=db_obj, obj_in=update_data)
 
     def get_all(

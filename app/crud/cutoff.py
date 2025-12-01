@@ -38,7 +38,7 @@ class CRUDCutoff(CRUDBase[Cutoff, CutoffCreate, CutoffUpdate]):
 
     def update_by_tenant(self, db: Session, *, tenant_id: str, obj_in: CutoffUpdate) -> Cutoff:
         db_obj = self.ensure_cutoff(db, tenant_id=tenant_id)
-        update_data = obj_in.dict(exclude_unset=True)
+        update_data = obj_in.model_dump(exclude_unset=True)
 
         # Never allow tenant_id to be updated
         update_data.pop("tenant_id", None)

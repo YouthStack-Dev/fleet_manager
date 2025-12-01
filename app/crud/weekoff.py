@@ -52,7 +52,7 @@ class CRUDWeekoff(CRUDBase[WeekoffConfig, WeekoffConfigCreate, WeekoffConfigUpda
         self, db: Session, *, employee_id: int, obj_in: Union[WeekoffConfigUpdate, Dict[str, Any]]
     ) -> WeekoffConfig:
         db_obj = self.ensure_weekoff_config(db, employee_id=employee_id)
-        update_data = obj_in if isinstance(obj_in, dict) else obj_in.dict(exclude_unset=True)
+        update_data = obj_in if isinstance(obj_in, dict) else obj_in.model_dump(exclude_unset=True)
         for field, value in update_data.items():
             setattr(db_obj, field, value)
         db.flush()
@@ -65,7 +65,7 @@ class CRUDWeekoff(CRUDBase[WeekoffConfig, WeekoffConfigCreate, WeekoffConfigUpda
         if not employees:
             return []
 
-        update_data = obj_in if isinstance(obj_in, dict) else obj_in.dict(exclude_unset=True)
+        update_data = obj_in if isinstance(obj_in, dict) else obj_in.model_dump(exclude_unset=True)
         results = []
         for emp in employees:
             db_obj = self.ensure_weekoff_config(db, employee_id=emp.employee_id)
@@ -82,7 +82,7 @@ class CRUDWeekoff(CRUDBase[WeekoffConfig, WeekoffConfigCreate, WeekoffConfigUpda
         if not employees:
             return []
 
-        update_data = obj_in if isinstance(obj_in, dict) else obj_in.dict(exclude_unset=True)
+        update_data = obj_in if isinstance(obj_in, dict) else obj_in.model_dump(exclude_unset=True)
         results = []
         for emp in employees:
             db_obj = self.ensure_weekoff_config(db, employee_id=emp.employee_id)
@@ -131,7 +131,7 @@ class CRUDWeekoff(CRUDBase[WeekoffConfig, WeekoffConfigCreate, WeekoffConfigUpda
                 db.flush()
 
             # apply updates
-            for field, value in obj_in.dict(exclude_unset=True).items():
+            for field, value in obj_in.model_dump(exclude_unset=True).items():
                 setattr(config, field, value)
 
             updated_configs.append(config)
