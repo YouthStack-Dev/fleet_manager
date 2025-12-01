@@ -59,7 +59,7 @@ class TenantCreate(BaseModel):
     latitude: float = Field(..., ge=-90, le=90, description="Latitude coordinate")
     is_active: bool = Field(default=True, description="Is tenant active?")
     permission_ids: List[int] = Field(
-        ..., min_items=1, description="List of permission IDs to assign to tenant admin policy"
+        ..., min_length=1, description="List of permission IDs to assign to tenant admin policy"
     )
     employee_email: EmailStr = Field(..., description="Admin employee email")
     employee_phone: str = Field(..., min_length=7, max_length=20, description="Admin employee phone")

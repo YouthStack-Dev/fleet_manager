@@ -1,4 +1,4 @@
-from pydantic import BaseModel, SerializationInfo, field_serializer, validator, field_validator
+from pydantic import BaseModel, SerializationInfo, field_serializer, validator, field_validator, ConfigDict
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -48,8 +48,7 @@ class CutoffOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
     @field_serializer("booking_cutoff", "cancel_cutoff")
     def serialize_cutoff(self, v: timedelta, _info):

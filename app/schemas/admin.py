@@ -1,5 +1,5 @@
 import re
-from pydantic import BaseModel, EmailStr, validator, field_validator, Field
+from pydantic import BaseModel, EmailStr, validator, field_validator, Field, ConfigDict
 from typing import Optional, List
 from datetime import datetime
 
@@ -86,8 +86,7 @@ class AdminResponse(AdminBase):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AdminPaginationResponse(BaseModel):
