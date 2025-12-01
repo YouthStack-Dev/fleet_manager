@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from unittest.mock import Mock, patch
 
 from app.database.session import Base, get_db
 from main import app
@@ -38,7 +39,7 @@ def test_db():
     Base.metadata.create_all(bind=engine)
     
     # Create session factory
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    TestingSessionLocal = sessionmaker(autoflush=False, bind=engine)
     
     # Create a session
     db = TestingSessionLocal()
@@ -52,9 +53,9 @@ def test_db():
 
 
 @pytest.fixture(scope="function")
-def client(test_db):
+def client(test_db, monkeypatch):
     """
-    Create a test client with database override.
+    Create a test client with database override and bypassed permission checking for tests.
     """
     def override_get_db():
         try:
@@ -63,6 +64,78 @@ def client(test_db):
             pass
     
     app.dependency_overrides[get_db] = override_get_db
+    
+    # Mock PermissionChecker to decode JWT directly without caching or introspection
+    from common_utils.auth.permission_checker import PermissionChecker
+    from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+    from fastapi import Depends, Request
+    import jwt
+    from app.config import settings
+    
+    security = HTTPBearer()
+    
+    original_call = PermissionChecker.__call__
+    
+    async def mock_permission_checker_call(self, request: Request, user_data=None):
+        """Mock __call__ that decodes JWT directly"""
+        # Get the authorization header
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            from fastapi import HTTPException, status as http_status
+            raise HTTPException(
+                status_code=http_status.HTTP_401_UNAUTHORIZED,
+                detail="Not authenticated"
+            )
+        
+        token = auth_header.replace("Bearer ", "")
+        
+        try:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            
+            # Convert string permissions to the expected format
+            permissions_strings = payload.get("permissions", [])
+            permissions_formatted = []
+            for perm_str in permissions_strings:
+                parts = perm_str.rsplit(".", 1)
+                if len(parts) == 2:
+                    permissions_formatted.append({
+                        "module": parts[0],
+                        "action": [parts[1]]
+                    })
+            
+            user_data = {
+                "user_id": payload.get("user_id"),
+                "user_type": payload.get("user_type"),
+                "tenant_id": payload.get("tenant_id"),
+                "vendor_id": payload.get("vendor_id"),
+                "permissions": permissions_formatted,
+                "email": payload.get("email"),
+            }
+            
+            # Check if user has required permissions
+            user_permissions = []
+            for p in user_data.get("permissions", []):
+                module = p.get("module", "")
+                actions = p.get("action", [])
+                user_permissions.extend([f"{module}.{action}" for action in actions])
+            
+            if not any(p in user_permissions for p in self.required_permissions):
+                from fastapi import HTTPException, status as http_status
+                raise HTTPException(
+                    status_code=http_status.HTTP_403_FORBIDDEN,
+                    detail="Insufficient permissions"
+                )
+            
+            return user_data
+        except jwt.InvalidTokenError:
+            from fastapi import HTTPException, status as http_status
+            raise HTTPException(
+                status_code=http_status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+    
+    # Patch the PermissionChecker's __call__ method
+    monkeypatch.setattr(PermissionChecker, "__call__", mock_permission_checker_call)
     
     with TestClient(app) as test_client:
         yield test_client
@@ -78,26 +151,26 @@ def seed_permissions(test_db):
     permissions = [
         Permission(
             permission_id=1,
-            module="admin",
-            action="tenant.create",
+            module="admin.tenant",
+            action="create",
             description="Create tenant"
         ),
         Permission(
             permission_id=2,
-            module="admin",
-            action="tenant.read",
+            module="admin.tenant",
+            action="read",
             description="Read tenant"
         ),
         Permission(
             permission_id=3,
-            module="admin",
-            action="tenant.update",
+            module="admin.tenant",
+            action="update",
             description="Update tenant"
         ),
         Permission(
             permission_id=4,
-            module="admin",
-            action="tenant.delete",
+            module="admin.tenant",
+            action="delete",
             description="Delete tenant"
         ),
         Permission(
@@ -131,10 +204,10 @@ def admin_user(test_db, seed_permissions):
     )
     test_db.add(tenant)
     
-    # Create admin role
+    # Create admin role (system role should have tenant_id=None)
     role = Role(
         role_id=1,
-        tenant_id="SYSTEM",
+        tenant_id=None,  # System roles must have NULL tenant_id
         name="SystemAdmin",
         description="System Administrator",
         is_system_role=True,
@@ -145,7 +218,7 @@ def admin_user(test_db, seed_permissions):
     # Create admin policy with all permissions
     policy = Policy(
         policy_id=1,
-        tenant_id="SYSTEM",
+        tenant_id="SYSTEM",  # Admin policy is for SYSTEM tenant
         name="SystemAdminPolicy",
         description="System Admin Policy",
         is_active=True
@@ -170,7 +243,7 @@ def admin_user(test_db, seed_permissions):
     test_db.add(team)
     test_db.flush()
     
-    # Create admin employee
+    # Create admin employee (employee is in SYSTEM tenant, uses system role)
     admin = Employee(
         employee_id=1,
         tenant_id="SYSTEM",
@@ -230,10 +303,23 @@ def employee_user(test_db, seed_permissions):
         is_active=True
     )
     test_db.add(policy)
+    
+    # Create admin policy for tenant (required for tenant updates)
+    admin_policy = Policy(
+        policy_id=3,
+        tenant_id="TEST001",
+        name="TEST001_AdminPolicy",
+        description="Admin Policy for TEST001",
+        is_active=True
+    )
+    test_db.add(admin_policy)
     test_db.flush()
     
-    # Attach only read permission
+    # Attach only read permission to employee policy
     policy.permissions = [seed_permissions[1], seed_permissions[4]]  # tenant.read and employee.read
+    
+    # Attach all permissions to admin policy
+    admin_policy.permissions = seed_permissions
     
     # Link role to policy
     role.policies.append(policy)
@@ -278,14 +364,15 @@ def admin_token(admin_user):
     """
     Generate JWT token for admin user.
     """
-    token_data = {
-        "user_id": admin_user["employee"].employee_id,
-        "user_type": "admin",
-        "tenant_id": admin_user["tenant"].tenant_id,
-        "email": admin_user["employee"].email,
-        "permissions": ["admin.tenant.create", "admin.tenant.read", "admin.tenant.update", "admin.tenant.delete"]
-    }
-    token = create_access_token(token_data)
+    token = create_access_token(
+        user_id=str(admin_user["employee"].employee_id),
+        tenant_id=admin_user["tenant"].tenant_id,
+        user_type="admin",
+        custom_claims={
+            "email": admin_user["employee"].email,
+            "permissions": ["admin.tenant.create", "admin.tenant.read", "admin.tenant.update", "admin.tenant.delete"]
+        }
+    )
     return f"Bearer {token}"
 
 
@@ -294,14 +381,15 @@ def employee_token(employee_user):
     """
     Generate JWT token for employee user.
     """
-    token_data = {
-        "user_id": employee_user["employee"].employee_id,
-        "user_type": "employee",
-        "tenant_id": employee_user["tenant"].tenant_id,
-        "email": employee_user["employee"].email,
-        "permissions": ["admin.tenant.read", "employee.read"]
-    }
-    token = create_access_token(token_data)
+    token = create_access_token(
+        user_id=str(employee_user["employee"].employee_id),
+        tenant_id=employee_user["tenant"].tenant_id,
+        user_type="employee",
+        custom_claims={
+            "email": employee_user["employee"].email,
+            "permissions": ["admin.tenant.read", "employee.read"]
+        }
+    )
     return f"Bearer {token}"
 
 
@@ -310,14 +398,15 @@ def vendor_token():
     """
     Generate JWT token for vendor user (limited access).
     """
-    token_data = {
-        "user_id": 999,
-        "user_type": "vendor",
-        "tenant_id": "VENDOR001",
-        "email": "vendor@test.com",
-        "permissions": []
-    }
-    token = create_access_token(token_data)
+    token = create_access_token(
+        user_id="999",
+        tenant_id="VENDOR001",
+        user_type="vendor",
+        custom_claims={
+            "email": "vendor@test.com",
+            "permissions": []
+        }
+    )
     return f"Bearer {token}"
 
 

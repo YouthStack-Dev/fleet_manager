@@ -17,6 +17,7 @@ class TeamUpdate(BaseModel):
 
 class TeamResponse(TeamBase):
     team_id: int
+    tenant_id: str
     created_at: datetime
     updated_at: datetime
 

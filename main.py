@@ -2,6 +2,7 @@
 import sys
 import os
 import shutil
+from contextlib import asynccontextmanager
 
 from app.models.tenant import Tenant
 from app.seed.seed_data import seed_admins, seed_drivers, seed_employees, seed_iam, seed_shifts, seed_teams, seed_tenants, seed_vehicle_types, seed_vehicles, seed_vendor_users, seed_weekoffs , seed_vendors # Add this import to check for executable availability
@@ -64,10 +65,23 @@ logger.info("ℹ️ This is an INFO message")
 logger.warning("⚠️ This is a WARNING message")
 logger.error("❌ This is an ERROR message (test only)")
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan context manager"""
+    # Startup
+    print("STARTUP EVENT: Called", file=sys.stdout, flush=True)
+    logger.info("🌟 Fleet Manager application starting up...")
+    # ...existing startup code...
+    yield
+    # Shutdown
+    logger.info("🛑 Fleet Manager application shutting down...")
+    # ...existing shutdown code...
+
 app = FastAPI(
     title="Fleet Manager API",
     description="API for Fleet Management System",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Set up CORS middleware
@@ -278,19 +292,6 @@ async def drop_tables_endpoint(
             detail=f"Failed to drop tables: {str(e)}"
         )
 
-
-@app.on_event("startup")
-async def startup_event():
-    """Application startup event"""
-    print("STARTUP EVENT: Called", file=sys.stdout, flush=True)
-    logger.info("🌟 Fleet Manager application starting up...")
-    # ...existing startup code...
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Application shutdown event"""
-    logger.info("🛑 Fleet Manager application shutting down...")
-    # ...existing shutdown code...
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

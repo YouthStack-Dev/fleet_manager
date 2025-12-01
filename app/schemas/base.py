@@ -1,7 +1,7 @@
 from typing import Any, Dict, Generic, List, Optional, TypeVar
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field, ConfigDict
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Generic type for data payload
 DataType = TypeVar('DataType')
@@ -120,5 +120,5 @@ def create_paginated_response(
             "has_next": page < total_pages,
             "has_prev": page > 1
         },
-        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     }
