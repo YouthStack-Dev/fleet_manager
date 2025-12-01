@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from typing import Optional, Dict, Any
 from fastapi import Request
-from datetime import datetime
+from datetime import datetime, timezone
 from app.models.audit_log import AuditLog
 from app.schemas.audit_log import AuditLogCreate
 from app.crud.audit_log import audit_log
@@ -54,7 +54,7 @@ class AuditService:
             },
             "description": description,
             "new_values": new_values,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
         # Add request info if available

@@ -203,6 +203,24 @@ def seed_permissions(test_db):
             action="delete",
             description="Delete team"
         ),
+        Permission(
+            permission_id=10,
+            module="employee",
+            action="create",
+            description="Create employee"
+        ),
+        Permission(
+            permission_id=11,
+            module="employee",
+            action="update",
+            description="Update employee"
+        ),
+        Permission(
+            permission_id=12,
+            module="employee",
+            action="delete",
+            description="Delete employee"
+        ),
     ]
     
     for perm in permissions:
@@ -229,7 +247,7 @@ def admin_user(test_db, seed_permissions):
     test_db.add(tenant)
     
     # Create admin role (system role should have tenant_id=None)
-    role = Role(
+    admin_role = Role(
         role_id=1,
         tenant_id=None,  # System roles must have NULL tenant_id
         name="SystemAdmin",
@@ -237,7 +255,20 @@ def admin_user(test_db, seed_permissions):
         is_system_role=True,
         is_active=True
     )
-    test_db.add(role)
+    test_db.add(admin_role)
+    
+    # Create Employee system role (required by employee CRUD) if it doesn't exist
+    employee_system_role = test_db.query(Role).filter(Role.name == "Employee", Role.is_system_role == True).first()
+    if not employee_system_role:
+        employee_system_role = Role(
+            role_id=3,
+            tenant_id=None,
+            name="Employee",
+            description="System Employee Role",
+            is_system_role=True,
+            is_active=True
+        )
+        test_db.add(employee_system_role)
     
     # Create admin policy with all permissions
     policy = Policy(
@@ -254,7 +285,7 @@ def admin_user(test_db, seed_permissions):
     policy.permissions = seed_permissions
     
     # Link role to policy
-    role.policies.append(policy)
+    admin_role.policies.append(policy)
     
     # Create team
     team = Team(
@@ -271,7 +302,7 @@ def admin_user(test_db, seed_permissions):
     admin = Employee(
         employee_id=1,
         tenant_id="SYSTEM",
-        role_id=role.role_id,
+        role_id=admin_role.role_id,
         team_id=team.team_id,
         name="Admin User",
         employee_code="ADMIN001",
@@ -286,7 +317,7 @@ def admin_user(test_db, seed_permissions):
     return {
         "employee": admin,
         "tenant": tenant,
-        "role": role,
+        "role": admin_role,
         "policy": policy
     }
 
@@ -296,6 +327,20 @@ def employee_user(test_db, seed_permissions):
     """
     Create a regular employee user with limited permissions.
     """
+    # Ensure Employee system role exists (needed by employee CRUD)
+    employee_system_role = test_db.query(Role).filter(Role.name == "Employee", Role.is_system_role == True).first()
+    if not employee_system_role:
+        employee_system_role = Role(
+            role_id=3,
+            tenant_id=None,
+            name="Employee",
+            description="System Employee Role",
+            is_system_role=True,
+            is_active=True
+        )
+        test_db.add(employee_system_role)
+        test_db.flush()
+    
     # Create tenant
     tenant = Tenant(
         tenant_id="TEST001",
@@ -340,7 +385,7 @@ def employee_user(test_db, seed_permissions):
     test_db.flush()
     
     # Attach only read permission to employee policy
-    policy.permissions = [seed_permissions[1], seed_permissions[4], seed_permissions[6], seed_permissions[7], seed_permissions[8]]  # tenant.read, employee.read, team.create, team.read, team.update
+    policy.permissions = [seed_permissions[1], seed_permissions[4], seed_permissions[6], seed_permissions[7], seed_permissions[8], seed_permissions[9], seed_permissions[10]]  # tenant.read, employee.read, team.create, team.read, team.update, employee.create, employee.update
     
     # Attach all permissions to admin policy
     admin_policy.permissions = seed_permissions
@@ -396,7 +441,8 @@ def admin_token(admin_user):
             "email": admin_user["employee"].email,
             "permissions": [
                 "admin.tenant.create", "admin.tenant.read", "admin.tenant.update", "admin.tenant.delete",
-                "team.create", "team.read", "team.update", "team.delete"
+                "team.create", "team.read", "team.update", "team.delete",
+                "employee.create", "employee.read", "employee.update", "employee.delete"
             ]
         }
     )
@@ -415,7 +461,7 @@ def employee_token(employee_user):
         custom_claims={
             "email": employee_user["employee"].email,
             "permissions": [
-                "admin.tenant.read", "employee.read",
+                "admin.tenant.read", "employee.read", "employee.create", "employee.update",
                 "team.create", "team.read", "team.update"
             ]
         }
@@ -463,3 +509,161 @@ def sample_tenant_data():
         "employee_longitude": -74.0060,
         "employee_gender": "Male"
     }
+
+
+@pytest.fixture(scope="function")
+def test_tenant(employee_user):
+    """Return tenant from employee_user (TEST001) for consistent testing"""
+    return {
+        "tenant_id": employee_user["tenant"].tenant_id,
+        "name": employee_user["tenant"].name
+    }
+
+
+@pytest.fixture(scope="function")
+def second_tenant(test_db):
+    """Create a second tenant for testing cross-tenant isolation"""
+    tenant = Tenant(
+        tenant_id="TEST002",
+        name="Second Test Company",
+        address="Second Test Address",
+        latitude=11.0,
+        longitude=21.0,
+        is_active=True
+    )
+    test_db.add(tenant)
+    test_db.commit()
+    test_db.refresh(tenant)
+    return {
+        "tenant_id": tenant.tenant_id,
+        "name": tenant.name
+    }
+
+
+@pytest.fixture(scope="function")
+def test_team(test_db, employee_user):
+    """Create a test team for employee tests in TEST001 tenant"""
+    team = Team(
+        team_id=10,  # Use ID 10 to avoid conflicts
+        tenant_id=employee_user["tenant"].tenant_id,
+        name="Test Team for Employees",
+        description="Team for employee tests",
+        is_active=True
+    )
+    test_db.add(team)
+    test_db.commit()
+    test_db.refresh(team)
+    return {
+        "team_id": team.team_id,
+        "name": team.name,
+        "tenant_id": team.tenant_id
+    }
+
+
+@pytest.fixture(scope="function")
+def second_team(test_db, second_tenant):
+    """Create a team in the second tenant"""
+    team = Team(
+        team_id=11,  # Use ID 11
+        tenant_id=second_tenant["tenant_id"],
+        name="Second Tenant Team",
+        description="Team for second tenant",
+        is_active=True
+    )
+    test_db.add(team)
+    test_db.commit()
+    test_db.refresh(team)
+    return {
+        "team_id": team.team_id,
+        "name": team.name,
+        "tenant_id": team.tenant_id
+    }
+
+
+@pytest.fixture(scope="function")
+def second_team_same_tenant(test_db, employee_user):
+    """Create a second team in the same tenant for testing team updates"""
+    team = Team(
+        team_id=12,  # Use ID 12
+        tenant_id=employee_user["tenant"].tenant_id,
+        name="Second Team Same Tenant",
+        description="Another team in same tenant",
+        is_active=True
+    )
+    test_db.add(team)
+    test_db.commit()
+    test_db.refresh(team)
+    return {
+        "team_id": team.team_id,
+        "name": team.name,
+        "tenant_id": team.tenant_id
+    }
+
+
+@pytest.fixture(scope="function")
+def test_employee(test_db, test_tenant, test_team):
+    """Create a test employee"""
+    # Get the system Employee role
+    employee_role = test_db.query(Role).filter(Role.name == "Employee", Role.is_system_role == True).first()
+    
+    employee = Employee(
+        employee_id=100,
+        tenant_id=test_tenant["tenant_id"],
+        team_id=test_team["team_id"],
+        role_id=employee_role.role_id if employee_role else 3,
+        name="Test Employee One",
+        employee_code="TESTEMPLOYEE001",
+        email="testemployee1@example.com",
+        phone="+1234567800",
+        password=hash_password("TestPass123!"),
+        address="100 Test Street",
+        latitude=40.7128,
+        longitude=-74.0060,
+        gender="Male",
+        is_active=True
+    )
+    test_db.add(employee)
+    test_db.commit()
+    test_db.refresh(employee)
+    return {
+        "employee_id": employee.employee_id,
+        "name": employee.name,
+        "email": employee.email,
+        "employee_code": employee.employee_code,
+        "tenant_id": employee.tenant_id,
+        "team_id": employee.team_id,
+        "is_active": employee.is_active
+    }
+
+
+@pytest.fixture(scope="function")
+def second_employee(test_db, second_tenant, second_team):
+    """Create an employee in the second tenant for isolation testing"""
+    # Get the system Employee role
+    employee_role = test_db.query(Role).filter(Role.name == "Employee", Role.is_system_role == True).first()
+    
+    employee = Employee(
+        employee_id=101,
+        tenant_id=second_tenant["tenant_id"],
+        team_id=second_team["team_id"],
+        role_id=employee_role.role_id if employee_role else 3,
+        name="Second Tenant Employee",
+        employee_code="TESTEMPLOYEE002",
+        email="testemployee2@example.com",
+        phone="+1234567801",
+        password=hash_password("TestPass123!"),
+        is_active=True
+    )
+    test_db.add(employee)
+    test_db.commit()
+    test_db.refresh(employee)
+    return {
+        "employee_id": employee.employee_id,
+        "name": employee.name,
+        "email": employee.email,
+        "employee_code": employee.employee_code,
+        "tenant_id": employee.tenant_id,
+        "team_id": employee.team_id,
+        "is_active": employee.is_active
+    }
+
