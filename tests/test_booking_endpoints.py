@@ -323,7 +323,7 @@ class TestCreateBooking:
             headers={"Authorization": f"Bearer {employee_token}"}
         )
         
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
 
 class TestGetBookingsByTenant:
@@ -416,7 +416,7 @@ class TestGetBookingsByTenant:
             headers={"Authorization": f"Bearer {employee_token}"}
         )
         
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
     def test_get_bookings_vendor_forbidden(self, client: TestClient, vendor_token: str, test_tenant):
         """Vendor cannot access bookings"""
@@ -834,7 +834,7 @@ class TestGetGroupedBookings:
             headers={"Authorization": f"Bearer {employee_token}"}
         )
         
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
     def test_get_grouped_bookings_vendor_forbidden(self, client: TestClient, vendor_token: str, test_tenant):
         """Vendor cannot access grouped bookings"""

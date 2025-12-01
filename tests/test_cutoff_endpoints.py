@@ -208,7 +208,7 @@ class TestUpdateCutoff:
             json=cutoff_update,
             headers={"Authorization": admin_token}
         )
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
     
     def test_update_cutoff_negative_time(self, client, admin_token, test_tenant):
         """Reject negative time values"""
@@ -221,7 +221,7 @@ class TestUpdateCutoff:
             json=cutoff_update,
             headers={"Authorization": admin_token}
         )
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
     
     def test_update_cutoff_zero_values(self, client, admin_token, test_tenant):
         """Zero values are valid"""

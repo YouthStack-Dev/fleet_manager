@@ -293,6 +293,103 @@ def seed_permissions(test_db):
             action="delete",
             description="Delete booking"
         ),
+        # Route management permissions
+        Permission(
+            permission_id=25,
+            module="route",
+            action="create",
+            description="Create route"
+        ),
+        Permission(
+            permission_id=26,
+            module="route",
+            action="read",
+            description="Read route"
+        ),
+        Permission(
+            permission_id=27,
+            module="route",
+            action="update",
+            description="Update route"
+        ),
+        Permission(
+            permission_id=28,
+            module="route",
+            action="delete",
+            description="Delete route"
+        ),
+        Permission(
+            permission_id=29,
+            module="route_vendor_assignment",
+            action="create",
+            description="Assign vendor to route"
+        ),
+        Permission(
+            permission_id=30,
+            module="route_vendor_assignment",
+            action="read",
+            description="Read vendor assignment"
+        ),
+        Permission(
+            permission_id=31,
+            module="route_vendor_assignment",
+            action="update",
+            description="Update vendor assignment"
+        ),
+        Permission(
+            permission_id=32,
+            module="route_vendor_assignment",
+            action="delete",
+            description="Delete vendor assignment"
+        ),
+        Permission(
+            permission_id=33,
+            module="route_vehicle_assignment",
+            action="create",
+            description="Assign vehicle to route"
+        ),
+        Permission(
+            permission_id=34,
+            module="route_vehicle_assignment",
+            action="read",
+            description="Read vehicle assignment"
+        ),
+        Permission(
+            permission_id=35,
+            module="route_vehicle_assignment",
+            action="update",
+            description="Update vehicle assignment"
+        ),
+        Permission(
+            permission_id=36,
+            module="route_vehicle_assignment",
+            action="delete",
+            description="Delete vehicle assignment"
+        ),
+        Permission(
+            permission_id=37,
+            module="route_merge",
+            action="create",
+            description="Merge routes"
+        ),
+        Permission(
+            permission_id=38,
+            module="route_merge",
+            action="read",
+            description="Read merge routes"
+        ),
+        Permission(
+            permission_id=39,
+            module="route_merge",
+            action="update",
+            description="Update merge routes"
+        ),
+        Permission(
+            permission_id=40,
+            module="route_merge",
+            action="delete",
+            description="Delete merge routes"
+        ),
     ]
     
     for perm in permissions:
@@ -507,7 +604,7 @@ def admin_token(admin_user):
     """
     token = create_access_token(
         user_id=str(admin_user["employee"].employee_id),
-        tenant_id=admin_user["tenant"].tenant_id,
+        tenant_id="TEST001",  # Use TEST001 for test consistency
         user_type="admin",
         custom_claims={
             "email": admin_user["employee"].email,
@@ -518,7 +615,11 @@ def admin_token(admin_user):
                 "shift.create", "shift.read", "shift.update", "shift.delete",
                 "cutoff.read", "cutoff.update",
                 "weekoff-config.read", "weekoff-config.update",
-                "booking.create", "booking.read", "booking.update", "booking.delete"
+                "booking.create", "booking.read", "booking.update", "booking.delete",
+                "route.create", "route.read", "route.update", "route.delete",
+                "route_vendor_assignment.create", "route_vendor_assignment.read", "route_vendor_assignment.update", "route_vendor_assignment.delete",
+                "route_vehicle_assignment.create", "route_vehicle_assignment.read", "route_vehicle_assignment.update", "route_vehicle_assignment.delete",
+                "route_merge.create", "route_merge.read", "route_merge.update", "route_merge.delete"
             ]
         }
     )
@@ -542,7 +643,11 @@ def employee_token(employee_user):
                 "shift.create", "shift.read", "shift.update",
                 "cutoff.read", "cutoff.update",
                 "weekoff-config.read", "weekoff-config.update",
-                "booking.create", "booking.read", "booking.update"
+                "booking.create", "booking.read", "booking.update",
+                "route.create", "route.read", "route.update", "route.delete",
+                "route_vendor_assignment.create", "route_vendor_assignment.read", "route_vendor_assignment.update", "route_vendor_assignment.delete",
+                "route_vehicle_assignment.create", "route_vehicle_assignment.read", "route_vehicle_assignment.update", "route_vehicle_assignment.delete",
+                "route_merge.create", "route_merge.read", "route_merge.update", "route_merge.delete"
             ]
         }
     )
@@ -560,7 +665,7 @@ def vendor_token():
         user_type="vendor",
         custom_claims={
             "email": "vendor@test.com",
-            "permissions": []
+            "permissions": ["route.read"]
         }
     )
     return f"Bearer {token}"
@@ -765,3 +870,360 @@ def second_employee(test_db, second_tenant, second_team):
         "team_id": employee.team_id
     }
 
+
+# ==================== Route Management Fixtures ====================
+
+@pytest.fixture(scope="function")
+def test_vendor(test_db, test_tenant):
+    """Create a test vendor"""
+    from app.models.vendor import Vendor
+    vendor = Vendor(
+        vendor_id=1,
+        tenant_id=test_tenant.tenant_id,
+        vendor_code="VEND001",
+        name="Test Vendor",
+        email="vendor@test.com",
+        phone="1234567890",
+        is_active=True
+    )
+    test_db.add(vendor)
+    test_db.commit()
+    test_db.refresh(vendor)
+    return vendor
+
+@pytest.fixture(scope="function")
+def second_vendor(test_db, second_tenant):
+    """Create vendor in second tenant"""
+    from app.models.vendor import Vendor
+    vendor = Vendor(
+        vendor_id=2,
+        tenant_id=second_tenant.tenant_id,
+        vendor_code="VEND002",
+        name="Second Vendor",
+        email="vendor2@test.com",
+        phone="9876543210",
+        is_active=True
+    )
+    test_db.add(vendor)
+    test_db.commit()
+    test_db.refresh(vendor)
+    return vendor
+
+@pytest.fixture(scope="function")
+def test_driver(test_db, test_tenant, test_vendor):
+    """Create a test driver"""
+    from app.models.driver import Driver, GenderEnum, VerificationStatusEnum
+    from datetime import date
+    driver = Driver(
+        driver_id=1,
+        tenant_id=test_tenant.tenant_id,
+        vendor_id=test_vendor.vendor_id,
+        role_id=2,
+        name="Test Driver",
+        code="DRV001",
+        email="driver@test.com",
+        phone="1234567890",
+        gender=GenderEnum.MALE,
+        password="hashedpassword",
+        date_of_birth=date(1990, 1, 1),
+        date_of_joining=date(2023, 1, 1),
+        license_number="LIC001",
+        badge_number="BADGE001",
+        bg_verify_status=VerificationStatusEnum.APPROVED,
+        is_active=True
+    )
+    test_db.add(driver)
+    test_db.commit()
+    test_db.refresh(driver)
+    return driver
+
+@pytest.fixture(scope="function")
+def test_vehicle(test_db, test_tenant, test_vendor, test_driver):
+    """Create a test vehicle with driver"""
+    from app.models.vehicle import Vehicle
+    from app.models.vehicle_type import VehicleType
+    vtype = VehicleType(vehicle_type_id=1, vendor_id=test_vendor.vendor_id, name="Sedan", seats=4)
+    test_db.add(vtype)
+    test_db.flush()
+    vehicle = Vehicle(
+        vehicle_id=1,
+        vehicle_type_id=1,
+        vendor_id=test_vendor.vendor_id,
+        rc_number="TEST123",
+        driver_id=test_driver.driver_id,
+        is_active=True
+    )
+    test_db.add(vehicle)
+    test_db.commit()
+    test_db.refresh(vehicle)
+    return vehicle
+
+@pytest.fixture(scope="function")
+def second_vehicle(test_db, second_tenant, second_vendor):
+    """Create vehicle in second tenant"""
+    from app.models.vehicle import Vehicle
+    from app.models.vehicle_type import VehicleType
+    from app.models.driver import Driver, GenderEnum, VerificationStatusEnum
+    from datetime import date
+    driver = Driver(
+        driver_id=2,
+        tenant_id=second_tenant.tenant_id,
+        vendor_id=second_vendor.vendor_id,
+        role_id=2,
+        name="Second Driver",
+        code="DRV002",
+        email="driver2@test.com",
+        phone="9876543210",
+        gender=GenderEnum.MALE,
+        password="hashedpassword",
+        date_of_birth=date(1990, 1, 1),
+        date_of_joining=date(2023, 1, 1),
+        license_number="LIC002",
+        badge_number="BADGE002",
+        bg_verify_status=VerificationStatusEnum.APPROVED,
+        is_active=True
+    )
+    test_db.add(driver)
+    test_db.flush()
+    vtype = VehicleType(vehicle_type_id=2, vendor_id=second_vendor.vendor_id, name="SUV", seats=6)
+    test_db.add(vtype)
+    test_db.flush()
+    vehicle = Vehicle(
+        vehicle_id=2,
+        vehicle_type_id=2,
+        vendor_id=second_vendor.vendor_id,
+        rc_number="TEST456",
+        driver_id=driver.driver_id,
+        is_active=True
+    )
+    test_db.add(vehicle)
+    test_db.commit()
+    test_db.refresh(vehicle)
+    return vehicle
+
+@pytest.fixture(scope="function")
+def test_vehicle_no_driver(test_db, test_tenant, test_vendor):
+    """Create vehicle without driver"""
+    from app.models.vehicle import Vehicle
+    from app.models.vehicle_type import VehicleType
+    vtype = VehicleType(vehicle_type_id=3, vendor_id=test_vendor.vendor_id, name="Van", seats=8)
+    test_db.add(vtype)
+    test_db.flush()
+    vehicle = Vehicle(
+        vehicle_id=3,
+        vehicle_type_id=3,
+        vendor_id=test_vendor.vendor_id,
+        rc_number="TEST789",
+        driver_id=None,
+        is_active=True
+    )
+    test_db.add(vehicle)
+    test_db.commit()
+    test_db.refresh(vehicle)
+    return vehicle
+
+@pytest.fixture(scope="function")
+def unrouted_booking(test_db, test_tenant, test_shift, test_employee):
+    """Create an unrouted booking"""
+    from app.models.booking import Booking, BookingStatusEnum
+    from datetime import date, timedelta
+    tomorrow = date.today() + timedelta(days=1)
+    booking = Booking(
+        booking_id=2000,
+        tenant_id=test_tenant.tenant_id,
+        employee_id=test_employee["employee"].employee_id,
+        employee_code=test_employee["employee"].employee_code,
+        shift_id=test_shift.shift_id,
+        booking_date=tomorrow,
+        status=BookingStatusEnum.REQUEST,
+        pickup_latitude=40.7128,
+        pickup_longitude=-74.0060,
+        drop_latitude=40.7580,
+        drop_longitude=-73.9855,
+        pickup_location="Test Pickup",
+        drop_location="Test Drop"
+    )
+    test_db.add(booking)
+    test_db.commit()
+    test_db.refresh(booking)
+    return booking
+
+@pytest.fixture(scope="function")
+def routed_booking(test_db, test_tenant, test_shift, test_employee, test_route):
+    """Create a booking already in a route"""
+    from app.models.booking import Booking, BookingStatusEnum
+    from app.models.route_management import RouteManagementBooking
+    from datetime import date, timedelta
+    tomorrow = date.today() + timedelta(days=1)
+    booking = Booking(
+        booking_id=2001,
+        tenant_id=test_tenant.tenant_id,
+        employee_id=test_employee["employee"].employee_id,
+        employee_code=test_employee["employee"].employee_code,
+        shift_id=test_shift.shift_id,
+        booking_date=tomorrow,
+        status=BookingStatusEnum.SCHEDULED,
+        pickup_latitude=40.7128,
+        pickup_longitude=-74.0060,
+        drop_latitude=40.7580,
+        drop_longitude=-73.9855,
+        pickup_location="Office",
+        drop_location="Home"
+    )
+    test_db.add(booking)
+    test_db.flush()
+    route_booking = RouteManagementBooking(
+        route_id=test_route.route_id,
+        booking_id=booking.booking_id,
+        order_id=1,
+        estimated_pick_up_time="08:00:00",
+        estimated_distance=5.0
+    )
+    test_db.add(route_booking)
+    test_db.commit()
+    test_db.refresh(booking)
+    return booking
+
+@pytest.fixture(scope="function")
+def second_booking(test_db, test_tenant, test_shift, test_employee):
+    """Create a second unrouted booking"""
+    from app.models.booking import Booking, BookingStatusEnum
+    from datetime import date, timedelta
+    tomorrow = date.today() + timedelta(days=1)
+    booking = Booking(
+        booking_id=2002,
+        tenant_id=test_tenant.tenant_id,
+        employee_id=test_employee["employee"].employee_id,
+        employee_code=test_employee["employee"].employee_code,
+        shift_id=test_shift.shift_id,
+        booking_date=tomorrow,
+        status=BookingStatusEnum.REQUEST,
+        pickup_latitude=40.7200,
+        pickup_longitude=-74.0100,
+        drop_latitude=40.7600,
+        drop_longitude=-73.9900,
+        pickup_location="Second Pickup",
+        drop_location="Second Drop"
+    )
+    test_db.add(booking)
+    test_db.commit()
+    test_db.refresh(booking)
+    return booking
+
+@pytest.fixture(scope="function")
+def test_route(test_db, test_tenant, test_shift, test_vendor):
+    """Create a test route with vendor assigned"""
+    from app.models.route_management import RouteManagement, RouteManagementStatusEnum
+    route = RouteManagement(
+        route_id=1000,
+        tenant_id=test_tenant.tenant_id,
+        shift_id=test_shift.shift_id,
+        route_code="ROUTE001",
+        estimated_total_time=60.0,
+        estimated_total_distance=10.0,
+        buffer_time=5.0,
+        status=RouteManagementStatusEnum.PLANNED,
+        assigned_vendor_id=test_vendor.vendor_id
+    )
+    test_db.add(route)
+    test_db.commit()
+    test_db.refresh(route)
+    return route
+
+@pytest.fixture(scope="function")
+def second_route(test_db, second_tenant, second_shift):
+    """Create a route in second tenant"""
+    from app.models.route_management import RouteManagement, RouteManagementStatusEnum
+    from app.models.vendor import Vendor
+    vendor = Vendor(
+        vendor_id=3,
+        tenant_id=second_tenant.tenant_id,
+        vendor_code="VEND003",
+        name="Second Tenant Vendor",
+        email="vendor3@test.com",
+        phone="5555555555",
+        is_active=True
+    )
+    test_db.add(vendor)
+    test_db.flush()
+    route = RouteManagement(
+        route_id=1001,
+        tenant_id=second_tenant.tenant_id,
+        shift_id=second_shift.shift_id,
+        route_code="ROUTE002",
+        estimated_total_time=45.0,
+        estimated_total_distance=8.0,
+        buffer_time=5.0,
+        status=RouteManagementStatusEnum.PLANNED,
+        assigned_vendor_id=vendor.vendor_id
+    )
+    test_db.add(route)
+    test_db.commit()
+    test_db.refresh(route)
+    return route
+
+@pytest.fixture(scope="function")
+def second_route_same_tenant(test_db, test_tenant, test_shift, test_vendor):
+    """Create a second route in same tenant"""
+    from app.models.route_management import RouteManagement, RouteManagementStatusEnum
+    route = RouteManagement(
+        route_id=1002,
+        tenant_id=test_tenant.tenant_id,
+        shift_id=test_shift.shift_id,
+        route_code="ROUTE003",
+        estimated_total_time=50.0,
+        estimated_total_distance=9.0,
+        buffer_time=5.0,
+        status=RouteManagementStatusEnum.PLANNED,
+        assigned_vendor_id=test_vendor.vendor_id
+    )
+    test_db.add(route)
+    test_db.commit()
+    test_db.refresh(route)
+    return route
+
+@pytest.fixture(scope="function")
+def different_shift_route(test_db, test_tenant, second_shift, test_vendor):
+    """Create a route with different shift in same tenant"""
+    from app.models.route_management import RouteManagement, RouteManagementStatusEnum
+    route = RouteManagement(
+        route_id=1003,
+        tenant_id=test_tenant.tenant_id,
+        shift_id=second_shift.shift_id,
+        route_code="ROUTE004",
+        estimated_total_time=40.0,
+        estimated_total_distance=7.0,
+        buffer_time=5.0,
+        status=RouteManagementStatusEnum.PLANNED,
+        assigned_vendor_id=test_vendor.vendor_id
+    )
+    test_db.add(route)
+    test_db.commit()
+    test_db.refresh(route)
+    return route
+
+@pytest.fixture(scope="function")
+def test_booking(test_db, test_tenant, test_shift, test_employee):
+    """Create a test booking for status update tests"""
+    from app.models.booking import Booking, BookingStatusEnum
+    from datetime import date, timedelta
+    tomorrow = date.today() + timedelta(days=1)
+    booking = Booking(
+        booking_id=3000,
+        tenant_id=test_tenant.tenant_id,
+        employee_id=test_employee["employee"].employee_id,
+        employee_code=test_employee["employee"].employee_code,
+        shift_id=test_shift.shift_id,
+        booking_date=tomorrow,
+        status=BookingStatusEnum.REQUEST,
+        pickup_latitude=40.7128,
+        pickup_longitude=-74.0060,
+        drop_latitude=40.7580,
+        drop_longitude=-73.9855,
+        pickup_location="Test Pickup Location",
+        drop_location="Test Drop Location"
+    )
+    test_db.add(booking)
+    test_db.commit()
+    test_db.refresh(booking)
+    return booking
