@@ -4,6 +4,9 @@ from typing import Optional, List
 from datetime import datetime
 from app.models.audit_log import AuditLog
 from app.schemas.audit_log import AuditLogCreate, AuditLogFilter
+from app.core.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class CRUDAuditLog:
@@ -47,8 +50,9 @@ class CRUDAuditLog:
         if filters.start_date:
             conditions.append(AuditLog.created_at >= filters.start_date)
         
-        if filters.end_date:
-            conditions.append(AuditLog.created_at <= filters.end_date)
+        if filters.employee_id:
+            conditions.append(AuditLog.audit_data.op('->')('new_values').op('->>')('employee_id') == str(filters.employee_id))
+            logger.info(f"Filtering audit logs by employee_id: {filters.employee_id}")
         
         if conditions:
             query = query.filter(and_(*conditions))

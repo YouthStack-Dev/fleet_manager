@@ -24,6 +24,7 @@ class AuditLogResponse(AuditLogBase):
 class AuditLogFilter(BaseModel):
     tenant_id: Optional[str] = None
     module: Optional[str] = None
+    employee_id: Optional[int] = None
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     page: int = Field(default=1, ge=1)
