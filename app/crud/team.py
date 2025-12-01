@@ -34,7 +34,7 @@ class CRUDTeam(CRUDBase[Team, TeamCreate, TeamUpdate]):
         self, db: Session, *, db_obj: Team, obj_in: Union[TeamUpdate, Dict[str, Any]]
     ) -> Team:
         """Update team"""
-        update_data = obj_in if isinstance(obj_in, dict) else obj_in.dict(exclude_unset=True)
+        update_data = obj_in if isinstance(obj_in, dict) else obj_in.model_dump(exclude_unset=True)
         return super().update(db, db_obj=db_obj, obj_in=update_data)
 
     def get_all(

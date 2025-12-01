@@ -179,6 +179,30 @@ def seed_permissions(test_db):
             action="read",
             description="Read employee"
         ),
+        Permission(
+            permission_id=6,
+            module="team",
+            action="create",
+            description="Create team"
+        ),
+        Permission(
+            permission_id=7,
+            module="team",
+            action="read",
+            description="Read team"
+        ),
+        Permission(
+            permission_id=8,
+            module="team",
+            action="update",
+            description="Update team"
+        ),
+        Permission(
+            permission_id=9,
+            module="team",
+            action="delete",
+            description="Delete team"
+        ),
     ]
     
     for perm in permissions:
@@ -316,7 +340,7 @@ def employee_user(test_db, seed_permissions):
     test_db.flush()
     
     # Attach only read permission to employee policy
-    policy.permissions = [seed_permissions[1], seed_permissions[4]]  # tenant.read and employee.read
+    policy.permissions = [seed_permissions[1], seed_permissions[4], seed_permissions[6], seed_permissions[7], seed_permissions[8]]  # tenant.read, employee.read, team.create, team.read, team.update
     
     # Attach all permissions to admin policy
     admin_policy.permissions = seed_permissions
@@ -370,7 +394,10 @@ def admin_token(admin_user):
         user_type="admin",
         custom_claims={
             "email": admin_user["employee"].email,
-            "permissions": ["admin.tenant.create", "admin.tenant.read", "admin.tenant.update", "admin.tenant.delete"]
+            "permissions": [
+                "admin.tenant.create", "admin.tenant.read", "admin.tenant.update", "admin.tenant.delete",
+                "team.create", "team.read", "team.update", "team.delete"
+            ]
         }
     )
     return f"Bearer {token}"
@@ -387,7 +414,10 @@ def employee_token(employee_user):
         user_type="employee",
         custom_claims={
             "email": employee_user["employee"].email,
-            "permissions": ["admin.tenant.read", "employee.read"]
+            "permissions": [
+                "admin.tenant.read", "employee.read",
+                "team.create", "team.read", "team.update"
+            ]
         }
     )
     return f"Bearer {token}"

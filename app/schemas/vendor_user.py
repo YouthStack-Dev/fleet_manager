@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, EmailStr, validator, ConfigDict
+from pydantic import BaseModel, Field, EmailStr, validator, field_validator, ConfigDict
 import re
 from typing import Optional, List
 from datetime import datetime
@@ -17,13 +17,15 @@ class VendorUserBase(BaseModel):
     role_id: Optional[int] = None
     is_active: bool = True
 
-    @validator('phone')
+    @field_validator('phone')
+    @classmethod
     def validate_phone(cls, v):
         if not re.match(PHONE_REGEX, v):
             raise ValueError('Phone number must be in E.164 format (e.g., +1234567890)')
         return v
     
-    @validator('name')
+    @field_validator('name')
+    @classmethod
     def validate_name(cls, v):
         if not re.match(NAME_REGEX, v):
             raise ValueError('Name must be 2-50 characters containing only letters, spaces, hyphens, and apostrophes')
@@ -32,7 +34,8 @@ class VendorUserBase(BaseModel):
 class VendorUserCreate(VendorUserBase):
     password: str
     
-    @validator('password')
+    @field_validator('password')
+    @classmethod
     def validate_password(cls, v):
         if not re.match(PASSWORD_REGEX, v):
             raise ValueError('Password must be at least 8 characters with at least one uppercase letter, one lowercase letter, one number, and one special character')
@@ -47,19 +50,22 @@ class VendorUserUpdate(BaseModel):
     role_id: Optional[int] = None
     is_active: Optional[bool] = None
     
-    @validator('phone')
+    @field_validator('phone')
+    @classmethod
     def validate_phone(cls, v):
         if v is not None and not re.match(PHONE_REGEX, v):
             raise ValueError('Phone number must be in E.164 format (e.g., +1234567890)')
         return v
     
-    @validator('name')
+    @field_validator('name')
+    @classmethod
     def validate_name(cls, v):
         if v is not None and not re.match(NAME_REGEX, v):
             raise ValueError('Name must be 2-50 characters containing only letters, spaces, hyphens, and apostrophes')
         return v
     
-    @validator('password')
+    @field_validator('password')
+    @classmethod
     def validate_password(cls, v):
         if v is not None and not re.match(PASSWORD_REGEX, v):
             raise ValueError('Password must be at least 8 characters with at least one uppercase letter, one lowercase letter, one number, and one special character')

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, SerializationInfo, field_serializer, validator
+from pydantic import BaseModel, SerializationInfo, field_serializer, validator, field_validator
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -18,7 +18,8 @@ class CutoffBase(BaseModel):
         h, m = map(int, self.cancel_cutoff.split(":"))
         return timedelta(hours=h, minutes=m)
 
-    @validator("booking_cutoff", "cancel_cutoff")
+    @field_validator("booking_cutoff", "cancel_cutoff")
+    @classmethod
     def validate_time_format(cls, v):
         """Ensure format is HH:MM and valid numbers"""
         if not isinstance(v, str) or ":" not in v:

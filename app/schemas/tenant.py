@@ -70,7 +70,8 @@ class TenantCreate(BaseModel):
     employee_latitude: Optional[float] = Field(None, ge=-90, le=90, description="Employee latitude")
     employee_code: Optional[str] = Field(None, max_length=50, description="Custom employee code like EMP123")
     employee_gender: Optional[Literal["Male", "Female", "Other"]] = Field(None, description="Employee gender")
-    @validator('employee_phone')
+    @field_validator('employee_phone')
+    @classmethod
     def validate_phone(cls, v):
         if not re.match(PHONE_REGEX, v):
             raise ValueError('Phone number must be in E.164 format (e.g., +1234567890)')
@@ -85,19 +86,22 @@ class TenantCreate(BaseModel):
         if not re.match(NAME_REGEX, v):
             raise ValueError("Name must be 2–50 chars, letters/spaces/hyphens/apostrophes only")
         return v
-    @validator('employee_name')
-    def validate_name(cls, v):
+    @field_validator('employee_name')
+    @classmethod
+    def validate_employee_name(cls, v):
         if not re.match(NAME_REGEX, v):
             raise ValueError('Name must be 2-50 characters long and can only contain letters, spaces, hyphens, and apostrophes')
         return v
 
-    @validator('employee_code')
+    @field_validator('employee_code')
+    @classmethod
     def validate_employee_code(cls, v):
         if v and not re.match(USERNAME_REGEX, v):
             raise ValueError('Employee code must be 3-20 characters long and can only contain alphanumeric characters and underscores')
         return v
 
-    @validator('employee_password')
+    @field_validator('employee_password')
+    @classmethod
     def validate_employee_password(cls, v):
         if not re.match(PASSWORD_REGEX, v):
             raise ValueError('Password must be at least 8 characters long and include at least one uppercase letter, one lowercase letter, one number, and one special character')
@@ -137,10 +141,11 @@ class TenantUpdate(BaseModel):
     address: Optional[str] = Field(None, max_length=255)
     longitude: Optional[float] = Field(None, ge=-180, le=180)
     latitude: Optional[float] = Field(None, ge=-90, le=90)
-    permission_ids: Optional[List[int]] = Field(None, min_items=1, description="List of permission IDs to assign to tenant admin policy")
+    permission_ids: Optional[List[int]] = Field(None, min_length=1, description="List of permission IDs to assign to tenant admin policy")
     is_active: Optional[bool] = None
 
-    @validator('name')
+    @field_validator('name')
+    @classmethod
     def validate_name(cls, v):
         if not re.match(NAME_REGEX, v):
             raise ValueError('Name must be 2-50 characters long and can only contain letters, spaces, hyphens, and apostrophes')

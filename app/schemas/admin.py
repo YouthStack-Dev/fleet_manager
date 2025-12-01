@@ -1,5 +1,5 @@
 import re
-from pydantic import BaseModel, EmailStr,validator, Field
+from pydantic import BaseModel, EmailStr, validator, field_validator, Field
 from typing import Optional, List
 from datetime import datetime
 
@@ -15,19 +15,22 @@ class AdminBase(BaseModel):
     role_id: int
     is_active: bool = True
 
-    @validator('phone')
+    @field_validator('phone')
+    @classmethod
     def validate_phone(cls, v):
         if not re.match(PHONE_REGEX, v):
             raise ValueError('Phone number must be in E.164 format (e.g., +1234567890)')
         return v
 
-    @validator('name')
+    @field_validator('name')
+    @classmethod
     def validate_name(cls, v):
         if not re.match(NAME_REGEX, v):
             raise ValueError('Name must be 2-50 characters long and can only contain letters, spaces, hyphens, and apostrophes')
         return v
 
-    @validator('email')
+    @field_validator('email')
+    @classmethod
     def validate_email(cls, v):
         if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', v):
             raise ValueError('Invalid email format')
@@ -37,7 +40,8 @@ class AdminBase(BaseModel):
 
 class AdminCreate(AdminBase):
     password: str = Field(..., min_length=8, description="Hashed password will be stored")
-    @validator('password')
+    @field_validator('password')
+    @classmethod
     def validate_password(cls, v):  
         if not re.match(PASSWORD_REGEX, v):
             raise ValueError('Password must be at least 8 characters with at least one uppercase letter, one lowercase letter, one number, and one special character')
@@ -52,22 +56,26 @@ class AdminUpdate(BaseModel):
     password: Optional[str] = Field(None, min_length=8)
     is_active: Optional[bool] = None
 
-    @validator('phone')
+    @field_validator('phone')
+    @classmethod
     def validate_phone(cls, v):
         if v is not None and not re.match(PHONE_REGEX, v):
             raise ValueError('Phone number must be in E.164 format (e.g., +1234567890)')
         return v
-    @validator('name')
+    @field_validator('name')
+    @classmethod
     def validate_name(cls, v):
         if v is not None and not re.match(NAME_REGEX, v):
             raise ValueError('Name must be 2-50 characters long and can only contain letters, spaces, hyphens, and apostrophes')
         return v
-    @validator('email')
+    @field_validator('email')
+    @classmethod
     def validate_email(cls, v):
         if v is not None and not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', v):
             raise ValueError('Invalid email format')
         return v
-    @validator('password')
+    @field_validator('password')
+    @classmethod
     def validate_password(cls, v):
         if v is not None and not re.match(PASSWORD_REGEX, v):
             raise ValueError('Password must be at least 8 characters with at least one uppercase letter, one lowercase letter, one number, and one special character')
