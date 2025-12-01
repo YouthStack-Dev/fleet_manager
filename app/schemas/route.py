@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -27,8 +27,7 @@ class RouteManagementBookingResponse(RouteManagementBookingBase):
     route_id: str
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class RouteManagementBase(BaseModel):
     route_id: int  # Changed from str to int
@@ -55,8 +54,7 @@ class RouteManagementResponse(RouteManagementBase):
     updated_at: datetime
     route_management_bookings: List[RouteManagementBookingResponse] = []
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class RouteEstimations(BaseModel):
     start_time: str

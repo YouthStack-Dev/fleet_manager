@@ -15,11 +15,7 @@ class BaseResponse(BaseModel, Generic[DataType]):
     data: Optional[DataType] = Field(None, description="Response data payload")
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Response timestamp")
     
-    model_config = ConfigDict(
-        json_encoders={
-            datetime: lambda v: v.isoformat()
-        }
-    )
+    model_config = ConfigDict()
 
 class ErrorResponse(BaseModel):
     """
@@ -31,11 +27,7 @@ class ErrorResponse(BaseModel):
     details: Optional[Dict[str, Any]] = Field(None, description="Additional error details")
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Error timestamp")
     
-    model_config = ConfigDict(
-        json_encoders={
-            datetime: lambda v: v.isoformat()
-        }
-    )
+    model_config = ConfigDict()
 
 class PaginationMeta(BaseModel):
     """
@@ -58,11 +50,7 @@ class PaginatedResponse(BaseModel, Generic[DataType]):
     meta: PaginationMeta = Field(..., description="Pagination metadata")
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Response timestamp")
     
-    model_config = ConfigDict(
-        json_encoders={
-            datetime: lambda v: v.isoformat()
-        }
-    )
+    model_config = ConfigDict()
 
 class SuccessResponse(BaseModel):
     """
@@ -72,11 +60,7 @@ class SuccessResponse(BaseModel):
     message: str = Field("Operation completed successfully", description="Success message")
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Response timestamp")
     
-    model_config = ConfigDict(
-        json_encoders={
-            datetime: lambda v: v.isoformat()
-        }
-    )
+    model_config = ConfigDict()
 
 # Utility functions for creating consistent responses
 def create_success_response(data: Any = None, message: str = "Success") -> Dict[str, Any]:
