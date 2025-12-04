@@ -17,6 +17,12 @@ class BookingStatusEnum(str, PyEnum):
     EXPIRED = "Expired"          # auto-cancel before planning window
 
 
+class BookingTypeEnum(str, PyEnum):
+    REGULAR = "regular"              # standard booking
+    ADHOC = "adhoc"                  # ad-hoc/on-demand booking
+    MEDICAL_EMERGENCY = "medical_emergency"  # medical emergency booking
+
+
 class Booking(Base):
     __tablename__ = "bookings"
     __table_args__ = (
@@ -31,7 +37,9 @@ class Booking(Base):
     employee_code = Column(String(50), nullable=False)
     shift_id = Column(Integer, ForeignKey("shifts.shift_id", ondelete="CASCADE"), nullable=True)
     team_id = Column(Integer, ForeignKey("teams.team_id", ondelete="SET NULL"), nullable=True)  
-    OTP = Column(Integer, nullable=True)  # One-Time Password for booking verification
+    boarding_otp = Column(Integer, nullable=True)  # OTP for boarding verification
+    deboarding_otp = Column(Integer, nullable=True)  # OTP for deboarding verification
+    escort_otp = Column(Integer, nullable=True)  # OTP for escort verification
 
     # Booking details
     booking_date = Column(Date, nullable=False)
@@ -45,6 +53,13 @@ class Booking(Base):
     status = Column(
         Enum(BookingStatusEnum, native_enum=False),
         default=BookingStatusEnum.REQUEST,
+        nullable=False,
+        index=True
+    )
+    
+    booking_type = Column(
+        Enum(BookingTypeEnum, native_enum=False),
+        default=BookingTypeEnum.REGULAR,
         nullable=False,
         index=True
     )
