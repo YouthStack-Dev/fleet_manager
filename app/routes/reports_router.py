@@ -21,6 +21,7 @@ from app.models.tenant import Tenant
 from app.utils.response_utils import ResponseWrapper, handle_db_error
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
+from app.utils.cache_manager import cached
 
 logger = get_logger(__name__)
 
@@ -432,6 +433,7 @@ async def export_bookings_report(
 
 
 @router.get("/bookings/analytics", status_code=http_status.HTTP_200_OK)
+@cached(ttl_seconds=300, key_prefix="analytics")  # Cache for 5 minutes
 async def get_bookings_analytics(
     start_date: date = Query(..., description="Start date for analytics (YYYY-MM-DD)"),
     end_date: date = Query(..., description="End date for analytics (YYYY-MM-DD)"),
