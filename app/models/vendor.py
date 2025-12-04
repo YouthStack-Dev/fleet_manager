@@ -34,3 +34,4 @@ class Vendor(Base):
     vehicle_types = relationship("VehicleType", back_populates="vendor", cascade="all, delete-orphan")
     vehicles = relationship("Vehicle", back_populates="vendor", cascade="all, delete-orphan")
     vendor_users = relationship("VendorUser", back_populates="vendor", cascade="all, delete-orphan")
+    escorts = relationship("Escort", back_populates="vendor", cascade="all, delete-orphan")
