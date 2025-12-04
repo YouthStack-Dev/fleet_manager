@@ -138,19 +138,26 @@ def create_booking(
             
 
             # 2️⃣ Cutoff validation
-            if cutoff and shift and cutoff.booking_login_cutoff and cutoff.booking_login_cutoff.total_seconds() > 0:
+            cutoff_interval = None
+            if shift.log_type == "IN":  # Login shift (home → office)
+                cutoff_interval = cutoff.booking_login_cutoff
+            elif shift.log_type == "OUT":  # Logout shift (office → home)  
+                cutoff_interval = cutoff.booking_logout_cutoff
+            
+            if cutoff and shift and cutoff_interval and cutoff_interval.total_seconds() > 0:
                 shift_datetime = datetime.combine(booking_date, shift.shift_time)
                 now = datetime.now()
                 time_until_shift = shift_datetime - now
                 logger.info(
-                    f"Cutoff check: now={now}, shift_datetime={shift_datetime}, "
-                    f"time_until_shift={time_until_shift}, cutoff={cutoff.booking_login_cutoff}"
+                    f"Cutoff check: shift_type={shift.log_type}, now={now}, shift_datetime={shift_datetime}, "
+                    f"time_until_shift={time_until_shift}, cutoff={cutoff_interval}"
                 )
-                if time_until_shift < cutoff.booking_login_cutoff:
+                if time_until_shift < cutoff_interval:
+                    shift_type_name = "login" if shift.log_type == "IN" else "logout"
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=ResponseWrapper.error(
-                            f"Booking cutoff time has passed for this shift (cutoff: {cutoff.booking_login_cutoff})",
+                            f"Booking cutoff time has passed for this {shift_type_name} shift (cutoff: {cutoff_interval})",
                             "BOOKING_CUTOFF",
                         ),
                     )
@@ -579,6 +586,29 @@ def cancel_booking(
                     error_code="BOOKING_ALREADY_SCHEDULED",
                 ),
             )
+
+        # --- Cancellation cutoff validation ---
+        cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == tenant_id).first()
+        cancel_cutoff_interval = None
+        if booking.shift and booking.shift.log_type == "IN":
+            cancel_cutoff_interval = cutoff.cancel_login_cutoff if cutoff else None
+        elif booking.shift and booking.shift.log_type == "OUT":
+            cancel_cutoff_interval = cutoff.cancel_logout_cutoff if cutoff else None
+        
+        if cancel_cutoff_interval and cancel_cutoff_interval.total_seconds() > 0:
+            shift_datetime = datetime.combine(booking.booking_date, booking.shift.shift_time)
+            now = datetime.now()
+            time_until_shift = shift_datetime - now
+            
+            if time_until_shift < cancel_cutoff_interval:
+                shift_type_name = "login" if booking.shift.log_type == "IN" else "logout"
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        f"Cancellation cutoff time has passed for this {shift_type_name} shift (cutoff: {cancel_cutoff_interval})",
+                        "CANCEL_CUTOFF",
+                    ),
+                )
 
         # --- Perform cancellation ---
         booking.status = BookingStatusEnum.CANCELLED
