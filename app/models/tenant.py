@@ -27,5 +27,7 @@ class Tenant(Base):
     # ✅ One-to-many Tenant → Vendor
     vendors = relationship("Vendor", back_populates="tenant", cascade="all, delete-orphan")
 
+    escorts = relationship("Escort", back_populates="tenant", cascade="all, delete-orphan")
+
     roles = relationship("Role", back_populates="tenant")
 
