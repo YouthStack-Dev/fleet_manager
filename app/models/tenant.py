@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Numeric, func
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Numeric, Time, func
 from app.database.session import Base
 from sqlalchemy.orm import relationship
 
@@ -12,6 +12,12 @@ class Tenant(Base):
     longitude = Column(Numeric(9, 6))
     latitude = Column(Numeric(9, 6))
     is_active = Column(Boolean, default=True, nullable=False)
+
+    # Escort Safety Configuration
+    escort_required_start_time = Column(Time, nullable=True)  # e.g., 18:00 (6 PM)
+    escort_required_end_time = Column(Time, nullable=True)    # e.g., 06:00 (6 AM)
+    escort_required_for_women = Column(Boolean, default=True, nullable=False)  # Enable women safety escorts
+
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 

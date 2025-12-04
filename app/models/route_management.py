@@ -32,6 +32,10 @@ class RouteManagement(Base):
     assigned_vendor_id = Column(Integer, nullable=True)
     assigned_vehicle_id = Column(Integer, nullable=True)
     assigned_driver_id = Column(Integer, nullable=True)
+    assigned_escort_id = Column(Integer, ForeignKey('escorts.escort_id'), nullable=True)
+
+    # Escort safety requirements
+    escort_required = Column(Boolean, default=False, nullable=False)  # Route requires escort based on safety rules
 
     status = Column(Enum(RouteManagementStatusEnum, native_enum=False), default=RouteManagementStatusEnum.PLANNED, nullable=False)
     estimated_total_time = Column(Float, nullable=True)  # New column

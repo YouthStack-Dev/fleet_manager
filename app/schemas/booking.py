@@ -58,13 +58,9 @@ class BookingBase(BaseModel):
     status: Optional[BookingStatusEnum] = BookingStatusEnum.REQUEST
     booking_type: Optional[BookingTypeEnum] = BookingTypeEnum.REGULAR
     reason: Optional[str] = None
-    OTP: Optional[int] = None
-    otp2: Optional[int] = None
-    otp3: Optional[int] = None
-    required_otp_count: Optional[int] = 1
-    otp1_purpose: Optional[str] = "employee"
-    otp2_purpose: Optional[str] = None
-    otp3_purpose: Optional[str] = None
+    boarding_otp: Optional[int] = None
+    deboarding_otp: Optional[int] = None
+    escort_otp: Optional[int] = None
     is_active: Optional[bool] = True
 
 

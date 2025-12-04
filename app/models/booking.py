@@ -37,15 +37,9 @@ class Booking(Base):
     employee_code = Column(String(50), nullable=False)
     shift_id = Column(Integer, ForeignKey("shifts.shift_id", ondelete="CASCADE"), nullable=True)
     team_id = Column(Integer, ForeignKey("teams.team_id", ondelete="SET NULL"), nullable=True)  
-    otp1 = Column(Integer, nullable=True)  # Primary OTP for booking verification
-    otp2 = Column(Integer, nullable=True)  # Secondary OTP (if required)
-    otp3 = Column(Integer, nullable=True)  # Tertiary OTP (if required)
-    required_otp_count = Column(Integer, nullable=False, server_default="1")  # Number of OTPs required for this booking
-    
-    # OTP purposes (what each OTP is used for)
-    otp1_purpose = Column(String(50), nullable=True, default="boarding")  # Purpose of first OTP
-    otp2_purpose = Column(String(50), nullable=True)  # Purpose of second OTP  
-    otp3_purpose = Column(String(50), nullable=True)  # Purpose of third OTP
+    boarding_otp = Column(Integer, nullable=True)  # OTP for boarding verification
+    deboarding_otp = Column(Integer, nullable=True)  # OTP for deboarding verification
+    escort_otp = Column(Integer, nullable=True)  # OTP for escort verification
 
     # Booking details
     booking_date = Column(Date, nullable=False)

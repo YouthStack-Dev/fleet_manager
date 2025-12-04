@@ -2,12 +2,15 @@
 OTP (One-Time Password) utility functions for Fleet Manager
 """
 
+from datetime import datetime, time
+from typing import List, Optional
+from sqlalchemy.orm import Session
 from app.core.logging_config import get_logger
 
 logger = get_logger(__name__)
 
 
-def get_required_otp_count(booking_type: str, shift_log_type: str, cutoff) -> int:
+def get_required_otp_count(booking_type: str, shift_log_type: str, cutoff, escort_enabled: bool = False) -> int:
     """
     Determine the number of OTPs required based on booking type and shift type.
 
@@ -15,49 +18,26 @@ def get_required_otp_count(booking_type: str, shift_log_type: str, cutoff) -> in
         booking_type: Type of booking (regular, adhoc, medical_emergency)
         shift_log_type: Type of shift (IN for login, OUT for logout)
         cutoff: Cutoff configuration object
+        escort_enabled: Whether escort is assigned to the route AND route requires escort
 
     Returns:
         Number of OTPs required
     """
-    # Use the same OTP counts for all booking types (regular, adhoc, medical_emergency)
-    # Only differentiate by shift type (login vs logout)
+    # Count the required OTPs based on boarding/deboarding flags
     if shift_log_type == "IN":
-        return cutoff.login_otp_count if cutoff else 1
+        base_count = (cutoff.login_boarding_otp + cutoff.login_deboarding_otp) if cutoff else 0
     elif shift_log_type == "OUT":
-        return cutoff.logout_otp_count if cutoff else 1
+        base_count = (cutoff.logout_boarding_otp + cutoff.logout_deboarding_otp) if cutoff else 0
     else:
-        return 1  # default fallback
+        base_count = 0  # default fallback
+
+    # If escort is assigned, add escort OTP
+    if escort_enabled:
+        return base_count + 1
+    else:
+        return base_count
 
 
-def get_otp_purposes(booking_type: str, shift_log_type: str, otp_count: int, escort_enabled: bool = False) -> dict:
-    """
-    Determine the purposes of each OTP based on shift type and escort configuration.
-    All shifts (login and logout) use the same boarding/deboarding journey flow.
-
-    Args:
-        booking_type: Type of booking (regular, adhoc, medical_emergency) - kept for future extensibility
-        shift_log_type: Type of shift (IN for login, OUT for logout) - kept for future extensibility
-        otp_count: Number of OTPs required
-        escort_enabled: Whether escort feature is enabled for this tenant
-
-    Returns:
-        Dictionary mapping OTP positions to their purposes
-    """
-    purposes = {}
-
-    # Use consistent boarding/deboarding flow for all shifts
-    if otp_count == 1:
-        purposes[1] = "boarding"    # Getting into the vehicle
-    elif otp_count == 2:
-        purposes[1] = "boarding"    # Getting into the vehicle
-        purposes[2] = "deboarding"  # Getting out of the vehicle
-    elif otp_count >= 3:
-        purposes[1] = "boarding"    # Getting into the vehicle
-        purposes[2] = "deboarding"  # Getting out of the vehicle
-        # Third OTP is supervisor unless escort is enabled
-        purposes[3] = "escort" if escort_enabled else "supervisor"
-
-    return purposes
 
 
 def generate_otp_codes(count: int) -> list:
@@ -72,3 +52,125 @@ def generate_otp_codes(count: int) -> list:
     """
     import random
     return [random.randint(1000, 9999) for _ in range(count)]
+
+
+def is_time_in_escort_range(check_time: time, start_time: time, end_time: time) -> bool:
+    """
+    Check if a given time falls within the escort-required time range.
+    Handles overnight ranges (e.g., 18:00 to 06:00).
+
+    Args:
+        check_time: Time to check
+        start_time: Start of escort-required period
+        end_time: End of escort-required period
+
+    Returns:
+        True if time requires escort
+    """
+    if start_time <= end_time:
+        # Same day range (e.g., 09:00 to 17:00)
+        return start_time <= check_time <= end_time
+    else:
+        # Overnight range (e.g., 18:00 to 06:00)
+        return check_time >= start_time or check_time <= end_time
+
+
+def route_requires_escort(db: Session, route_id: int, tenant_id: str) -> bool:
+    """
+    Determine if a route requires escort based on tenant configuration and route characteristics.
+
+    Args:
+        db: Database session
+        route_id: Route ID to check
+        tenant_id: Tenant ID
+
+    Returns:
+        True if route requires escort for safety
+    """
+    from app.models.tenant import Tenant
+    from app.models.route_management import RouteManagement, RouteManagementBooking
+    from app.models.booking import Booking
+    from app.models.employee import Employee, GenderEnum
+
+    try:
+        # Get tenant escort configuration
+        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        if not tenant or not tenant.escort_required_for_women:
+            return False
+
+        if not tenant.escort_required_start_time or not tenant.escort_required_end_time:
+            return False
+
+        # Get route shift time
+        route = db.query(RouteManagement).filter(
+            RouteManagement.route_id == route_id,
+            RouteManagement.tenant_id == tenant_id
+        ).first()
+
+        if not route or not route.shift_id:
+            return False
+
+        # Get shift time
+        from app.models.shift import Shift
+        shift = db.query(Shift).filter(Shift.shift_id == route.shift_id).first()
+        if not shift:
+            return False
+
+        shift_time = shift.shift_time
+        escort_start = tenant.escort_required_start_time
+        escort_end = tenant.escort_required_end_time
+
+        # Check if shift time requires escort
+        time_requires_escort = is_time_in_escort_range(shift_time, escort_start, escort_end)
+        if not time_requires_escort:
+            return False
+
+        # Check if route has women employees (especially last women)
+        route_bookings = db.query(RouteManagementBooking).filter(
+            RouteManagementBooking.route_id == route_id
+        ).order_by(RouteManagementBooking.order_id).all()
+
+        booking_ids = [rb.booking_id for rb in route_bookings]
+        if not booking_ids:
+            return False
+
+        # Get employees for these bookings
+        women_employees = db.query(Employee).join(Booking).filter(
+            Booking.booking_id.in_(booking_ids),
+            Employee.gender == GenderEnum.FEMALE
+        ).all()
+
+        # Route requires escort if it has women employees during escort-required hours
+        return len(women_employees) > 0
+
+    except Exception as e:
+        logger.error(f"Error checking if route {route_id} requires escort: {str(e)}")
+        return False
+
+
+def update_route_escort_requirement(db: Session, route_id: int, tenant_id: str) -> bool:
+    """
+    Update the escort_required flag for a route based on current safety requirements.
+
+    Args:
+        db: Database session
+        route_id: Route ID to update
+        tenant_id: Tenant ID
+
+    Returns:
+        True if route requires escort
+    """
+    from app.models.route_management import RouteManagement
+
+    requires_escort = route_requires_escort(db, route_id, tenant_id)
+
+    # Update route escort requirement
+    db.query(RouteManagement).filter(
+        RouteManagement.route_id == route_id,
+        RouteManagement.tenant_id == tenant_id
+    ).update({
+        RouteManagement.escort_required: requires_escort
+    })
+
+    logger.info(f"Route {route_id} escort requirement updated: {requires_escort}")
+    return requires_escort

@@ -25,9 +25,11 @@ class Cutoff(Base):
     allow_adhoc_booking = Column(Boolean, nullable=False, server_default="false")
     allow_medical_emergency_booking = Column(Boolean, nullable=False, server_default="false")
     
-    # OTP requirements (number of OTPs needed)
-    login_otp_count = Column(Integer, nullable=False, server_default="1")
-    logout_otp_count = Column(Integer, nullable=False, server_default="1")
+    # OTP requirements (boarding/deboarding flags)
+    login_boarding_otp = Column(Boolean, nullable=False, server_default="true")
+    login_deboarding_otp = Column(Boolean, nullable=False, server_default="true")
+    logout_boarding_otp = Column(Boolean, nullable=False, server_default="true")
+    logout_deboarding_otp = Column(Boolean, nullable=False, server_default="true")
     # Note: adhoc_otp_count and medical_emergency_otp_count removed - using login/logout counts for all booking types
     
     # Escort/Security guard configuration
@@ -37,7 +39,5 @@ class Cutoff(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     tenant = relationship("Tenant", back_populates="cutoff", uselist=False)
     __table_args__ = (
-        CheckConstraint('login_otp_count >= 1 AND login_otp_count <= 3', name='login_otp_count_check'),
-        CheckConstraint('logout_otp_count >= 1 AND logout_otp_count <= 3', name='logout_otp_count_check'),
         {"extend_existing": True}
     )
