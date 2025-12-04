@@ -26,7 +26,6 @@ class CRUDCutoff(CRUDBase[Cutoff, CutoffCreate, CutoffUpdate]):
                 medical_emergency_booking_cutoff=timedelta(0),
                 medical_emergency_cancel_cutoff=timedelta(0),
                 adhoc_booking_cutoff=timedelta(0),
-                adhoc_cancel_cutoff=timedelta(0),
                 allow_adhoc_booking=False,
                 allow_medical_emergency_booking=False,
                 allow_medical_emergency_cancel=False
@@ -45,7 +44,6 @@ class CRUDCutoff(CRUDBase[Cutoff, CutoffCreate, CutoffUpdate]):
             medical_emergency_booking_cutoff=self._parse_time(obj_in.medical_emergency_booking_cutoff),
             medical_emergency_cancel_cutoff=self._parse_time(obj_in.medical_emergency_cancel_cutoff),
             adhoc_booking_cutoff=self._parse_time(obj_in.adhoc_booking_cutoff),
-            adhoc_cancel_cutoff=self._parse_time(obj_in.adhoc_cancel_cutoff),
             allow_adhoc_booking=obj_in.allow_adhoc_booking,
             allow_medical_emergency_booking=obj_in.allow_medical_emergency_booking,
             allow_medical_emergency_cancel=obj_in.allow_medical_emergency_cancel
@@ -64,7 +62,7 @@ class CRUDCutoff(CRUDBase[Cutoff, CutoffCreate, CutoffUpdate]):
         # Parse interval fields from HH:MM format to timedelta
         interval_fields = [
             "booking_login_cutoff", "cancel_login_cutoff", "booking_logout_cutoff", "cancel_logout_cutoff",
-            "medical_emergency_booking_cutoff", "medical_emergency_cancel_cutoff", "adhoc_booking_cutoff", "adhoc_cancel_cutoff"
+            "medical_emergency_booking_cutoff", "medical_emergency_cancel_cutoff", "adhoc_booking_cutoff"
         ]
         for field in interval_fields:
             if field in update_data:
