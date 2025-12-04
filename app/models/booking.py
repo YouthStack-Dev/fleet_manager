@@ -17,6 +17,12 @@ class BookingStatusEnum(str, PyEnum):
     EXPIRED = "Expired"          # auto-cancel before planning window
 
 
+class BookingTypeEnum(str, PyEnum):
+    REGULAR = "regular"              # standard booking
+    ADHOC = "adhoc"                  # ad-hoc/on-demand booking
+    MEDICAL_EMERGENCY = "medical_emergency"  # medical emergency booking
+
+
 class Booking(Base):
     __tablename__ = "bookings"
     __table_args__ = (
@@ -45,6 +51,13 @@ class Booking(Base):
     status = Column(
         Enum(BookingStatusEnum, native_enum=False),
         default=BookingStatusEnum.REQUEST,
+        nullable=False,
+        index=True
+    )
+    
+    booking_type = Column(
+        Enum(BookingTypeEnum, native_enum=False),
+        default=BookingTypeEnum.REGULAR,
         nullable=False,
         index=True
     )

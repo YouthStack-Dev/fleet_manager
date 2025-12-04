@@ -27,6 +27,21 @@ class BookingStatusEnum(str, Enum):
         }
 
 
+class BookingTypeEnum(str, Enum):
+    REGULAR = "regular"
+    ADHOC = "adhoc"
+    MEDICAL_EMERGENCY = "medical_emergency"
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "REGULAR": "regular",
+                "ADHOC": "adhoc",
+                "MEDICAL_EMERGENCY": "medical_emergency",
+            }
+        }
+
+
 class BookingBase(BaseModel):
     tenant_id: str
     employee_id: int
@@ -41,6 +56,7 @@ class BookingBase(BaseModel):
     drop_longitude: Optional[float] = None
     drop_location: Optional[str] = None
     status: Optional[BookingStatusEnum] = BookingStatusEnum.REQUEST
+    booking_type: Optional[BookingTypeEnum] = BookingTypeEnum.REGULAR
     reason: Optional[str] = None
     OTP: Optional[int] = None
     is_active: Optional[bool] = True
@@ -51,6 +67,7 @@ class BookingCreate(BaseModel):
     employee_id: int
     booking_dates: List[date] 
     shift_id: int
+    booking_type: Optional[BookingTypeEnum] = BookingTypeEnum.REGULAR
     @field_validator("booking_date", check_fields=False)
     def validate_booking_date_not_past(cls, v):
         if v < date.today():

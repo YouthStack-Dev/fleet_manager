@@ -228,6 +228,7 @@ def create_booking(
                 drop_longitude=drop_lng,
                 drop_location=drop_addr,
                 status="Request",
+                booking_type=booking.booking_type,
             )
             db.add(db_booking)
             db.flush()
