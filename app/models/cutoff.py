@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey, func, Interval, Boolean
+from sqlalchemy import Column, String, DateTime, ForeignKey, func, Interval, Boolean, Integer, CheckConstraint
 from app.database.session import Base
 from sqlalchemy.orm import relationship
 
@@ -24,8 +24,20 @@ class Cutoff(Base):
     # Enable/disable flags for special booking types
     allow_adhoc_booking = Column(Boolean, nullable=False, server_default="false")
     allow_medical_emergency_booking = Column(Boolean, nullable=False, server_default="false")
+    
+    # OTP requirements (number of OTPs needed)
+    login_otp_count = Column(Integer, nullable=False, server_default="1")
+    logout_otp_count = Column(Integer, nullable=False, server_default="1")
+    # Note: adhoc_otp_count and medical_emergency_otp_count removed - using login/logout counts for all booking types
+    
+    # Escort/Security guard configuration
+    escort_enabled = Column(Boolean, nullable=False, server_default="false")
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     tenant = relationship("Tenant", back_populates="cutoff", uselist=False)
-    __table_args__ = {"extend_existing": True}
+    __table_args__ = (
+        CheckConstraint('login_otp_count >= 1 AND login_otp_count <= 3', name='login_otp_count_check'),
+        CheckConstraint('logout_otp_count >= 1 AND logout_otp_count <= 3', name='logout_otp_count_check'),
+        {"extend_existing": True}
+    )

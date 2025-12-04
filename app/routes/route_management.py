@@ -9,6 +9,7 @@ from enum import Enum
 
 from app.database.session import get_db
 from app.models.booking import Booking, BookingStatusEnum
+from app.models.cutoff import Cutoff
 from app.models.driver import Driver
 from app.models.route_management import RouteManagement, RouteManagementBooking, RouteManagementStatusEnum
 from app.models.shift import Shift  # Add shift model import
@@ -16,6 +17,8 @@ from app.models.tenant import Tenant  # Add tenant model import
 from app.models.vehicle import Vehicle
 from app.models.vendor import Vendor
 from app.schemas.route import RouteWithEstimations, RouteEstimations, RouteManagementBookingResponse  # Add import for response schema
+from app.schemas.shift import ShiftResponse
+from app.services.clustering_algorithm import group_rides
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger, setup_logging
 from app.utils.response_utils import ResponseWrapper, handle_db_error
@@ -31,8 +34,7 @@ from typing import List, Optional, Dict, Any
 from datetime import date
 from pydantic import BaseModel
 
-from app.schemas.shift import ShiftResponse
-from app.services.geodesic import group_rides
+from app.utils.otp_utils import get_required_otp_count
 
 # Configure logging immediately at module level
 setup_logging(
@@ -386,7 +388,6 @@ async def create_routes(
                         ).update(
                             {
                                 Booking.status: BookingStatusEnum.SCHEDULED,
-                                Booking.OTP:otp_code,
                                 Booking.updated_at: func.now(),
                             },
                             synchronize_session=False
@@ -1038,6 +1039,35 @@ async def assign_vehicle_to_route(
             )
         except Exception as audit_error:
             logger.error(f"Failed to create audit log for vehicle/driver assignment: {str(audit_error)}")
+
+        # Generate OTPs for all bookings in the route
+        from app.utils.otp_utils import get_otp_purposes, generate_otp_codes
+        cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == tenant_id).first()
+        escort_enabled = cutoff.escort_enabled if cutoff else False
+        route_bookings = db.query(RouteManagementBooking).filter(RouteManagementBooking.route_id == route.route_id).all()
+        for rb in route_bookings:
+            booking = db.query(Booking).filter(Booking.booking_id == rb.booking_id).first()
+            # Recalculate OTP count and purposes at assignment time
+            shift = db.query(Shift).filter(Shift.shift_id == booking.shift_id).first()
+            required_otp_count = get_required_otp_count(booking.booking_type, shift.log_type.value if shift else "IN", cutoff)
+            purposes = get_otp_purposes(booking.booking_type, shift.log_type.value if shift else "IN", required_otp_count, escort_enabled)
+            
+            # Generate OTPs based on required count
+            otp_codes = generate_otp_codes(required_otp_count)
+            
+            db.query(Booking).filter(Booking.booking_id == rb.booking_id).update(
+                {
+                    Booking.otp1: otp_codes[0] if len(otp_codes) > 0 else None,
+                    Booking.otp2: otp_codes[1] if len(otp_codes) > 1 else None,
+                    Booking.otp3: otp_codes[2] if len(otp_codes) > 2 else None,
+                    Booking.required_otp_count: required_otp_count,
+                    Booking.otp1_purpose: purposes.get(1),
+                    Booking.otp2_purpose: purposes.get(2),
+                    Booking.otp3_purpose: purposes.get(3),
+                },
+                synchronize_session=False
+            )
+        db.commit()
 
         logger.info(
             f"[assign_vehicle_to_route] Vehicle={vehicle_id} (Driver={driver.driver_id}) assigned to Route={route_id} (Tenant={tenant_id})"
