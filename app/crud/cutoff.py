@@ -27,8 +27,7 @@ class CRUDCutoff(CRUDBase[Cutoff, CutoffCreate, CutoffUpdate]):
                 medical_emergency_cancel_cutoff=timedelta(0),
                 adhoc_booking_cutoff=timedelta(0),
                 allow_adhoc_booking=False,
-                allow_medical_emergency_booking=False,
-                allow_medical_emergency_cancel=False
+                allow_medical_emergency_booking=False
             )
             db.add(db_obj)
             db.flush()
@@ -45,8 +44,7 @@ class CRUDCutoff(CRUDBase[Cutoff, CutoffCreate, CutoffUpdate]):
             medical_emergency_cancel_cutoff=self._parse_time(obj_in.medical_emergency_cancel_cutoff),
             adhoc_booking_cutoff=self._parse_time(obj_in.adhoc_booking_cutoff),
             allow_adhoc_booking=obj_in.allow_adhoc_booking,
-            allow_medical_emergency_booking=obj_in.allow_medical_emergency_booking,
-            allow_medical_emergency_cancel=obj_in.allow_medical_emergency_cancel
+            allow_medical_emergency_booking=obj_in.allow_medical_emergency_booking
         )
         db.add(db_obj)
         db.flush()

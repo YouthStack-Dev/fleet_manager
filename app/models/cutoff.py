@@ -24,7 +24,6 @@ class Cutoff(Base):
     # Enable/disable flags for special booking types
     allow_adhoc_booking = Column(Boolean, nullable=False, server_default="false")
     allow_medical_emergency_booking = Column(Boolean, nullable=False, server_default="false")
-    allow_medical_emergency_cancel = Column(Boolean, nullable=False, server_default="false")
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

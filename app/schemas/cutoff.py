@@ -15,7 +15,6 @@ class CutoffBase(BaseModel):
     # Enable/disable flags for special booking types
     allow_adhoc_booking: Optional[bool] = False
     allow_medical_emergency_booking: Optional[bool] = False
-    allow_medical_emergency_cancel: Optional[bool] = False
 
     @validator("booking_login_cutoff", "cancel_login_cutoff", "booking_logout_cutoff", "cancel_logout_cutoff", 
                "medical_emergency_booking_cutoff", "medical_emergency_cancel_cutoff", "adhoc_booking_cutoff")
@@ -50,7 +49,6 @@ class CutoffOut(BaseModel):
     adhoc_booking_cutoff: timedelta
     allow_adhoc_booking: bool
     allow_medical_emergency_booking: bool
-    allow_medical_emergency_cancel: bool
     tenant_id: str
 
     class Config:

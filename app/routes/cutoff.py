@@ -149,7 +149,6 @@ def update_cutoff(
                     "adhoc_booking_cutoff": str(update_in.adhoc_booking_cutoff) if update_in.adhoc_booking_cutoff else None,
                     "allow_adhoc_booking": update_in.allow_adhoc_booking,
                     "allow_medical_emergency_booking": update_in.allow_medical_emergency_booking,
-                    "allow_medical_emergency_cancel": update_in.allow_medical_emergency_cancel,
                 },
                 request=request
             )
