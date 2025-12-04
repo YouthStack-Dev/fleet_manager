@@ -13,11 +13,6 @@ class Tenant(Base):
     latitude = Column(Numeric(9, 6))
     is_active = Column(Boolean, default=True, nullable=False)
 
-    # Escort Safety Configuration
-    escort_required_start_time = Column(Time, nullable=True)  # e.g., 18:00 (6 PM)
-    escort_required_end_time = Column(Time, nullable=True)    # e.g., 06:00 (6 AM)
-    escort_required_for_women = Column(Boolean, default=True, nullable=False)  # Enable women safety escorts
-
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -34,6 +29,9 @@ class Tenant(Base):
     vendors = relationship("Vendor", back_populates="tenant", cascade="all, delete-orphan")
 
     escorts = relationship("Escort", back_populates="tenant", cascade="all, delete-orphan")
+
+    # Safety configuration (one-to-one)
+    config = relationship("TenantConfig", back_populates="tenant", uselist=False, cascade="all, delete-orphan")
 
     roles = relationship("Role", back_populates="tenant")
 

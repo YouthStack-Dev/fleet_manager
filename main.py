@@ -39,7 +39,8 @@ from app.routes import (
     route_management, # Add new route management router
     
     auth_router,  # Add the auth router
-    monitoring_router  # Add monitoring router
+    monitoring_router,  # Add monitoring router
+    tenant_config_router  # Add tenant config router
 )
 from app.seed.seed_api import router as seed_router
 
@@ -89,6 +90,7 @@ app.include_router(employee_router, prefix="/api/v1")
 app.include_router(driver_router, prefix="/api/v1")
 app.include_router(booking_router, prefix="/api/v1")
 app.include_router(tenant_router, prefix="/api/v1")
+app.include_router(tenant_config_router, prefix="/api/v1")
 app.include_router(vendor_router, prefix="/api/v1")
 app.include_router(vehicle_type_router, prefix="/api/v1")
 app.include_router(vehicle_router, prefix="/api/v1")

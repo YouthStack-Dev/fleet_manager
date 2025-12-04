@@ -94,11 +94,15 @@ def route_requires_escort(db: Session, route_id: int, tenant_id: str) -> bool:
 
     try:
         # Get tenant escort configuration
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
-        if not tenant or not tenant.escort_required_for_women:
+        from app.models.tenant_config import TenantConfig
+        safety_config = db.query(TenantConfig).filter(
+            TenantConfig.tenant_id == tenant_id
+        ).first()
+
+        if not safety_config or not safety_config.escort_required_for_women:
             return False
 
-        if not tenant.escort_required_start_time or not tenant.escort_required_end_time:
+        if not safety_config.escort_required_start_time or not safety_config.escort_required_end_time:
             return False
 
         # Get route shift time
@@ -117,8 +121,8 @@ def route_requires_escort(db: Session, route_id: int, tenant_id: str) -> bool:
             return False
 
         shift_time = shift.shift_time
-        escort_start = tenant.escort_required_start_time
-        escort_end = tenant.escort_required_end_time
+        escort_start = safety_config.escort_required_start_time
+        escort_end = safety_config.escort_required_end_time
 
         # Check if shift time requires escort
         time_requires_escort = is_time_in_escort_range(shift_time, escort_start, escort_end)

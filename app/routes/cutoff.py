@@ -145,7 +145,6 @@ def update_cutoff(
                     "booking_logout_cutoff": str(update_in.booking_logout_cutoff) if update_in.booking_logout_cutoff else None,
                     "cancel_logout_cutoff": str(update_in.cancel_logout_cutoff) if update_in.cancel_logout_cutoff else None,
                     "medical_emergency_booking_cutoff": str(update_in.medical_emergency_booking_cutoff) if update_in.medical_emergency_booking_cutoff else None,
-                    "medical_emergency_cancel_cutoff": str(update_in.medical_emergency_cancel_cutoff) if update_in.medical_emergency_cancel_cutoff else None,
                     "adhoc_booking_cutoff": str(update_in.adhoc_booking_cutoff) if update_in.adhoc_booking_cutoff else None,
                     "allow_adhoc_booking": update_in.allow_adhoc_booking,
                     "allow_medical_emergency_booking": update_in.allow_medical_emergency_booking,

@@ -17,3 +17,4 @@ from app.routes.app_driver_router import router as app_driver_router
 from app.routes.reports_router import router as reports_router
 from app.routes.audit_log_router import router as audit_log_router
 from app.routes.monitoring_router import router as monitoring_router
+from app.routes.tenant_config_router import router as tenant_config_router

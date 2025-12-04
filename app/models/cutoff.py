@@ -18,7 +18,6 @@ class Cutoff(Base):
     booking_logout_cutoff = Column(Interval, nullable=False, server_default="0")
     cancel_logout_cutoff = Column(Interval, nullable=False, server_default="0")
     medical_emergency_booking_cutoff = Column(Interval, nullable=False, server_default="0")
-    medical_emergency_cancel_cutoff = Column(Interval, nullable=False, server_default="0")
     adhoc_booking_cutoff = Column(Interval, nullable=False, server_default="0")
     
     # Enable/disable flags for special booking types
