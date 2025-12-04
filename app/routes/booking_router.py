@@ -138,19 +138,19 @@ def create_booking(
             
 
             # 2️⃣ Cutoff validation
-            if cutoff and shift and cutoff.booking_cutoff and cutoff.booking_cutoff.total_seconds() > 0:
+            if cutoff and shift and cutoff.booking_login_cutoff and cutoff.booking_login_cutoff.total_seconds() > 0:
                 shift_datetime = datetime.combine(booking_date, shift.shift_time)
                 now = datetime.now()
                 time_until_shift = shift_datetime - now
                 logger.info(
                     f"Cutoff check: now={now}, shift_datetime={shift_datetime}, "
-                    f"time_until_shift={time_until_shift}, cutoff={cutoff.booking_cutoff}"
+                    f"time_until_shift={time_until_shift}, cutoff={cutoff.booking_login_cutoff}"
                 )
-                if time_until_shift < cutoff.booking_cutoff:
+                if time_until_shift < cutoff.booking_login_cutoff:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=ResponseWrapper.error(
-                            f"Booking cutoff time has passed for this shift (cutoff: {cutoff.booking_cutoff})",
+                            f"Booking cutoff time has passed for this shift (cutoff: {cutoff.booking_login_cutoff})",
                             "BOOKING_CUTOFF",
                         ),
                     )
