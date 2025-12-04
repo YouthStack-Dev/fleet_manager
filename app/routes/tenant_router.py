@@ -123,8 +123,17 @@ def create_tenant(
                 db,
                 obj_in=CutoffCreate(
                     tenant_id=new_tenant.tenant_id,
-                    booking_cutoff="0:00",  # default 0 hr 0 min
-                    cancel_cutoff="0:00"
+                    booking_login_cutoff="0:00",
+                    cancel_login_cutoff="0:00",
+                    booking_logout_cutoff="0:00",
+                    cancel_logout_cutoff="0:00",
+                    medical_emergency_booking_cutoff="0:00",
+                    medical_emergency_cancel_cutoff="0:00",
+                    adhoc_booking_cutoff="0:00",
+                    adhoc_cancel_cutoff="0:00",
+                    allow_adhoc_booking=False,
+                    allow_medical_emergency_booking=False,
+                    allow_medical_emergency_cancel=False
                 )
             )
             logger.info(f"Default cutoff created for tenant {new_tenant.tenant_id}")
