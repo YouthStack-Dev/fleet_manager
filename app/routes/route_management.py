@@ -20,6 +20,9 @@ from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger, setup_logging
 from app.utils.response_utils import ResponseWrapper, handle_db_error
 from app.utils.audit_helper import log_audit
+from app.utils.cache_manager import cached
+from app.utils.task_manager import run_background_task
+from common_utils import datetime_to_minutes
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -200,25 +203,7 @@ def get_booking_by_id(booking_id: int, db: Session) -> Optional[Dict]:
     return booking_dict
 
 
-def datetime_to_minutes(dt_val):
-    """
-    Convert datetime/time string or object to minutes from midnight
-    """
-    # If already datetime or time object
-    if isinstance(dt_val, datetime):
-        return dt_val.hour * 60 + dt_val.minute
-    
-    if isinstance(dt_val, time):
-        return dt_val.hour * 60 + dt_val.minute
 
-    # Else assume it's string
-    if isinstance(dt_val, str):
-        dt = datetime.fromisoformat(dt_val)
-        return dt.hour * 60 + dt.minute
-
-    raise TypeError(f"Unsupported type for datetime_to_minutes: {type(dt_val)}")
-
-@router.post("/" , status_code=status.HTTP_200_OK)
 async def create_routes(
     booking_date: date = Query(..., description="Date for the bookings (YYYY-MM-DD)"),
     shift_id: int = Query(..., description="Shift ID to filter bookings"),
@@ -443,6 +428,7 @@ async def create_routes(
         )
 
 @router.get("/", status_code=status.HTTP_200_OK)
+@cached(ttl_seconds=180, key_prefix="routes")  # Cache for 3 minutes
 async def get_all_routes(
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     shift_id: Optional[int] = Query(None, description="Filter by shift ID"),
@@ -663,6 +649,7 @@ async def get_all_routes(
         return handle_db_error(e)
 
 @router.get("/unrouted", status_code=status.HTTP_200_OK)
+@cached(ttl_seconds=120, key_prefix="unrouted")  # Cache for 2 minutes
 async def get_unrouted_bookings(
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     shift_id: int = Query(..., description="Filter by shift ID"),
