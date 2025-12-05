@@ -24,11 +24,7 @@ class Cutoff(Base):
     allow_adhoc_booking = Column(Boolean, nullable=False, server_default="false")
     allow_medical_emergency_booking = Column(Boolean, nullable=False, server_default="false")
     
-    # OTP requirements (boarding/deboarding flags)
-    login_boarding_otp = Column(Boolean, nullable=False, server_default="true")
-    login_deboarding_otp = Column(Boolean, nullable=False, server_default="true")
-    logout_boarding_otp = Column(Boolean, nullable=False, server_default="true")
-    logout_deboarding_otp = Column(Boolean, nullable=False, server_default="true")
+    # Note: OTP requirements moved to tenant_config
     # Note: adhoc_otp_count and medical_emergency_otp_count removed - using login/logout counts for all booking types
     
     # Escort/Security guard configuration

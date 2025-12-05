@@ -15,6 +15,7 @@ from app.models.escort import Escort
 from app.models.route_management import RouteManagement, RouteManagementBooking, RouteManagementStatusEnum
 from app.models.shift import Shift  # Add shift model import
 from app.models.tenant import Tenant  # Add tenant model import
+from app.models.tenant_config import TenantConfig
 from app.models.vehicle import Vehicle
 from app.models.vendor import Vendor
 from app.schemas.route import RouteWithEstimations, RouteEstimations, RouteManagementBookingResponse  # Add import for response schema
@@ -1059,6 +1060,7 @@ async def assign_vehicle_to_route(
         # Generate OTPs for all bookings in the route
         from app.utils.otp_utils import generate_otp_codes
         cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == tenant_id).first()
+        tenant_config = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
         # Check if escort is assigned to this route AND route requires escort
         escort_enabled = route.assigned_escort_id 
         route_bookings = db.query(RouteManagementBooking).filter(RouteManagementBooking.route_id == route.route_id).all()
@@ -1066,7 +1068,7 @@ async def assign_vehicle_to_route(
             booking = db.query(Booking).filter(Booking.booking_id == rb.booking_id).first()
             # Recalculate OTP count and purposes at assignment time
             shift = db.query(Shift).filter(Shift.shift_id == booking.shift_id).first()
-            required_otp_count = get_required_otp_count(booking.booking_type, shift.log_type.value if shift else "IN", cutoff, escort_enabled)
+            required_otp_count = get_required_otp_count(booking.booking_type, shift.log_type.value if shift else "IN", tenant_config, escort_enabled)
             
             # Generate OTPs based on required count
             otp_codes = generate_otp_codes(required_otp_count)
@@ -1076,14 +1078,14 @@ async def assign_vehicle_to_route(
 
             # Check shift type and add required OTPs
             if shift.log_type.value == "IN":  # Login shift
-                if cutoff and cutoff.login_boarding_otp:
+                if tenant_config and tenant_config.login_boarding_otp:
                     required_otps.append('boarding')
-                if cutoff and cutoff.login_deboarding_otp:
+                if tenant_config and tenant_config.login_deboarding_otp:
                     required_otps.append('deboarding')
             elif shift.log_type.value == "OUT":  # Logout shift
-                if cutoff and cutoff.logout_boarding_otp:
+                if tenant_config and tenant_config.logout_boarding_otp:
                     required_otps.append('boarding')
-                if cutoff and cutoff.logout_deboarding_otp:
+                if tenant_config and tenant_config.logout_deboarding_otp:
                     required_otps.append('deboarding')
 
             # Add escort if enabled

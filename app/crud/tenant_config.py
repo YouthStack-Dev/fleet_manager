@@ -16,7 +16,11 @@ class CRUDTenantConfig(CRUDBase[TenantConfig, TenantConfigCreate, TenantConfigUp
         if not db_obj:
             db_obj = TenantConfig(
                 tenant_id=tenant_id,
-                escort_required_for_women=True  # Default value
+                escort_required_for_women=True,  # Default value
+                login_boarding_otp=True,         # Default OTP settings
+                login_deboarding_otp=True,
+                logout_boarding_otp=True,
+                logout_deboarding_otp=True
             )
             db.add(db_obj)
             db.flush()
@@ -28,7 +32,11 @@ class CRUDTenantConfig(CRUDBase[TenantConfig, TenantConfigCreate, TenantConfigUp
             tenant_id=obj_in.tenant_id,
             escort_required_start_time=obj_in.escort_required_start_time,
             escort_required_end_time=obj_in.escort_required_end_time,
-            escort_required_for_women=obj_in.escort_required_for_women
+            escort_required_for_women=obj_in.escort_required_for_women,
+            login_boarding_otp=obj_in.login_boarding_otp,
+            login_deboarding_otp=obj_in.login_deboarding_otp,
+            logout_boarding_otp=obj_in.logout_boarding_otp,
+            logout_deboarding_otp=obj_in.logout_deboarding_otp
         )
         db.add(db_obj)
         db.flush()
