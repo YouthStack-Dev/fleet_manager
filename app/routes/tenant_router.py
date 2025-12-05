@@ -40,12 +40,12 @@ def create_tenant(
     tenant: TenantCreate,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["admin.tenant.create"], check_tenant=False)),
+    user_data=Depends(PermissionChecker(["admin_tenant.create"], check_tenant=False)),
 ):
     """
     Create a new tenant with associated default team, admin role, policy, and employee.
 
-    **Required permissions:** `admin.tenant.create`
+    **Required permissions:** `admin_tenant.create`
 
     **Request body:**
 
@@ -329,7 +329,7 @@ def read_tenants(
     name: Optional[str] = Query(None, description="Filter tenants by name (case-insensitive)"),
     is_active: Optional[bool] = Query(None, description="Filter tenants by active status"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["admin.tenant.read"], check_tenant=False)),
+    user_data=Depends(PermissionChecker(["admin_tenant.read"], check_tenant=False)),
 ):
 
     """
@@ -406,7 +406,7 @@ def read_tenants(
 def read_tenant(
     tenant_id: str,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["admin.tenant.read"], check_tenant=False)),
+    user_data=Depends(PermissionChecker(["admin_tenant.read"], check_tenant=False)),
 ):
     """
     Fetch a tenant by ID.
@@ -503,7 +503,7 @@ def update_tenant(
     tenant_id: str,
     tenant_update: TenantUpdate,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["admin.tenant.update"], check_tenant=False)),
+    user_data=Depends(PermissionChecker(["admin_tenant.update"], check_tenant=False)),
 ):
     """
     Update a tenant by ID.
@@ -651,7 +651,7 @@ def update_tenant(
 def toggle_tenant_status(
     tenant_id: str,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["admin.tenant.update"], check_tenant=False)),
+    user_data=Depends(PermissionChecker(["admin_tenant.update"], check_tenant=False)),
 ):
     """
     Toggle a tenant's active status (Admins only).
@@ -714,7 +714,7 @@ def toggle_tenant_status(
 def delete_tenant(
     tenant_id: str, 
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["admin.tenant.delete"], check_tenant=False))
+    user_data=Depends(PermissionChecker(["admin_tenant.delete"], check_tenant=False))
 ):
     db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
     if not db_tenant:
