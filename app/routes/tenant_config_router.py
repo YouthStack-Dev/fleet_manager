@@ -20,7 +20,7 @@ router = APIRouter(prefix="/tenant-config", tags=["tenant-config"])
 @router.get("/", response_model=TenantConfigResponse)
 def get_tenant_config(
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["tenant.config.read"], check_tenant=True)),
+    user_data=Depends(PermissionChecker(["tenant_config.read"], check_tenant=True)),
 ):
     """
     Get tenant configuration for the authenticated tenant.
@@ -54,7 +54,7 @@ def get_tenant_config(
 def update_tenant_config(
     config_update: TenantConfigUpdate,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["tenant.config.update"], check_tenant=True)),
+    user_data=Depends(PermissionChecker(["tenant_config.update", "tenant_config.escort"], check_tenant=True)),
 ):
     """
     Update tenant configuration for the authenticated tenant.
@@ -111,7 +111,7 @@ def update_tenant_config(
 @router.post("/initialize", status_code=status.HTTP_201_CREATED, response_model=TenantConfigResponse)
 def initialize_tenant_config(
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["tenant.config.create"], check_tenant=True)),
+    user_data=Depends(PermissionChecker(["tenant_config.create", "tenant_config.seed"], check_tenant=True)),
 ):
     """
     Initialize tenant configuration with default values.
