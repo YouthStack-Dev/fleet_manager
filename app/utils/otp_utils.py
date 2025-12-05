@@ -10,14 +10,14 @@ from app.core.logging_config import get_logger
 logger = get_logger(__name__)
 
 
-def get_required_otp_count(booking_type: str, shift_log_type: str, cutoff, escort_enabled: bool = False) -> int:
+def get_required_otp_count(booking_type: str, shift_log_type: str, tenant_config, escort_enabled: bool = False) -> int:
     """
     Determine the number of OTPs required based on booking type and shift type.
 
     Args:
         booking_type: Type of booking (regular, adhoc, medical_emergency)
         shift_log_type: Type of shift (IN for login, OUT for logout)
-        cutoff: Cutoff configuration object
+        tenant_config: TenantConfig object containing OTP settings
         escort_enabled: Whether escort is assigned to the route AND route requires escort
 
     Returns:
@@ -25,9 +25,9 @@ def get_required_otp_count(booking_type: str, shift_log_type: str, cutoff, escor
     """
     # Count the required OTPs based on boarding/deboarding flags
     if shift_log_type == "IN":
-        base_count = (cutoff.login_boarding_otp + cutoff.login_deboarding_otp) if cutoff else 0
+        base_count = (tenant_config.login_boarding_otp + tenant_config.login_deboarding_otp) if tenant_config else 0
     elif shift_log_type == "OUT":
-        base_count = (cutoff.logout_boarding_otp + cutoff.logout_deboarding_otp) if cutoff else 0
+        base_count = (tenant_config.logout_boarding_otp + tenant_config.logout_deboarding_otp) if tenant_config else 0
     else:
         base_count = 0  # default fallback
 

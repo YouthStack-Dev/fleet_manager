@@ -7,6 +7,12 @@ class TenantConfigBase(BaseModel):
     escort_required_start_time: Optional[time] = None
     escort_required_end_time: Optional[time] = None
     escort_required_for_women: bool = True
+    
+    # OTP requirements (boarding/deboarding flags)
+    login_boarding_otp: bool = True
+    login_deboarding_otp: bool = True
+    logout_boarding_otp: bool = True
+    logout_deboarding_otp: bool = True
 
     @field_validator('escort_required_start_time', 'escort_required_end_time')
     def validate_time_format(cls, v):
@@ -24,6 +30,12 @@ class TenantConfigUpdate(BaseModel):
     escort_required_start_time: Optional[time] = None
     escort_required_end_time: Optional[time] = None
     escort_required_for_women: Optional[bool] = None
+    
+    # OTP requirements (boarding/deboarding flags)
+    login_boarding_otp: Optional[bool] = None
+    login_deboarding_otp: Optional[bool] = None
+    logout_boarding_otp: Optional[bool] = None
+    logout_deboarding_otp: Optional[bool] = None
 
     @field_validator('escort_required_start_time', 'escort_required_end_time')
     def validate_time_format(cls, v):
