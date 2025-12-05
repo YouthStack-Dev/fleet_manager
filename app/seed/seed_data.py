@@ -115,6 +115,8 @@ def seed_iam(db: Session):
         "route_vehicle_assignment",
         "audit_log",
         "dashboard",
+        "escort",
+        "tenant_config",
     ]
 
     actions = ["create", "read", "update", "delete"]
