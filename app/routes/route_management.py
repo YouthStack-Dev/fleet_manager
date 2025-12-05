@@ -208,6 +208,7 @@ def get_booking_by_id(booking_id: int, db: Session) -> Optional[Dict]:
 
 
 
+@router.post("/generate-suggestions", status_code=status.HTTP_200_OK)
 async def create_routes(
     booking_date: date = Query(..., description="Date for the bookings (YYYY-MM-DD)"),
     shift_id: int = Query(..., description="Shift ID to filter bookings"),
@@ -218,9 +219,22 @@ async def create_routes(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["route.read"], check_tenant=True)),
 ):
+
     """
     Generate route clusters (suggestions) for a given shift and date.
     Only includes bookings NOT already assigned to any route.
+
+    Parameters:
+    - booking_date: Date for the bookings (YYYY-MM-DD)
+    - shift_id: Shift ID to filter bookings
+    - radius: Radius in km for clustering
+    - group_size: Number of route clusters to generate
+    - strict_grouping: Whether to enforce strict grouping by group size or not
+    - tenant_id: Tenant ID for multi-tenant setups
+
+    Returns:
+    - A list of route clusters, each containing unrouted bookings
+    - A dictionary containing the total number of unrouted bookings and total number of route clusters generated
     """
     try:
         logger.info(

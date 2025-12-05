@@ -171,10 +171,15 @@ def create_booking(
                 
             else:
                 # Regular booking - use shift-type specific cutoffs
-                if shift.log_type == "IN":  # Login shift (home → office)
-                    cutoff_interval = cutoff.booking_login_cutoff
-                elif shift.log_type == "OUT":  # Logout shift (office → home)  
-                    cutoff_interval = cutoff.booking_logout_cutoff
+                if cutoff:
+                    if shift.log_type == "IN":  # Login shift (home → office)
+                        cutoff_interval = cutoff.booking_login_cutoff
+                    elif shift.log_type == "OUT":  # Logout shift (office → home)  
+                        cutoff_interval = cutoff.booking_logout_cutoff
+                else:
+                    # No cutoff configuration for this tenant - skip cutoff validation
+                    cutoff_interval = None
+                    logger.info(f"No cutoff configuration found for tenant {tenant_id} - skipping cutoff validation")
             
             if cutoff and shift and cutoff_interval and cutoff_interval.total_seconds() > 0:
                 shift_datetime = datetime.combine(booking_date, shift.shift_time)
