@@ -208,7 +208,7 @@ def get_booking_by_id(booking_id: int, db: Session) -> Optional[Dict]:
 
 
 
-@router.post("/generate-suggestions", status_code=status.HTTP_200_OK)
+@router.post("/" , status_code=status.HTTP_200_OK)
 async def create_routes(
     booking_date: date = Query(..., description="Date for the bookings (YYYY-MM-DD)"),
     shift_id: int = Query(..., description="Shift ID to filter bookings"),
