@@ -18,6 +18,12 @@ class TenantConfig(Base):
     escort_required_end_time = Column(Time, nullable=True)    # e.g., 06:00 (6 AM)
     escort_required_for_women = Column(Boolean, default=True, nullable=False)  # Enable women safety escorts
 
+    # OTP requirements (boarding/deboarding flags)
+    login_boarding_otp = Column(Boolean, nullable=False, server_default="true")
+    login_deboarding_otp = Column(Boolean, nullable=False, server_default="true")
+    logout_boarding_otp = Column(Boolean, nullable=False, server_default="true")
+    logout_deboarding_otp = Column(Boolean, nullable=False, server_default="true")
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
