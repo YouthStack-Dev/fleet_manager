@@ -99,7 +99,7 @@ def seed_iam(db: Session):
         "route",
         "shift",
         "team",
-        "admin.tenant",
+        "admin_tenant",
         "vehicle",
         "vehicle-type",
         "vendor",
