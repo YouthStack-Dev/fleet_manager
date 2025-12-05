@@ -8,6 +8,7 @@ from app.routes.vehicle_router import router as vehicle_router
 from app.routes.vendor_user_router import router as vendor_user_router
 from app.routes.team_router import router as team_router
 from app.routes.shift_router import router as shift_router
+from app.routes.escort_router import router as escort_router
 # from app.routes.route_router import router as route_router
 # from app.routes.route_booking_router import router as route_booking_router
 from app.routes.weekoff_config_router import router as weekoff_config_router

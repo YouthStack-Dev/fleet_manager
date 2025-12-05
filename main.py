@@ -29,6 +29,7 @@ from app.routes import (
     vendor_user_router,
     team_router,
     shift_router,
+    escort_router,
     cutoff_router,
     weekoff_config_router,
     reports_router,
@@ -97,6 +98,7 @@ app.include_router(vehicle_router, prefix="/api/v1")
 app.include_router(vendor_user_router, prefix="/api/v1")
 app.include_router(team_router, prefix="/api/v1")
 app.include_router(shift_router, prefix="/api/v1")
+app.include_router(escort_router, prefix="/api/v1")
 app.include_router(cutoff_router, prefix="/api/v1")
 # app.include_router(route_router, prefix="/api/v1")
 # app.include_router(route_booking_router, prefix="/api/v1")
