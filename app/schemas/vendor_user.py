@@ -33,6 +33,7 @@ class VendorUserBase(BaseModel):
     
 class VendorUserCreate(VendorUserBase):
     password: str
+    role_id: int = Field(..., description="Required: Role ID to assign to the vendor user")
     
     @field_validator('password')
     @classmethod

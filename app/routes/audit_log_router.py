@@ -19,6 +19,7 @@ def get_audit_by_module(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=200, description="Items per page"),
     tenant_id: Optional[str] = Query(None, description="Tenant ID for filtering (required for admins)"),
+    employee_id: Optional[int] = Query(None, description="Employee ID filter (only for employee module)"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["audit_log.read"], check_tenant=True)),
 ):
@@ -86,7 +87,7 @@ def get_audit_by_module(
         
         # For vendors - only allow vendor-related modules
         elif user_type == "vendor":
-            allowed_vendor_modules = ["driver", "vehicle", "vehicle_type"]
+            allowed_vendor_modules = ["driver", "vehicle", "vehicle_type", "vendor_user"]
             if module_name.lower() not in allowed_vendor_modules:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -103,6 +104,11 @@ def get_audit_by_module(
             page=page,
             page_size=page_size
         )
+
+        # Add employee_id filter if module is employee
+        if module_name.lower() == "employee" and employee_id is not None:
+            filters.employee_id = employee_id
+            logger.info(f"Applying employee_id filter: {employee_id} for module '{module_name}'")
 
         # Get filtered audit logs
         logs, total_count = audit_log.get_filtered(db=db, filters=filters)

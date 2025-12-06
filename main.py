@@ -30,6 +30,7 @@ from app.routes import (
     vendor_user_router,
     team_router,
     shift_router,
+    escort_router,
     cutoff_router,
     weekoff_config_router,
     reports_router,
@@ -39,7 +40,9 @@ from app.routes import (
     grouping,        # Add new grouping router
     route_management, # Add new route management router
     
-    auth_router  # Add the new auth router
+    auth_router,  # Add the auth router
+    monitoring_router,  # Add monitoring router
+    tenant_config_router  # Add tenant config router
 )
 from app.seed.seed_api import router as seed_router
 
@@ -102,12 +105,14 @@ app.include_router(employee_router, prefix="/api/v1")
 app.include_router(driver_router, prefix="/api/v1")
 app.include_router(booking_router, prefix="/api/v1")
 app.include_router(tenant_router, prefix="/api/v1")
+app.include_router(tenant_config_router, prefix="/api/v1")
 app.include_router(vendor_router, prefix="/api/v1")
 app.include_router(vehicle_type_router, prefix="/api/v1")
 app.include_router(vehicle_router, prefix="/api/v1")
 app.include_router(vendor_user_router, prefix="/api/v1")
 app.include_router(team_router, prefix="/api/v1")
 app.include_router(shift_router, prefix="/api/v1")
+app.include_router(escort_router, prefix="/api/v1")
 app.include_router(cutoff_router, prefix="/api/v1")
 # app.include_router(route_router, prefix="/api/v1")
 # app.include_router(route_booking_router, prefix="/api/v1")
@@ -116,6 +121,7 @@ app.include_router(weekoff_config_router, prefix="/api/v1")
 app.include_router(grouping.router, prefix="/api/v1")        # Add new grouping router
 app.include_router(route_management.router, prefix="/api/v1") # Add new route management router
 app.include_router(auth_router, prefix="/api/v1")  # Add the auth router
+app.include_router(monitoring_router, prefix="/api/v1")  # Add monitoring router
 
 # Include IAM routers
 app.include_router(permission_router, prefix="/api/v1/iam")
@@ -292,6 +298,31 @@ async def drop_tables_endpoint(
             detail=f"Failed to drop tables: {str(e)}"
         )
 
+
+@app.on_event("startup")
+async def startup_event():
+    """Application startup event"""
+    print("STARTUP EVENT: Called", file=sys.stdout, flush=True)
+    logger.info("🌟 Fleet Manager application starting up...")
+
+    # Setup database monitoring
+    from app.database.session import engine
+    from app.utils.database_monitor import db_monitor
+    from app.utils.database_monitor import monitor_database_periodically
+    import asyncio
+
+    db_monitor.setup_monitoring(engine)
+    logger.info("📊 Database monitoring enabled")
+
+    # Start background monitoring task
+    asyncio.create_task(monitor_database_periodically())
+    logger.info("🔄 Background monitoring task started")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Application shutdown event"""
+    logger.info("🛑 Fleet Manager application shutting down...")
+    # ...existing shutdown code...
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

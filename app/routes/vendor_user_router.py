@@ -5,6 +5,7 @@ from typing import Optional
 from app.database.session import get_db
 from app.models.vendor_user import VendorUser
 from app.models.vendor import Vendor
+from app.models.iam.role import Role
 from app.schemas.vendor_user import VendorUserCreate, VendorUserUpdate, VendorUserResponse, VendorUserPaginationResponse
 from app.utils.pagination import paginate_query
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
@@ -33,6 +34,7 @@ def create_vendor_user(
     - Employee: tenant_id enforced from token
     - Validates vendor exists and belongs to the tenant
     - Checks for duplicate email/phone within tenant
+    - **role_id is required** - Use GET /api/iam/roles/ to get available roles
     - Hashes password before storing
     - Creates audit log
     """
@@ -122,6 +124,30 @@ def create_vendor_user(
                 )
             )
 
+        # Validate role exists and is accessible
+        role = db.query(Role).filter(
+            Role.role_id == vendor_user.role_id,
+            Role.is_active == True
+        ).first()
+        if not role:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Role with ID {vendor_user.role_id} not found or inactive",
+                    error_code="ROLE_NOT_FOUND"
+                )
+            )
+
+        # Check role belongs to tenant (or is system role)
+        if not role.is_system_role and role.tenant_id != tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message=f"Role does not belong to your tenant",
+                    error_code="ROLE_TENANT_MISMATCH"
+                )
+            )
+
         # Create vendor user with hashed password
         db_vendor_user = VendorUser(
             tenant_id=tenant_id,
@@ -145,7 +171,7 @@ def create_vendor_user(
                 "email": db_vendor_user.email,
                 "phone": db_vendor_user.phone,
                 "vendor_id": db_vendor_user.vendor_id,
-                "role_id": db_vendor_user.role_id,
+                "role_id": vendor_user.role_id,
                 "is_active": db_vendor_user.is_active
             }
             log_audit(

@@ -30,6 +30,7 @@ pytest>=7.4.0
 pytest-cov>=4.1.0
 pytest-asyncio>=0.21.0
 
+psutil
 # fsspec with optional cloud storage backends
 # s3 - for AWS S3 and S3-compatible storage
 # gcs - for Google Cloud Storage  

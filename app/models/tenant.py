@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Numeric, func
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Numeric, Time, func
 from app.database.session import Base
 from sqlalchemy.orm import relationship
 
@@ -12,6 +12,7 @@ class Tenant(Base):
     longitude = Column(Numeric(9, 6))
     latitude = Column(Numeric(9, 6))
     is_active = Column(Boolean, default=True, nullable=False)
+
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -26,6 +27,11 @@ class Tenant(Base):
 
     # ✅ One-to-many Tenant → Vendor
     vendors = relationship("Vendor", back_populates="tenant", cascade="all, delete-orphan")
+
+    escorts = relationship("Escort", back_populates="tenant", cascade="all, delete-orphan")
+
+    # Safety configuration (one-to-one)
+    config = relationship("TenantConfig", back_populates="tenant", uselist=False, cascade="all, delete-orphan")
 
     roles = relationship("Role", back_populates="tenant")
 

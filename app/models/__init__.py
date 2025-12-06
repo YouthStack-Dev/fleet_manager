@@ -13,6 +13,8 @@ from app.models.booking import Booking
 from app.models.weekoff_config import WeekoffConfig
 from app.models.cutoff import Cutoff
 from app.models.audit_log import AuditLog
+from app.models.tenant_config import TenantConfig
+from app.models.escort import Escort
 
 # IAM models
 from app.models.iam.permission import Permission

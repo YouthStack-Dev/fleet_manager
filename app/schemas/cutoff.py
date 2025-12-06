@@ -3,23 +3,20 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 class CutoffBase(BaseModel):
-    booking_cutoff: Optional[str] = "0:00"  # format "HH:MM"
-    cancel_cutoff: Optional[str] = "0:00"
+    # Time-based cutoffs (intervals before shift time) - format "HH:MM"
+    booking_login_cutoff: Optional[str] = "0:00"
+    cancel_login_cutoff: Optional[str] = "0:00"
+    booking_logout_cutoff: Optional[str] = "0:00"
+    cancel_logout_cutoff: Optional[str] = "0:00"
+    medical_emergency_booking_cutoff: Optional[str] = "0:00"
+    adhoc_booking_cutoff: Optional[str] = "0:00"
+    
+    # Enable/disable flags for special booking types
+    allow_adhoc_booking: Optional[bool] = False
+    allow_medical_emergency_booking: Optional[bool] = False
 
-    @property
-    def booking_cutoff_timedelta(self) -> timedelta:
-        """Convert booking_cutoff string to timedelta"""
-        h, m = map(int, self.booking_cutoff.split(":"))
-        return timedelta(hours=h, minutes=m)
-
-    @property
-    def cancel_cutoff_timedelta(self) -> timedelta:
-        """Convert cancel_cutoff string to timedelta"""
-        h, m = map(int, self.cancel_cutoff.split(":"))
-        return timedelta(hours=h, minutes=m)
-
-    @field_validator("booking_cutoff", "cancel_cutoff")
-    @classmethod
+    @validator("booking_login_cutoff", "cancel_login_cutoff", "booking_logout_cutoff", "cancel_logout_cutoff", 
+               "medical_emergency_booking_cutoff", "adhoc_booking_cutoff")
     def validate_time_format(cls, v):
         """Ensure format is HH:MM and valid numbers"""
         if not isinstance(v, str) or ":" not in v:
@@ -42,15 +39,20 @@ class CutoffUpdate(CutoffBase):
 
 
 class CutoffOut(BaseModel):
+    booking_login_cutoff: timedelta
+    cancel_login_cutoff: timedelta
+    booking_logout_cutoff: timedelta
+    cancel_logout_cutoff: timedelta
+    medical_emergency_booking_cutoff: timedelta
+    adhoc_booking_cutoff: timedelta
+    allow_adhoc_booking: bool
+    allow_medical_emergency_booking: bool
     tenant_id: str
-    booking_cutoff: timedelta
-    cancel_cutoff: timedelta
-    created_at: datetime
-    updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 
-    @field_serializer("booking_cutoff", "cancel_cutoff")
+    @field_serializer("booking_login_cutoff", "cancel_login_cutoff", "booking_logout_cutoff", "cancel_logout_cutoff",
+                     "medical_emergency_booking_cutoff", "adhoc_booking_cutoff")
     def serialize_cutoff(self, v: timedelta, _info):
         # Convert timedelta -> "HH:MM"
         total_minutes = int(v.total_seconds() // 60)

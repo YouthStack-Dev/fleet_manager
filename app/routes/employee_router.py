@@ -140,6 +140,7 @@ def create_employee(
                 new_values=employee_data_for_audit,
                 request=request
             )
+            logger.info(f"Audit log created for employee creation: employee_id={db_employee.employee_id} stored in audit_data with fields: {list(employee_data_for_audit.keys())}")
         except Exception as audit_error:
             logger.error(f"Failed to create audit log for employee creation: {str(audit_error)}")
 
@@ -501,10 +502,11 @@ def update_employee(
                 action="UPDATE",
                 user_data=user_data,
                 description=f"Updated employee '{db_employee.name}' - changed fields: {fields_str}",
-                new_values={"old": old_values, "new": new_values},
+                new_values={"employee_id": db_employee.employee_id, "old": old_values, "new": new_values},
                 request=request
             )
-            logger.info(f"Audit log created for employee update")
+            stored_fields = ["employee_id"] + list(old_values.keys()) + list(new_values.keys())
+            logger.info(f"Audit log created for employee update: employee_id={db_employee.employee_id} stored in audit_data with fields: {stored_fields}")
         except Exception as audit_error:
             logger.error(f"Failed to create audit log for employee update: {str(audit_error)}", exc_info=True)
 
@@ -610,9 +612,11 @@ def toggle_employee_status(
                 action="UPDATE",
                 user_data=user_data,
                 description=f"Toggled employee '{db_employee.name}' status to {status_text}",
-                new_values={"old_status": old_status, "new_status": db_employee.is_active},
+                new_values={"employee_id": db_employee.employee_id, "old_status": old_status, "new_status": db_employee.is_active},
                 request=request
             )
+            stored_fields = ["employee_id", "old_status", "new_status"]
+            logger.info(f"Audit log created for employee status toggle: employee_id={db_employee.employee_id} stored in audit_data with fields: {stored_fields}")
         except Exception as audit_error:
             logger.error(f"Failed to create audit log for status toggle: {str(audit_error)}")
 

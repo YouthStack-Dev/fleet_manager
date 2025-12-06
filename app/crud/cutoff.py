@@ -19,8 +19,14 @@ class CRUDCutoff(CRUDBase[Cutoff, CutoffCreate, CutoffUpdate]):
         if not db_obj:
             db_obj = Cutoff(
                 tenant_id=tenant_id,
-                booking_cutoff=timedelta(0),
-                cancel_cutoff=timedelta(0)
+                booking_login_cutoff=timedelta(0),
+                cancel_login_cutoff=timedelta(0),
+                booking_logout_cutoff=timedelta(0),
+                cancel_logout_cutoff=timedelta(0),
+                medical_emergency_booking_cutoff=timedelta(0),
+                adhoc_booking_cutoff=timedelta(0),
+                allow_adhoc_booking=False,
+                allow_medical_emergency_booking=False
             )
             db.add(db_obj)
             db.flush()
@@ -29,8 +35,14 @@ class CRUDCutoff(CRUDBase[Cutoff, CutoffCreate, CutoffUpdate]):
     def create_with_tenant(self, db: Session, *, obj_in: CutoffCreate) -> Cutoff:
         db_obj = Cutoff(
             tenant_id=obj_in.tenant_id,
-            booking_cutoff=self._parse_time(obj_in.booking_cutoff),
-            cancel_cutoff=self._parse_time(obj_in.cancel_cutoff)
+            booking_login_cutoff=self._parse_time(obj_in.booking_login_cutoff),
+            cancel_login_cutoff=self._parse_time(obj_in.cancel_login_cutoff),
+            booking_logout_cutoff=self._parse_time(obj_in.booking_logout_cutoff),
+            cancel_logout_cutoff=self._parse_time(obj_in.cancel_logout_cutoff),
+            medical_emergency_booking_cutoff=self._parse_time(obj_in.medical_emergency_booking_cutoff),
+            adhoc_booking_cutoff=self._parse_time(obj_in.adhoc_booking_cutoff),
+            allow_adhoc_booking=obj_in.allow_adhoc_booking,
+            allow_medical_emergency_booking=obj_in.allow_medical_emergency_booking
         )
         db.add(db_obj)
         db.flush()
@@ -43,10 +55,14 @@ class CRUDCutoff(CRUDBase[Cutoff, CutoffCreate, CutoffUpdate]):
         # Never allow tenant_id to be updated
         update_data.pop("tenant_id", None)
 
-        if "booking_cutoff" in update_data:
-            update_data["booking_cutoff"] = self._parse_time(update_data["booking_cutoff"])
-        if "cancel_cutoff" in update_data:
-            update_data["cancel_cutoff"] = self._parse_time(update_data["cancel_cutoff"])
+        # Parse interval fields from HH:MM format to timedelta
+        interval_fields = [
+            "booking_login_cutoff", "cancel_login_cutoff", "booking_logout_cutoff", "cancel_logout_cutoff",
+            "medical_emergency_booking_cutoff", "adhoc_booking_cutoff"
+        ]
+        for field in interval_fields:
+            if field in update_data:
+                update_data[field] = self._parse_time(update_data[field])
 
         for field, value in update_data.items():
             setattr(db_obj, field, value)

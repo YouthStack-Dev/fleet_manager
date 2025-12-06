@@ -138,19 +138,68 @@ def create_booking(
             
 
             # 2️⃣ Cutoff validation
-            if cutoff and shift and cutoff.booking_cutoff and cutoff.booking_cutoff.total_seconds() > 0:
+            cutoff_interval = None
+            
+            # Check booking type and apply appropriate validations
+            if booking.booking_type == "adhoc":
+                # Validate that adhoc booking is enabled for this tenant
+                if not cutoff or not cutoff.allow_adhoc_booking:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=ResponseWrapper.error(
+                            "Ad-hoc booking is not enabled for this tenant",
+                            "ADHOC_BOOKING_DISABLED",
+                        ),
+                    )
+                # Use adhoc cutoff for both login and logout shifts
+                cutoff_interval = cutoff.adhoc_booking_cutoff
+                logger.info(f"Using adhoc booking cutoff: {cutoff_interval}")
+                
+            elif booking.booking_type == "medical_emergency":
+                # Validate that medical emergency booking is enabled for this tenant
+                if not cutoff or not cutoff.allow_medical_emergency_booking:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=ResponseWrapper.error(
+                            "Medical emergency booking is not enabled for this tenant",
+                            "MEDICAL_EMERGENCY_BOOKING_DISABLED",
+                        ),
+                    )
+                # Use medical emergency cutoff for both login and logout shifts
+                cutoff_interval = cutoff.medical_emergency_booking_cutoff
+                logger.info(f"Using medical emergency booking cutoff: {cutoff_interval}")
+                
+            else:
+                # Regular booking - use shift-type specific cutoffs
+                if cutoff:
+                    if shift.log_type == "IN":  # Login shift (home → office)
+                        cutoff_interval = cutoff.booking_login_cutoff
+                    elif shift.log_type == "OUT":  # Logout shift (office → home)  
+                        cutoff_interval = cutoff.booking_logout_cutoff
+                else:
+                    # No cutoff configuration for this tenant - skip cutoff validation
+                    cutoff_interval = None
+                    logger.info(f"No cutoff configuration found for tenant {tenant_id} - skipping cutoff validation")
+            
+            if cutoff and shift and cutoff_interval and cutoff_interval.total_seconds() > 0:
                 shift_datetime = datetime.combine(booking_date, shift.shift_time)
                 now = datetime.now()
                 time_until_shift = shift_datetime - now
                 logger.info(
-                    f"Cutoff check: now={now}, shift_datetime={shift_datetime}, "
-                    f"time_until_shift={time_until_shift}, cutoff={cutoff.booking_cutoff}"
+                    f"Cutoff check: shift_type={shift.log_type}, booking_type={booking.booking_type}, now={now}, shift_datetime={shift_datetime}, "
+                    f"time_until_shift={time_until_shift}, cutoff={cutoff_interval}"
                 )
-                if time_until_shift < cutoff.booking_cutoff:
+                if time_until_shift < cutoff_interval:
+                    if booking.booking_type == "adhoc":
+                        booking_type_name = "ad-hoc"
+                    elif booking.booking_type == "medical_emergency":
+                        booking_type_name = "medical emergency"
+                    else:
+                        booking_type_name = "login" if shift.log_type == "IN" else "logout"
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=ResponseWrapper.error(
-                            f"Booking cutoff time has passed for this shift (cutoff: {cutoff.booking_cutoff})",
+                            f"Booking cutoff time has passed for this {booking_type_name} shift (cutoff: {cutoff_interval})",
                             "BOOKING_CUTOFF",
                         ),
                     )
@@ -221,6 +270,7 @@ def create_booking(
                 drop_longitude=drop_lng,
                 drop_location=drop_addr,
                 status="Request",
+                booking_type=booking.booking_type,
             )
             db.add(db_booking)
             db.flush()
@@ -579,6 +629,29 @@ def cancel_booking(
                     error_code="BOOKING_ALREADY_SCHEDULED",
                 ),
             )
+
+        # --- Cancellation cutoff validation ---
+        cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == tenant_id).first()
+        cancel_cutoff_interval = None
+        if booking.shift and booking.shift.log_type == "IN":
+            cancel_cutoff_interval = cutoff.cancel_login_cutoff if cutoff else None
+        elif booking.shift and booking.shift.log_type == "OUT":
+            cancel_cutoff_interval = cutoff.cancel_logout_cutoff if cutoff else None
+        
+        if cancel_cutoff_interval and cancel_cutoff_interval.total_seconds() > 0:
+            shift_datetime = datetime.combine(booking.booking_date, booking.shift.shift_time)
+            now = datetime.now()
+            time_until_shift = shift_datetime - now
+            
+            if time_until_shift < cancel_cutoff_interval:
+                shift_type_name = "login" if booking.shift.log_type == "IN" else "logout"
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        f"Cancellation cutoff time has passed for this {shift_type_name} shift (cutoff: {cancel_cutoff_interval})",
+                        "CANCEL_CUTOFF",
+                    ),
+                )
 
         # --- Perform cancellation ---
         booking.status = BookingStatusEnum.CANCELLED

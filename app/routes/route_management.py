@@ -9,22 +9,29 @@ from enum import Enum
 
 from app.database.session import get_db
 from app.models.booking import Booking, BookingStatusEnum
+from app.models.cutoff import Cutoff
 from app.models.driver import Driver
+from app.models.escort import Escort
 from app.models.route_management import RouteManagement, RouteManagementBooking, RouteManagementStatusEnum
 from app.models.shift import Shift  # Add shift model import
 from app.models.tenant import Tenant  # Add tenant model import
+from app.models.tenant_config import TenantConfig
 from app.models.vehicle import Vehicle
 from app.models.vendor import Vendor
 from app.schemas.route import RouteWithEstimations, RouteEstimations, RouteManagementBookingResponse  # Add import for response schema
+from app.schemas.shift import ShiftResponse
+from app.services.clustering_algorithm import group_rides
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger, setup_logging
 from app.utils.response_utils import ResponseWrapper, handle_db_error
 from app.utils.audit_helper import log_audit
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from typing import Any
 
-from app.schemas.shift import ShiftResponse
-from app.services.geodesic import group_rides
+from app.utils.otp_utils import get_required_otp_count
 
 # Configure logging immediately at module level
 setup_logging(
@@ -195,23 +202,6 @@ def get_booking_by_id(booking_id: int, db: Session) -> Optional[Dict]:
     return booking_dict
 
 
-def datetime_to_minutes(dt_val):
-    """
-    Convert datetime/time string or object to minutes from midnight
-    """
-    # If already datetime or time object
-    if isinstance(dt_val, datetime):
-        return dt_val.hour * 60 + dt_val.minute
-    
-    if isinstance(dt_val, time):
-        return dt_val.hour * 60 + dt_val.minute
-
-    # Else assume it's string
-    if isinstance(dt_val, str):
-        dt = datetime.fromisoformat(dt_val)
-        return dt.hour * 60 + dt.minute
-
-    raise TypeError(f"Unsupported type for datetime_to_minutes: {type(dt_val)}")
 
 @router.post("/" , status_code=status.HTTP_200_OK)
 async def create_routes(
@@ -224,9 +214,22 @@ async def create_routes(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["route.create"], check_tenant=True)),
 ):
+
     """
     Generate route clusters (suggestions) for a given shift and date.
     Only includes bookings NOT already assigned to any route.
+
+    Parameters:
+    - booking_date: Date for the bookings (YYYY-MM-DD)
+    - shift_id: Shift ID to filter bookings
+    - radius: Radius in km for clustering
+    - group_size: Number of route clusters to generate
+    - strict_grouping: Whether to enforce strict grouping by group size or not
+    - tenant_id: Tenant ID for multi-tenant setups
+
+    Returns:
+    - A list of route clusters, each containing unrouted bookings
+    - A dictionary containing the total number of unrouted bookings and total number of route clusters generated
     """
     try:
         logger.info(
@@ -378,6 +381,12 @@ async def create_routes(
                     db.add(route)
                     db.flush()  # Get the route_id
 
+                    # Check if route requires escort for safety
+                    from app.utils.otp_utils import update_route_escort_requirement
+                    update_route_escort_requirement(db, route.route_id, tenant_id)
+
+                    # Escort requirement flag is set; manual assignment will be done later if needed
+
                     for idx, booking in enumerate(optimized_route[0]["pickup_order"]):
                         otp_code = random.randint(1000, 9999)
                         # Convert datetime.time to string for SQLite
@@ -401,7 +410,6 @@ async def create_routes(
                         ).update(
                             {
                                 Booking.status: BookingStatusEnum.SCHEDULED,
-                                Booking.OTP:otp_code,
                                 Booking.updated_at: func.now(),
                             },
                             synchronize_session=False
@@ -441,6 +449,7 @@ async def create_routes(
         )
 
 @router.get("/", status_code=status.HTTP_200_OK)
+@cached(ttl_seconds=180, key_prefix="routes")  # Cache for 3 minutes
 async def get_all_routes(
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     shift_id: Optional[int] = Query(None, description="Filter by shift ID"),
@@ -570,13 +579,20 @@ async def get_all_routes(
         driver_ids = {r.assigned_driver_id for r in routes if r.assigned_driver_id}
         vehicle_ids = {r.assigned_vehicle_id for r in routes if r.assigned_vehicle_id}
         vendor_ids = {r.assigned_vendor_id for r in routes if r.assigned_vendor_id}
+        escort_ids = {r.assigned_escort_id for r in routes if r.assigned_escort_id}
 
         # --- Bulk Load related data ---
         drivers = (
             db.query(Driver.driver_id, Driver.name, Driver.phone)
-            .filter(Driver.driver_id.in_(driver_ids))
-            .all() if driver_ids else []
+            .filter(Driver.driver_id.in_(driver_ids | escort_ids))  # Include escorts
+            .all() if (driver_ids | escort_ids) else []
         )
+        escorts = (
+            db.query(Escort.escort_id, Escort.name, Escort.phone)
+            .filter(Escort.escort_id.in_(escort_ids))
+            .all() if escort_ids else []
+        )
+        escort_map = {e.escort_id: {"id": e.escort_id, "name": e.name, "phone": e.phone} for e in escorts}
         vehicles = (
             db.query(Vehicle.vehicle_id, Vehicle.rc_number)
             .filter(Vehicle.vehicle_id.in_(vehicle_ids))
@@ -634,9 +650,11 @@ async def get_all_routes(
                 "route_id": route.route_id,
                 "route_code": route.route_code,
                 "status": route.status.value,
+                "escort_required": route.escort_required,
                 "driver": driver_map.get(route.assigned_driver_id),
                 "vehicle": vehicle_map.get(route.assigned_vehicle_id),
                 "vendor": vendor_map.get(route.assigned_vendor_id),
+                "escort": escort_map.get(route.assigned_escort_id),  # Escort info from escort_map
                 "stops": stops,
                 "summary": {
                     "total_distance_km": route.actual_total_distance or route.estimated_total_distance or 0,
@@ -661,6 +679,7 @@ async def get_all_routes(
         return handle_db_error(e)
 
 @router.get("/unrouted", status_code=status.HTTP_200_OK)
+@cached(ttl_seconds=120, key_prefix="unrouted")  # Cache for 2 minutes
 async def get_unrouted_bookings(
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     shift_id: int = Query(..., description="Filter by shift ID"),
@@ -1057,6 +1076,60 @@ async def assign_vehicle_to_route(
         except Exception as audit_error:
             logger.error(f"Failed to create audit log for vehicle/driver assignment: {str(audit_error)}")
 
+        # Generate OTPs for all bookings in the route
+        from app.utils.otp_utils import generate_otp_codes
+        cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == tenant_id).first()
+        tenant_config = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
+        # Check if escort is assigned to this route AND route requires escort
+        escort_enabled = route.assigned_escort_id 
+        route_bookings = db.query(RouteManagementBooking).filter(RouteManagementBooking.route_id == route.route_id).all()
+        for rb in route_bookings:
+            booking = db.query(Booking).filter(Booking.booking_id == rb.booking_id).first()
+            # Recalculate OTP count and purposes at assignment time
+            shift = db.query(Shift).filter(Shift.shift_id == booking.shift_id).first()
+            required_otp_count = get_required_otp_count(booking.booking_type, shift.log_type.value if shift else "IN", tenant_config, escort_enabled)
+            
+            # Generate OTPs based on required count
+            otp_codes = generate_otp_codes(required_otp_count)
+            
+            # Determine which OTP fields to assign based on configuration
+            required_otps = []
+
+            # Check shift type and add required OTPs
+            if shift.log_type.value == "IN":  # Login shift
+                if tenant_config and tenant_config.login_boarding_otp:
+                    required_otps.append('boarding')
+                if tenant_config and tenant_config.login_deboarding_otp:
+                    required_otps.append('deboarding')
+            elif shift.log_type.value == "OUT":  # Logout shift
+                if tenant_config and tenant_config.logout_boarding_otp:
+                    required_otps.append('boarding')
+                if tenant_config and tenant_config.logout_deboarding_otp:
+                    required_otps.append('deboarding')
+
+            # Add escort if enabled
+            if escort_enabled:
+                required_otps.append('escort')
+
+            # Assign OTP codes to required fields in order
+            assignments = {}
+            for i, otp_type in enumerate(required_otps):
+                if i < len(otp_codes):
+                    assignments[otp_type] = otp_codes[i]
+                else:
+                    assignments[otp_type] = None
+
+            # Set all fields (None for not required)
+            db.query(Booking).filter(Booking.booking_id == rb.booking_id).update(
+                {
+                    Booking.boarding_otp: assignments.get('boarding'),
+                    Booking.deboarding_otp: assignments.get('deboarding'),
+                    Booking.escort_otp: assignments.get('escort'),
+                },
+                synchronize_session=False
+            )
+        db.commit()
+
         logger.info(
             f"[assign_vehicle_to_route] Vehicle={vehicle_id} (Driver={driver.driver_id}) assigned to Route={route_id} (Tenant={tenant_id})"
         )
@@ -1205,6 +1278,11 @@ async def get_route_by_id(
                 Vendor.vendor_id == route.assigned_vendor_id
             ).first()
 
+        if route.assigned_escort_id:
+            escort = db.query(Escort.escort_id, Escort.name, Escort.phone).filter(
+                Escort.escort_id == route.assigned_escort_id
+            ).first()
+
         # Build stops list
         stops = []
         for rb in rbs:
@@ -1230,9 +1308,11 @@ async def get_route_by_id(
             "shift_id": route.shift_id,
             "route_code": route.route_code,
             "status": route.status.value,
+            "escort_required": route.escort_required,
             "driver": {"id": driver.driver_id, "name": driver.name, "phone": driver.phone} if driver else None,
             "vehicle": {"id": vehicle.vehicle_id, "rc_number": vehicle.rc_number} if vehicle else None,
             "vendor": {"id": vendor.vendor_id, "name": vendor.name} if vendor else None,
+            "escort": {"id": escort.escort_id, "name": escort.name, "phone": escort.phone} if escort else None,
             "stops": stops,
             "summary": {
                 "total_distance_km": route.actual_total_distance or route.estimated_total_distance or 0,
@@ -2362,6 +2442,146 @@ async def delete_route(
             detail=ResponseWrapper.error(
                 message=f"Error deleting route {route_id}",
                 error_code="ROUTE_DELETE_ERROR",
+                details={"error": str(e)},
+            ),
+        )
+
+
+@router.put("/{route_id}/assign-escort")
+async def assign_escort_to_route(
+    route_id: int = Path(..., description="Route ID to assign escort to"),
+    escort_id: int = Query(..., description="Escort ID to assign"),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID for multi-tenant setups"),
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route.update"], check_tenant=True)),
+    request: Request = None,
+):
+    """
+    Assign an escort to a route.
+    """
+    try:
+        logger.info(f"Assigning escort {escort_id} to route {route_id}")
+
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        # ---- Tenant Resolution ----
+        if user_type == "employee":
+            tenant_id = token_tenant_id
+        elif user_type == "admin" and not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="tenant_id is required for admin users",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+        else:
+            tenant_id = tenant_id or token_tenant_id
+
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant context not available",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+
+        # ---- Validate Route ----
+        route = (
+            db.query(RouteManagement)
+            .filter(RouteManagement.route_id == route_id, RouteManagement.tenant_id == tenant_id)
+            .first()
+        )
+        if not route:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Route not found for this tenant",
+                    error_code="ROUTE_NOT_FOUND",
+                ),
+            )
+
+        # ---- Validate Escort ----
+        from app.models.escort import Escort
+        escort = (
+            db.query(Escort)
+            .join(Vendor, Vendor.vendor_id == Escort.vendor_id)
+            .filter(
+                Escort.escort_id == escort_id,
+                Vendor.tenant_id == tenant_id,
+            )
+            .first()
+        )
+        if not escort:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Escort not found for this tenant",
+                    error_code="ESCORT_NOT_FOUND",
+                ),
+            )
+
+        # ---- Check if escort is available ----
+        if not escort.is_available:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Escort is not available",
+                    error_code="ESCORT_NOT_AVAILABLE",
+                ),
+            )
+
+        # ---- Assign escort to route ----
+        old_escort_id = route.assigned_escort_id
+        route.assigned_escort_id = escort_id
+        route.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        # 🔍 Audit Log: Escort Assignment
+        try:
+            log_audit(
+                db=db,
+                tenant_id=tenant_id,
+                module="route_management",
+                action="UPDATE",
+                user_data=user_data,
+                description=f"Assigned escort {escort_id} to route {route_id}",
+                old_values={"assigned_escort_id": old_escort_id},
+                new_values={
+                    "assigned_escort_id": escort_id,
+                    "route_id": route_id,
+                },
+                request=request
+            )
+        except Exception as audit_error:
+            logger.error(f"Failed to create audit log for escort assignment: {str(audit_error)}")
+
+        logger.info(
+            f"✅ Escort {escort_id} assigned to route {route_id}."
+        )
+
+        return ResponseWrapper.success(
+            data={
+                "route_id": route_id,
+                "assigned_escort_id": escort_id,
+            },
+            message=f"Escort assigned to route successfully.",
+        )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.exception(f"[assign_escort_to_route] Unexpected error assigning escort {escort_id} to route {route_id}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message=f"Error assigning escort to route",
+                error_code="ESCORT_ASSIGNMENT_ERROR",
                 details={"error": str(e)},
             ),
         )
