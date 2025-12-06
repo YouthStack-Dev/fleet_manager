@@ -25,6 +25,7 @@ from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger, setup_logging
 from app.utils.response_utils import ResponseWrapper, handle_db_error
 from app.utils.audit_helper import log_audit
+from app.utils.cache_manager import cached
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -1262,6 +1263,7 @@ async def get_route_by_id(
         driver = None
         vehicle = None
         vendor = None
+        escort = None
 
         if route.assigned_driver_id:
             driver = db.query(Driver.driver_id, Driver.name, Driver.phone).filter(

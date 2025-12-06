@@ -151,25 +151,25 @@ def seed_permissions(test_db):
     permissions = [
         Permission(
             permission_id=1,
-            module="admin.tenant",
+            module="admin_tenant",
             action="create",
             description="Create tenant"
         ),
         Permission(
             permission_id=2,
-            module="admin.tenant",
+            module="admin_tenant",
             action="read",
             description="Read tenant"
         ),
         Permission(
             permission_id=3,
-            module="admin.tenant",
+            module="admin_tenant",
             action="update",
             description="Update tenant"
         ),
         Permission(
             permission_id=4,
-            module="admin.tenant",
+            module="admin_tenant",
             action="delete",
             description="Delete tenant"
         ),
@@ -609,7 +609,7 @@ def admin_token(admin_user):
         custom_claims={
             "email": admin_user["employee"].email,
             "permissions": [
-                "admin.tenant.create", "admin.tenant.read", "admin.tenant.update", "admin.tenant.delete",
+                "admin_tenant.create", "admin_tenant.read", "admin_tenant.update", "admin_tenant.delete",
                 "team.create", "team.read", "team.update", "team.delete",
                 "employee.create", "employee.read", "employee.update", "employee.delete",
                 "shift.create", "shift.read", "shift.update", "shift.delete",
@@ -638,7 +638,7 @@ def employee_token(employee_user):
         custom_claims={
             "email": employee_user["employee"].email,
             "permissions": [
-                "admin.tenant.read", "employee.read", "employee.create", "employee.update",
+                "admin_tenant.read", "employee.read", "employee.create", "employee.update",
                 "team.create", "team.read", "team.update",
                 "shift.create", "shift.read", "shift.update",
                 "cutoff.read", "cutoff.update",

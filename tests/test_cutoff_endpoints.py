@@ -99,8 +99,8 @@ class TestGetCutoffs:
         cutoff = cutoffs[0]
         assert cutoff["tenant_id"] == test_tenant.tenant_id
         # Default values should be "0:00"
-        assert "booking_cutoff" in cutoff
-        assert "cancel_cutoff" in cutoff
+        assert "booking_login_cutoff" in cutoff
+        assert "cancel_login_cutoff" in cutoff
 
 
 class TestUpdateCutoff:
@@ -110,8 +110,8 @@ class TestUpdateCutoff:
         """Employee can update cutoff for their tenant"""
         cutoff_update = {
             "tenant_id": test_tenant.tenant_id,
-            "booking_cutoff": "02:00",
-            "cancel_cutoff": "01:00"
+            "booking_login_cutoff": "02:00",
+            "cancel_login_cutoff": "01:00"
         }
         response = client.put(
             "/api/v1/cutoffs/",
@@ -123,15 +123,15 @@ class TestUpdateCutoff:
         assert data["success"] is True
         cutoff = data["data"]["cutoff"]
         assert cutoff["tenant_id"] == test_tenant.tenant_id
-        assert "booking_cutoff" in cutoff
-        assert "cancel_cutoff" in cutoff
+        assert "booking_login_cutoff" in cutoff
+        assert "cancel_login_cutoff" in cutoff
     
     def test_update_cutoff_as_admin_success(self, client, admin_token, test_tenant):
         """Admin can update cutoff for any tenant"""
         cutoff_update = {
             "tenant_id": test_tenant.tenant_id,
-            "booking_cutoff": "03:00",
-            "cancel_cutoff": "01:30"
+            "booking_login_cutoff": "03:00",
+            "cancel_login_cutoff": "01:30"
         }
         response = client.put(
             "/api/v1/cutoffs/",
@@ -146,7 +146,7 @@ class TestUpdateCutoff:
         """Can update only booking_cutoff"""
         cutoff_update = {
             "tenant_id": test_tenant.tenant_id,
-            "booking_cutoff": "04:00"
+            "booking_login_cutoff": "04:00"
         }
         response = client.put(
             "/api/v1/cutoffs/",
@@ -158,7 +158,7 @@ class TestUpdateCutoff:
     def test_update_cutoff_admin_without_tenant_id(self, client, admin_token):
         """Admin must provide tenant_id"""
         cutoff_update = {
-            "booking_cutoff": "02:00"
+            "booking_login_cutoff": "02:00"
         }
         response = client.put(
             "/api/v1/cutoffs/",
@@ -171,7 +171,7 @@ class TestUpdateCutoff:
         """Employee's tenant_id is enforced from token, ignoring request body"""
         cutoff_update = {
             "tenant_id": second_tenant.tenant_id,  # Trying to specify TEST002
-            "booking_cutoff": "02:00"
+            "booking_login_cutoff": "02:00"
         }
         response = client.put(
             "/api/v1/cutoffs/",
@@ -188,7 +188,7 @@ class TestUpdateCutoff:
         """Return 404 for non-existent tenant"""
         cutoff_update = {
             "tenant_id": "NONEXISTENT",
-            "booking_cutoff": "02:00"
+            "booking_login_cutoff": "02:00"
         }
         response = client.put(
             "/api/v1/cutoffs/",
@@ -201,7 +201,7 @@ class TestUpdateCutoff:
         """Reject invalid time format"""
         cutoff_update = {
             "tenant_id": test_tenant.tenant_id,
-            "booking_cutoff": "invalid_time"
+            "booking_login_cutoff": "invalid_time"
         }
         response = client.put(
             "/api/v1/cutoffs/",
@@ -214,7 +214,7 @@ class TestUpdateCutoff:
         """Reject negative time values"""
         cutoff_update = {
             "tenant_id": test_tenant.tenant_id,
-            "booking_cutoff": "-01:00"
+            "booking_login_cutoff": "-01:00"
         }
         response = client.put(
             "/api/v1/cutoffs/",
@@ -227,8 +227,8 @@ class TestUpdateCutoff:
         """Zero values are valid"""
         cutoff_update = {
             "tenant_id": test_tenant.tenant_id,
-            "booking_cutoff": "00:00",
-            "cancel_cutoff": "00:00"
+            "booking_login_cutoff": "00:00",
+            "cancel_login_cutoff": "00:00"
         }
         response = client.put(
             "/api/v1/cutoffs/",
@@ -241,8 +241,8 @@ class TestUpdateCutoff:
         """Large time values (48 hours) are valid"""
         cutoff_update = {
             "tenant_id": test_tenant.tenant_id,
-            "booking_cutoff": "48:00",
-            "cancel_cutoff": "24:00"
+            "booking_login_cutoff": "48:00",
+            "cancel_login_cutoff": "24:00"
         }
         response = client.put(
             "/api/v1/cutoffs/",
@@ -268,8 +268,8 @@ class TestCutoffIntegration:
         # Update cutoff
         cutoff_update = {
             "tenant_id": test_tenant.tenant_id,
-            "booking_cutoff": "03:00",
-            "cancel_cutoff": "01:30"
+            "booking_login_cutoff": "03:00",
+            "cancel_login_cutoff": "01:30"
         }
         response = client.put(
             "/api/v1/cutoffs/",
@@ -289,15 +289,15 @@ class TestCutoffIntegration:
         cutoffs = data["data"]["cutoffs"]
         assert len(cutoffs) == 1
         cutoff = cutoffs[0]
-        assert cutoff["booking_cutoff"] == "3:00"  # Schema returns "H:MM" not "HH:MM"
-        assert cutoff["cancel_cutoff"] == "1:30"
+        assert cutoff["booking_login_cutoff"] == "3:00"  # Schema returns "H:MM" not "HH:MM"
+        assert cutoff["cancel_login_cutoff"] == "1:30"
     
     def test_cutoff_tenant_isolation(self, client, admin_token, test_tenant, second_tenant):
         """Cutoffs are isolated per tenant"""
         # Update TEST001 cutoff
         cutoff_update1 = {
             "tenant_id": test_tenant.tenant_id,
-            "booking_cutoff": "02:00"
+            "booking_login_cutoff": "02:00"
         }
         response = client.put(
             "/api/v1/cutoffs/",
@@ -309,7 +309,7 @@ class TestCutoffIntegration:
         # Update TEST002 cutoff with different value
         cutoff_update2 = {
             "tenant_id": second_tenant.tenant_id,
-            "booking_cutoff": "05:00"
+            "booking_login_cutoff": "05:00"
         }
         response = client.put(
             "/api/v1/cutoffs/",
@@ -325,7 +325,7 @@ class TestCutoffIntegration:
             headers={"Authorization": admin_token}
         )
         cutoffs1 = response.json()["data"]["cutoffs"]
-        assert cutoffs1[0]["booking_cutoff"] == "2:00"
+        assert cutoffs1[0]["booking_login_cutoff"] == "2:00"
         
         # Verify TEST002 cutoff
         response = client.get(
@@ -334,7 +334,7 @@ class TestCutoffIntegration:
             headers={"Authorization": admin_token}
         )
         cutoffs2 = response.json()["data"]["cutoffs"]
-        assert cutoffs2[0]["booking_cutoff"] == "5:00"
+        assert cutoffs2[0]["booking_login_cutoff"] == "5:00"
     
     def test_cutoff_auto_creation_on_first_get(self, client, admin_token, test_tenant):
         """First GET creates default cutoff with 0:00 values"""
@@ -350,15 +350,15 @@ class TestCutoffIntegration:
         cutoff = cutoffs[0]
         assert cutoff["tenant_id"] == test_tenant.tenant_id
         # Defaults should be "0:00"
-        assert cutoff["booking_cutoff"] == "0:00"
-        assert cutoff["cancel_cutoff"] == "0:00"
+        assert cutoff["booking_login_cutoff"] == "0:00"
+        assert cutoff["cancel_login_cutoff"] == "0:00"
     
     def test_cutoff_multiple_updates(self, client, admin_token, test_tenant):
         """Multiple updates should overwrite previous values"""
         updates = [
-            {"tenant_id": test_tenant.tenant_id, "booking_cutoff": "01:00"},
-            {"tenant_id": test_tenant.tenant_id, "booking_cutoff": "02:00"},
-            {"tenant_id": test_tenant.tenant_id, "booking_cutoff": "03:00"}
+            {"tenant_id": test_tenant.tenant_id, "booking_login_cutoff": "01:00"},
+            {"tenant_id": test_tenant.tenant_id, "booking_login_cutoff": "02:00"},
+            {"tenant_id": test_tenant.tenant_id, "booking_login_cutoff": "03:00"}
         ]
         
         for update in updates:
@@ -376,4 +376,4 @@ class TestCutoffIntegration:
             headers={"Authorization": admin_token}
         )
         cutoffs = response.json()["data"]["cutoffs"]
-        assert cutoffs[0]["booking_cutoff"] == "3:00"
+        assert cutoffs[0]["booking_login_cutoff"] == "3:00"
