@@ -451,7 +451,7 @@ async def create_routes(
         )
 
 @router.get("/", status_code=status.HTTP_200_OK)
-@cached(ttl_seconds=180, key_prefix="routes")  # Cache for 3 minutes
+# @cached(ttl_seconds=180, key_prefix="routes")  # Cache for 3 minutes
 async def get_all_routes(
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     shift_id: Optional[int] = Query(None, description="Filter by shift ID"),
@@ -681,7 +681,7 @@ async def get_all_routes(
         return handle_db_error(e)
 
 @router.get("/unrouted", status_code=status.HTTP_200_OK)
-@cached(ttl_seconds=120, key_prefix="unrouted")  # Cache for 2 minutes
+# @cached(ttl_seconds=120, key_prefix="unrouted")  # Cache for 2 minutes
 async def get_unrouted_bookings(
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     shift_id: int = Query(..., description="Filter by shift ID"),
