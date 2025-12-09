@@ -5,17 +5,19 @@ from sqlalchemy.orm import Session
 from typing import Optional, List
 from datetime import date, datetime, timedelta
 
+from app.core.logging_config import get_logger
 from app.database.session import get_db
 from app.models.employee import Employee
 from app.models.shift import Shift
+from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
+from common_utils import get_current_ist_time
 from app.models.route_management import RouteManagement, RouteManagementBooking, RouteManagementStatusEnum
 from app.models.booking import Booking, BookingStatusEnum
 from app.models.tenant import Tenant
 from app.models.vehicle import Vehicle
 from app.models.driver import Driver
-from app.core.logging_config import get_logger
-from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
+from geopy.distance import geodesic
 
 
 logger = get_logger(__name__)
@@ -84,17 +86,47 @@ def serialize_route(db: Session, route: RouteManagement):
     }
 
 
-def require_tenant(db: Session, tenant_id: str):
-    tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
-    if not tenant:
+def validate_driver_location(
+    current_latitude: float,
+    current_longitude: float,
+    target_latitude: float,
+    target_longitude: float,
+    location_type: str,
+    booking_id: int,
+    max_distance_meters: int = 500
+) -> None:
+    """
+    Validates that the driver's current location is within the allowed distance from the target location.
+    Raises HTTPException if validation fails.
+    """
+    if not target_latitude or not target_longitude:
+        logger.warning(f"[driver.{location_type}] Booking {booking_id} missing {location_type} coordinates")
+        return
+
+    distance = geodesic(
+        (current_latitude, current_longitude),
+        (target_latitude, target_longitude)
+    ).meters
+
+    if distance > max_distance_meters:
+        error_code = f"DRIVER_TOO_FAR_FROM_{location_type.upper()}"
+        message = f"Driver location is too far from {location_type} location. Distance: {distance:.1f} meters (max allowed: {max_distance_meters} meters)"
+
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=ResponseWrapper.error(
-                message=f"Tenant {tenant_id} not found",
-                error_code="TENANT_NOT_FOUND",
+                message=message,
+                error_code=error_code,
+                details={
+                    "driver_lat": current_latitude,
+                    "driver_lng": current_longitude,
+                    f"{location_type}_lat": target_latitude,
+                    f"{location_type}_lng": target_longitude,
+                    "distance_meters": round(distance, 1),
+                    "max_allowed_meters": max_distance_meters
+                },
             ),
         )
-    return tenant
 
 
 
@@ -193,6 +225,8 @@ async def get_driver_trips(
                     "tenant_id": booking.tenant_id,
                     "employee_id": booking.employee_id,
                     "employee_code": getattr(employee, "employee_code", None),
+                    "employee_name": getattr(employee, "name", None),
+                    "employee_phone": getattr(employee, "phone", None),
                     "shift_id": booking.shift_id,
                     "team_id": booking.team_id,
                     "booking_date": booking_date_str,
@@ -203,8 +237,12 @@ async def get_driver_trips(
                     "drop_longitude": booking.drop_longitude,
                     "drop_location": booking.drop_location,
                     "status": booking.status.value if booking.status else None,
+                    "booking_type": booking.booking_type.value if booking.booking_type else None,
                     "reason": booking.reason,
                     "is_active": getattr(booking, "is_active", True),
+                    "is_boarding_otp_required": booking.boarding_otp is not None,
+                    "is_deboarding_otp_required": booking.deboarding_otp is not None,
+                    "is_escort_otp_required": booking.escort_otp is not None,
                     "created_at": booking.created_at.isoformat() if booking.created_at else None,
                     "updated_at": booking.updated_at.isoformat() if booking.updated_at else None,
                     "order_id": rb.order_id,
@@ -226,10 +264,22 @@ async def get_driver_trips(
 
             response_routes.append({
                 "route_id": route.route_id,
+                "tenant_id": route.tenant_id,
                 "shift_id": route.shift_id,
+                "route_code": route.route_code,
+                "assigned_vendor_id": getattr(route, "assigned_vendor_id", None),
+                "assigned_vehicle_id": getattr(route, "assigned_vehicle_id", None),
+                "assigned_driver_id": getattr(route, "assigned_driver_id", None),
+                "assigned_escort_id": getattr(route, "assigned_escort_id", None),
+                "escort_required": route.escort_required,
                 "shift_time": shift.shift_time.strftime("%H:%M:%S") if shift and shift.shift_time else None,
                 "log_type": shift.log_type.value if shift and shift.log_type else None,
                 "status": route.status.value,
+                "estimated_total_time": route.estimated_total_time,
+                "estimated_total_distance": route.estimated_total_distance,
+                "actual_total_time": route.actual_total_time,
+                "actual_total_distance": route.actual_total_distance,
+                "buffer_time": route.buffer_time,
                 "start_time": first_pickup_dt.strftime("%Y-%m-%d %H:%M"),
                 "stops": stops,
                 "summary": {
@@ -261,7 +311,9 @@ async def get_driver_trips(
 async def start_trip(
     route_id: int,
     booking_id: int,
-    otp: str,
+    otp: Optional[str] = None,
+    current_latitude: float = Query(..., description="Driver's current latitude"),
+    current_longitude: float = Query(..., description="Driver's current longitude"),
     db: Session = Depends(get_db),
     ctx=Depends(DriverAuth),
 ):
@@ -359,19 +411,31 @@ async def start_trip(
                 ),
             )
 
-        # --- Verify OTP ---
-        if str(booking.OTP).strip() != str(otp).strip():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="Invalid OTP",
-                    error_code="INVALID_OTP",
-                    details={"booking_id": booking_id},
-                ),
-            )
+        # --- Validate driver's location is near pickup location ---
+        validate_driver_location(
+            current_latitude, current_longitude,
+            booking.pickup_latitude, booking.pickup_longitude,
+            "pickup", booking_id
+        )
+
+        # --- Verify boarding OTP if present ---
+        if booking.boarding_otp:
+            if str(booking.boarding_otp).strip() != str(otp).strip():
+                logger.warning(f"[driver.start_trip] Invalid boarding OTP provided for booking {booking_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Invalid boarding OTP",
+                        error_code="INVALID_BOARDING_OTP",
+                        details={"booking_id": booking_id},
+                    ),
+                )
+            logger.info(f"[driver.start_trip] Boarding OTP validation successful for booking {booking_id}")
+        else:
+            logger.info(f"[driver.start_trip] No boarding OTP required for booking {booking_id}")
 
         # --- Update statuses + timestamps ---
-        now = datetime.utcnow()
+        now = get_current_ist_time()
         booking.status = BookingStatusEnum.ONGOING
         route.status = RouteManagementStatusEnum.ONGOING
         rb.actual_pick_up_time = now.strftime("%H:%M")
@@ -449,7 +513,7 @@ async def mark_no_show(
     try:
         tenant_id = ctx["tenant_id"]
         driver_id = ctx["driver_id"]
-        now = datetime.utcnow()
+        now = get_current_ist_time()
 
         logger.info(f"[driver.no_show] tenant={tenant_id}, driver={driver_id}, route={route_id}, booking={booking_id}")
 
@@ -653,6 +717,9 @@ async def mark_no_show(
 async def verify_drop_and_complete_route(
     route_id: int,
     booking_id: int,
+    otp: Optional[str] = None,
+    current_latitude: float = Query(..., description="Driver's current latitude"),
+    current_longitude: float = Query(..., description="Driver's current longitude"),
     db: Session = Depends(get_db),
     ctx=Depends(DriverAuth),
 ):
@@ -664,7 +731,7 @@ async def verify_drop_and_complete_route(
     try:
         tenant_id = ctx["tenant_id"]
         driver_id = ctx["driver_id"]
-        now = datetime.utcnow()
+        now = get_current_ist_time()
 
         logger.info(f"[driver.drop] tenant={tenant_id}, driver={driver_id}, route={route_id}, booking={booking_id}")
 
@@ -721,6 +788,29 @@ async def verify_drop_and_complete_route(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error("Booking not found", "BOOKING_NOT_FOUND"),
             )
+
+        # --- Validate driver's location is near drop location ---
+        validate_driver_location(
+            current_latitude, current_longitude,
+            booking.drop_latitude, booking.drop_longitude,
+            "drop", booking_id
+        )
+
+        # --- Verify deboarding OTP if present ---
+        if booking.deboarding_otp:
+            if str(booking.deboarding_otp).strip() != str(otp).strip():
+                logger.warning(f"[driver.drop] Invalid deboarding OTP provided for booking {booking_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Invalid deboarding OTP",
+                        error_code="INVALID_DEBOARDING_OTP",
+                        details={"booking_id": booking_id},
+                    ),
+                )
+            logger.info(f"[driver.drop] Deboarding OTP validation successful for booking {booking_id}")
+        else:
+            logger.info(f"[driver.drop] No deboarding OTP required for booking {booking_id}")
 
         # --- Prevent re-marking if already dropped ---
         if booking.status == BookingStatusEnum.COMPLETED:
