@@ -14,8 +14,7 @@ from app.models.booking import Booking, BookingStatusEnum
 from app.models.tenant import Tenant
 from app.models.vehicle import Vehicle
 from app.models.driver import Driver
-from app.core.logging_config import get_logger
-from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
+from geopy.distance import geodesic
 
 
 logger = get_logger(__name__)
@@ -261,7 +260,9 @@ async def get_driver_trips(
 async def start_trip(
     route_id: int,
     booking_id: int,
-    otp: str,
+    otp: Optional[str] = None,
+    current_latitude: float = Query(..., description="Driver's current latitude"),
+    current_longitude: float = Query(..., description="Driver's current longitude"),
     db: Session = Depends(get_db),
     ctx=Depends(DriverAuth),
 ):
@@ -359,16 +360,45 @@ async def start_trip(
                 ),
             )
 
-        # --- Verify OTP ---
-        if str(booking.OTP).strip() != str(otp).strip():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="Invalid OTP",
-                    error_code="INVALID_OTP",
-                    details={"booking_id": booking_id},
-                ),
-            )
+        # --- Validate driver's location is near pickup location ---
+        if booking.pickup_latitude and booking.pickup_longitude:
+            pickup_distance = geodesic(
+                (current_latitude, current_longitude),
+                (booking.pickup_latitude, booking.pickup_longitude)
+            ).meters
+
+            # Allow maximum 500 meters distance from pickup location
+            max_distance_meters = 500
+            if pickup_distance > max_distance_meters:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message=f"Driver location is too far from pickup location. Distance: {pickup_distance:.1f} meters (max allowed: {max_distance_meters} meters)",
+                        error_code="DRIVER_TOO_FAR_FROM_PICKUP",
+                        details={
+                            "driver_lat": current_latitude,
+                            "driver_lng": current_longitude,
+                            "pickup_lat": booking.pickup_latitude,
+                            "pickup_lng": booking.pickup_longitude,
+                            "distance_meters": round(pickup_distance, 1),
+                            "max_allowed_meters": max_distance_meters
+                        },
+                    ),
+                )
+        else:
+            logger.warning(f"[driver.start_trip] Booking {booking_id} missing pickup coordinates")
+
+        # --- Verify boarding OTP if present ---
+        if booking.boarding_otp:
+            if str(booking.boarding_otp).strip() != str(otp).strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Invalid boarding OTP",
+                        error_code="INVALID_BOARDING_OTP",
+                        details={"booking_id": booking_id},
+                    ),
+                )
 
         # --- Update statuses + timestamps ---
         now = datetime.utcnow()
@@ -653,6 +683,9 @@ async def mark_no_show(
 async def verify_drop_and_complete_route(
     route_id: int,
     booking_id: int,
+    otp: Optional[str] = None,
+    current_latitude: float = Query(..., description="Driver's current latitude"),
+    current_longitude: float = Query(..., description="Driver's current longitude"),
     db: Session = Depends(get_db),
     ctx=Depends(DriverAuth),
 ):
@@ -721,6 +754,46 @@ async def verify_drop_and_complete_route(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error("Booking not found", "BOOKING_NOT_FOUND"),
             )
+
+        # --- Validate driver's location is near drop location ---
+        if booking.drop_latitude and booking.drop_longitude:
+            drop_distance = geodesic(
+                (current_latitude, current_longitude),
+                (booking.drop_latitude, booking.drop_longitude)
+            ).meters
+
+            # Allow maximum 500 meters distance from drop location
+            max_distance_meters = 500
+            if drop_distance > max_distance_meters:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message=f"Driver location is too far from drop location. Distance: {drop_distance:.1f} meters (max allowed: {max_distance_meters} meters)",
+                        error_code="DRIVER_TOO_FAR_FROM_DROP",
+                        details={
+                            "driver_lat": current_latitude,
+                            "driver_lng": current_longitude,
+                            "drop_lat": booking.drop_latitude,
+                            "drop_lng": booking.drop_longitude,
+                            "distance_meters": round(drop_distance, 1),
+                            "max_allowed_meters": max_distance_meters
+                        },
+                    ),
+                )
+        else:
+            logger.warning(f"[driver.drop] Booking {booking_id} missing drop coordinates")
+
+        # --- Verify deboarding OTP if present ---
+        if booking.deboarding_otp:
+            if str(booking.deboarding_otp).strip() != str(otp).strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Invalid deboarding OTP",
+                        error_code="INVALID_DEBOARDING_OTP",
+                        details={"booking_id": booking_id},
+                    ),
+                )
 
         # --- Prevent re-marking if already dropped ---
         if booking.status == BookingStatusEnum.COMPLETED:
