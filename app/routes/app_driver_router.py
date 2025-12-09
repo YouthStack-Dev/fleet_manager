@@ -11,6 +11,7 @@ from app.models.employee import Employee
 from app.models.shift import Shift
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
+from common_utils import get_current_ist_time
 from app.models.route_management import RouteManagement, RouteManagementBooking, RouteManagementStatusEnum
 from app.models.booking import Booking, BookingStatusEnum
 from app.models.tenant import Tenant
@@ -224,6 +225,8 @@ async def get_driver_trips(
                     "tenant_id": booking.tenant_id,
                     "employee_id": booking.employee_id,
                     "employee_code": getattr(employee, "employee_code", None),
+                    "employee_name": getattr(employee, "name", None),
+                    "employee_phone": getattr(employee, "phone", None),
                     "shift_id": booking.shift_id,
                     "team_id": booking.team_id,
                     "booking_date": booking_date_str,
@@ -234,8 +237,12 @@ async def get_driver_trips(
                     "drop_longitude": booking.drop_longitude,
                     "drop_location": booking.drop_location,
                     "status": booking.status.value if booking.status else None,
+                    "booking_type": booking.booking_type.value if booking.booking_type else None,
                     "reason": booking.reason,
                     "is_active": getattr(booking, "is_active", True),
+                    "is_boarding_otp_required": booking.boarding_otp is not None,
+                    "is_deboarding_otp_required": booking.deboarding_otp is not None,
+                    "is_escort_otp_required": booking.escort_otp is not None,
                     "created_at": booking.created_at.isoformat() if booking.created_at else None,
                     "updated_at": booking.updated_at.isoformat() if booking.updated_at else None,
                     "order_id": rb.order_id,
@@ -257,10 +264,22 @@ async def get_driver_trips(
 
             response_routes.append({
                 "route_id": route.route_id,
+                "tenant_id": route.tenant_id,
                 "shift_id": route.shift_id,
+                "route_code": route.route_code,
+                "assigned_vendor_id": getattr(route, "assigned_vendor_id", None),
+                "assigned_vehicle_id": getattr(route, "assigned_vehicle_id", None),
+                "assigned_driver_id": getattr(route, "assigned_driver_id", None),
+                "assigned_escort_id": getattr(route, "assigned_escort_id", None),
+                "escort_required": route.escort_required,
                 "shift_time": shift.shift_time.strftime("%H:%M:%S") if shift and shift.shift_time else None,
                 "log_type": shift.log_type.value if shift and shift.log_type else None,
                 "status": route.status.value,
+                "estimated_total_time": route.estimated_total_time,
+                "estimated_total_distance": route.estimated_total_distance,
+                "actual_total_time": route.actual_total_time,
+                "actual_total_distance": route.actual_total_distance,
+                "buffer_time": route.buffer_time,
                 "start_time": first_pickup_dt.strftime("%Y-%m-%d %H:%M"),
                 "stops": stops,
                 "summary": {
@@ -402,6 +421,7 @@ async def start_trip(
         # --- Verify boarding OTP if present ---
         if booking.boarding_otp:
             if str(booking.boarding_otp).strip() != str(otp).strip():
+                logger.warning(f"[driver.start_trip] Invalid boarding OTP provided for booking {booking_id}")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ResponseWrapper.error(
@@ -410,9 +430,12 @@ async def start_trip(
                         details={"booking_id": booking_id},
                     ),
                 )
+            logger.info(f"[driver.start_trip] Boarding OTP validation successful for booking {booking_id}")
+        else:
+            logger.info(f"[driver.start_trip] No boarding OTP required for booking {booking_id}")
 
         # --- Update statuses + timestamps ---
-        now = datetime.utcnow()
+        now = get_current_ist_time()
         booking.status = BookingStatusEnum.ONGOING
         route.status = RouteManagementStatusEnum.ONGOING
         rb.actual_pick_up_time = now.strftime("%H:%M")
@@ -490,7 +513,7 @@ async def mark_no_show(
     try:
         tenant_id = ctx["tenant_id"]
         driver_id = ctx["driver_id"]
-        now = datetime.utcnow()
+        now = get_current_ist_time()
 
         logger.info(f"[driver.no_show] tenant={tenant_id}, driver={driver_id}, route={route_id}, booking={booking_id}")
 
@@ -708,7 +731,7 @@ async def verify_drop_and_complete_route(
     try:
         tenant_id = ctx["tenant_id"]
         driver_id = ctx["driver_id"]
-        now = datetime.utcnow()
+        now = get_current_ist_time()
 
         logger.info(f"[driver.drop] tenant={tenant_id}, driver={driver_id}, route={route_id}, booking={booking_id}")
 
@@ -776,6 +799,7 @@ async def verify_drop_and_complete_route(
         # --- Verify deboarding OTP if present ---
         if booking.deboarding_otp:
             if str(booking.deboarding_otp).strip() != str(otp).strip():
+                logger.warning(f"[driver.drop] Invalid deboarding OTP provided for booking {booking_id}")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ResponseWrapper.error(
@@ -784,6 +808,9 @@ async def verify_drop_and_complete_route(
                         details={"booking_id": booking_id},
                     ),
                 )
+            logger.info(f"[driver.drop] Deboarding OTP validation successful for booking {booking_id}")
+        else:
+            logger.info(f"[driver.drop] No deboarding OTP required for booking {booking_id}")
 
         # --- Prevent re-marking if already dropped ---
         if booking.status == BookingStatusEnum.COMPLETED:

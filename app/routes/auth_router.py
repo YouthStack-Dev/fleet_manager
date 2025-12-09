@@ -25,6 +25,7 @@ from app.schemas.auth import (
 )
 from app.schemas.driver import DriverResponse
 from app.schemas.tenant import TenantResponse
+from app.schemas.vendor import VendorResponse
 from app.schemas.vendor_user import VendorUserResponse
 from common_utils.auth.utils import (
     create_access_token, create_refresh_token, 
@@ -570,6 +571,7 @@ async def vendor_user_login(
             "refresh_token": refresh_token,
             "token_type": "bearer",
             "user": {"vendor_user": VendorUserResponse.model_validate(vendor_user),
+                     "vendor": VendorResponse.model_validate(vendor),
                      "roles": roles,
                      "permissions": all_permissions
                      },
