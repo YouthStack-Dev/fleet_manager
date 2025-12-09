@@ -5,9 +5,11 @@ from sqlalchemy.orm import Session
 from typing import Optional, List
 from datetime import date, datetime, timedelta
 
+from app.core.logging_config import get_logger
 from app.database.session import get_db
 from app.models.employee import Employee
 from app.models.shift import Shift
+from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
 from app.models.route_management import RouteManagement, RouteManagementBooking, RouteManagementStatusEnum
 from app.models.booking import Booking, BookingStatusEnum
@@ -83,17 +85,47 @@ def serialize_route(db: Session, route: RouteManagement):
     }
 
 
-def require_tenant(db: Session, tenant_id: str):
-    tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
-    if not tenant:
+def validate_driver_location(
+    current_latitude: float,
+    current_longitude: float,
+    target_latitude: float,
+    target_longitude: float,
+    location_type: str,
+    booking_id: int,
+    max_distance_meters: int = 500
+) -> None:
+    """
+    Validates that the driver's current location is within the allowed distance from the target location.
+    Raises HTTPException if validation fails.
+    """
+    if not target_latitude or not target_longitude:
+        logger.warning(f"[driver.{location_type}] Booking {booking_id} missing {location_type} coordinates")
+        return
+
+    distance = geodesic(
+        (current_latitude, current_longitude),
+        (target_latitude, target_longitude)
+    ).meters
+
+    if distance > max_distance_meters:
+        error_code = f"DRIVER_TOO_FAR_FROM_{location_type.upper()}"
+        message = f"Driver location is too far from {location_type} location. Distance: {distance:.1f} meters (max allowed: {max_distance_meters} meters)"
+
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=ResponseWrapper.error(
-                message=f"Tenant {tenant_id} not found",
-                error_code="TENANT_NOT_FOUND",
+                message=message,
+                error_code=error_code,
+                details={
+                    "driver_lat": current_latitude,
+                    "driver_lng": current_longitude,
+                    f"{location_type}_lat": target_latitude,
+                    f"{location_type}_lng": target_longitude,
+                    "distance_meters": round(distance, 1),
+                    "max_allowed_meters": max_distance_meters
+                },
             ),
         )
-    return tenant
 
 
 
@@ -361,32 +393,11 @@ async def start_trip(
             )
 
         # --- Validate driver's location is near pickup location ---
-        if booking.pickup_latitude and booking.pickup_longitude:
-            pickup_distance = geodesic(
-                (current_latitude, current_longitude),
-                (booking.pickup_latitude, booking.pickup_longitude)
-            ).meters
-
-            # Allow maximum 500 meters distance from pickup location
-            max_distance_meters = 500
-            if pickup_distance > max_distance_meters:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=ResponseWrapper.error(
-                        message=f"Driver location is too far from pickup location. Distance: {pickup_distance:.1f} meters (max allowed: {max_distance_meters} meters)",
-                        error_code="DRIVER_TOO_FAR_FROM_PICKUP",
-                        details={
-                            "driver_lat": current_latitude,
-                            "driver_lng": current_longitude,
-                            "pickup_lat": booking.pickup_latitude,
-                            "pickup_lng": booking.pickup_longitude,
-                            "distance_meters": round(pickup_distance, 1),
-                            "max_allowed_meters": max_distance_meters
-                        },
-                    ),
-                )
-        else:
-            logger.warning(f"[driver.start_trip] Booking {booking_id} missing pickup coordinates")
+        validate_driver_location(
+            current_latitude, current_longitude,
+            booking.pickup_latitude, booking.pickup_longitude,
+            "pickup", booking_id
+        )
 
         # --- Verify boarding OTP if present ---
         if booking.boarding_otp:
@@ -756,32 +767,11 @@ async def verify_drop_and_complete_route(
             )
 
         # --- Validate driver's location is near drop location ---
-        if booking.drop_latitude and booking.drop_longitude:
-            drop_distance = geodesic(
-                (current_latitude, current_longitude),
-                (booking.drop_latitude, booking.drop_longitude)
-            ).meters
-
-            # Allow maximum 500 meters distance from drop location
-            max_distance_meters = 500
-            if drop_distance > max_distance_meters:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=ResponseWrapper.error(
-                        message=f"Driver location is too far from drop location. Distance: {drop_distance:.1f} meters (max allowed: {max_distance_meters} meters)",
-                        error_code="DRIVER_TOO_FAR_FROM_DROP",
-                        details={
-                            "driver_lat": current_latitude,
-                            "driver_lng": current_longitude,
-                            "drop_lat": booking.drop_latitude,
-                            "drop_lng": booking.drop_longitude,
-                            "distance_meters": round(drop_distance, 1),
-                            "max_allowed_meters": max_distance_meters
-                        },
-                    ),
-                )
-        else:
-            logger.warning(f"[driver.drop] Booking {booking_id} missing drop coordinates")
+        validate_driver_location(
+            current_latitude, current_longitude,
+            booking.drop_latitude, booking.drop_longitude,
+            "drop", booking_id
+        )
 
         # --- Verify deboarding OTP if present ---
         if booking.deboarding_otp:
