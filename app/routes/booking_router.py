@@ -12,7 +12,7 @@ from app.models.weekoff_config import WeekoffConfig
 from fastapi import APIRouter, Depends, HTTPException, Path, status, Query,Body
 from sqlalchemy.orm import Session
 from typing import Optional, List
-from datetime import date, datetime, datetime, timedelta
+from datetime import date, datetime, datetime, timedelta, timezone
 from app.database.session import get_db
 from app.models.booking import Booking
 from app.schemas.booking import BookingCreate, BookingUpdate, BookingResponse,  BookingStatusEnum
@@ -186,7 +186,7 @@ def create_booking(
                     logger.info(f"No cutoff configuration found for tenant {tenant_id} - skipping cutoff validation")
             
             if cutoff and shift and cutoff_interval and cutoff_interval.total_seconds() > 0:
-                shift_datetime = datetime.combine(booking_date, shift.shift_time)
+                shift_datetime = datetime.combine(booking_date, shift.shift_time).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
                 now = get_current_ist_time()
                 time_until_shift = shift_datetime - now
                 logger.info(
@@ -209,7 +209,7 @@ def create_booking(
                     )
 
             # 3️⃣ Prevent booking if shift time has already passed today
-            shift_datetime = datetime.combine(booking_date, shift.shift_time)
+            shift_datetime = datetime.combine(booking_date, shift.shift_time).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
             now = get_current_ist_time()
 
             if booking_date == date.today() and now >= shift_datetime:
@@ -969,7 +969,7 @@ def cancel_booking(
             cancel_cutoff_interval = cutoff.cancel_logout_cutoff if cutoff else None
         
         if cancel_cutoff_interval and cancel_cutoff_interval.total_seconds() > 0:
-            shift_datetime = datetime.combine(booking.booking_date, booking.shift.shift_time)
+            shift_datetime = datetime.combine(booking.booking_date, booking.shift.shift_time).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
             now = get_current_ist_time()
             time_until_shift = shift_datetime - now
             
