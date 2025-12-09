@@ -39,7 +39,8 @@ class CRUDTenantConfig(CRUDBase[TenantConfig, TenantConfigCreate, TenantConfigUp
             logout_deboarding_otp=obj_in.logout_deboarding_otp
         )
         db.add(db_obj)
-        db.flush()
+        db.commit()
+        db.refresh(db_obj)
         return db_obj
 
     def update_by_tenant(self, db: Session, *, tenant_id: str, obj_in: TenantConfigUpdate) -> TenantConfig:
@@ -50,7 +51,8 @@ class CRUDTenantConfig(CRUDBase[TenantConfig, TenantConfigCreate, TenantConfigUp
         for field, value in update_data.items():
             setattr(db_obj, field, value)
 
-        db.flush()
+        db.commit()
+        db.refresh(db_obj)
         return db_obj
 
 tenant_config_crud = CRUDTenantConfig(TenantConfig)

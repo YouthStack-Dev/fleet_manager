@@ -8,6 +8,7 @@ import fsspec
 import tempfile
 from app.config import settings
 from app.core.logging_config import get_logger
+from common_utils import get_current_ist_time
 
 logger = get_logger(__name__)
 
@@ -65,7 +66,7 @@ class StorageService:
     
     def _generate_filename(self, vendor_id: int, rc_number: str, file_type: str, original_filename: str) -> str:
         """Generate secure filename with timestamp and UUID"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = get_current_ist_time().strftime("%Y%m%d_%H%M%S")
         file_extension = os.path.splitext(original_filename)[1].lower()
         unique_id = str(uuid.uuid4())[:8]
         

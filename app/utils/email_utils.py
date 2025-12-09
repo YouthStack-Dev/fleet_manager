@@ -10,6 +10,7 @@ from app.models.employee import Employee
 from app.models.booking import Booking
 from app.models.driver import Driver
 from app.models.admin import Admin
+from common_utils import get_current_ist_time
 
 logger = get_logger(__name__)
 
@@ -239,7 +240,7 @@ def send_system_alert_email(
                 🚨 System Alert: {alert_type.upper()}
             </h2>
             <p><strong>Message:</strong> {message}</p>
-            <p><strong>Time:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            <p><strong>Time:</strong> {get_current_ist_time().strftime('%Y-%m-%d %H:%M:%S')}</p>
             {f"<p><strong>Details:</strong></p><pre>{details}</pre>" if details else ""}
         </div>
         <p>This is an automated system alert from Fleet Manager.</p>

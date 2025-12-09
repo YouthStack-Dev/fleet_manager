@@ -15,6 +15,7 @@ from app.models.booking import Booking
 from app.schemas.booking import BookingCreate, BookingUpdate, BookingResponse,  BookingStatusEnum
 from app.utils.pagination import paginate_query
 from common_utils.auth.permission_checker import PermissionChecker
+from common_utils import get_current_ist_time
 from app.schemas.base import BaseResponse, PaginatedResponse
 from app.utils.response_utils import ResponseWrapper, handle_http_error, validate_pagination_params, handle_db_error
 from sqlalchemy.exc import SQLAlchemyError
@@ -171,14 +172,19 @@ def create_booking(
                 
             else:
                 # Regular booking - use shift-type specific cutoffs
-                if shift.log_type == "IN":  # Login shift (home → office)
-                    cutoff_interval = cutoff.booking_login_cutoff
-                elif shift.log_type == "OUT":  # Logout shift (office → home)  
-                    cutoff_interval = cutoff.booking_logout_cutoff
+                if cutoff:
+                    if shift.log_type == "IN":  # Login shift (home → office)
+                        cutoff_interval = cutoff.booking_login_cutoff
+                    elif shift.log_type == "OUT":  # Logout shift (office → home)  
+                        cutoff_interval = cutoff.booking_logout_cutoff
+                else:
+                    # No cutoff configuration for this tenant - skip cutoff validation
+                    cutoff_interval = None
+                    logger.info(f"No cutoff configuration found for tenant {tenant_id} - skipping cutoff validation")
             
             if cutoff and shift and cutoff_interval and cutoff_interval.total_seconds() > 0:
                 shift_datetime = datetime.combine(booking_date, shift.shift_time)
-                now = datetime.now()
+                now = get_current_ist_time()
                 time_until_shift = shift_datetime - now
                 logger.info(
                     f"Cutoff check: shift_type={shift.log_type}, booking_type={booking.booking_type}, now={now}, shift_datetime={shift_datetime}, "
@@ -201,7 +207,7 @@ def create_booking(
 
             # 3️⃣ Prevent booking if shift time has already passed today
             shift_datetime = datetime.combine(booking_date, shift.shift_time)
-            now = datetime.now()
+            now = get_current_ist_time()
 
             if booking_date == date.today() and now >= shift_datetime:
                 raise HTTPException(
@@ -635,7 +641,7 @@ def cancel_booking(
         
         if cancel_cutoff_interval and cancel_cutoff_interval.total_seconds() > 0:
             shift_datetime = datetime.combine(booking.booking_date, booking.shift.shift_time)
-            now = datetime.now()
+            now = get_current_ist_time()
             time_until_shift = shift_datetime - now
             
             if time_until_shift < cancel_cutoff_interval:
