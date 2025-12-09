@@ -84,6 +84,7 @@ class BookingUpdate(BaseModel):
 class BookingResponse(BookingBase):
     booking_id: int
     shift_time: Optional[time] = None
+    route_details: Optional[dict] = None
     created_at: datetime
     updated_at: datetime
 

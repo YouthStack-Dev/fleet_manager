@@ -1,10 +1,13 @@
 
 from sqlalchemy import func
 from app.models.cutoff import Cutoff
+from app.models.driver import Driver
 from app.models.employee import Employee
 from app.models.route_management import RouteManagement, RouteManagementBooking, RouteManagementStatusEnum
 from app.models.shift import Shift, ShiftLogTypeEnum
 from app.models.tenant import Tenant
+from app.models.vehicle import Vehicle
+from app.models.vendor import Vendor
 from app.models.weekoff_config import WeekoffConfig
 from fastapi import APIRouter, Depends, HTTPException, Path, status, Query,Body
 from sqlalchemy.orm import Session
@@ -383,12 +386,130 @@ def get_bookings(
 
         total, items = paginate_query(query, skip, limit)
 
-        # Add shift_time to each booking
+        # Fetch route data in bulk for efficiency
+        booking_ids = [b.booking_id for b in items]
+        route_bookings = db.query(RouteManagementBooking).filter(RouteManagementBooking.booking_id.in_(booking_ids)).all()
+        route_ids = list(set(rb.route_id for rb in route_bookings))
+        routes = db.query(RouteManagement).filter(RouteManagement.route_id.in_(route_ids)).all() if route_ids else []
+
+        # Create mappings
+        route_dict = {rb.booking_id: rb for rb in route_bookings}
+        route_obj_dict = {r.route_id: r for r in routes}
+
+        # Fetch related data in bulk
+        vehicle_ids = [r.assigned_vehicle_id for r in routes if r.assigned_vehicle_id]
+        driver_ids = [r.assigned_driver_id for r in routes if r.assigned_driver_id]
+        vendor_ids = [r.assigned_vendor_id for r in routes if r.assigned_vendor_id]
+        vehicles = db.query(Vehicle).filter(Vehicle.vehicle_id.in_(vehicle_ids)).all() if vehicle_ids else []
+        drivers = db.query(Driver).filter(Driver.driver_id.in_(driver_ids)).all() if driver_ids else []
+        vendors = db.query(Vendor).filter(Vendor.vendor_id.in_(vendor_ids)).all() if vendor_ids else []
+        shift_ids = [r.shift_id for r in routes if r.shift_id]
+        shifts_route = db.query(Shift).filter(Shift.shift_id.in_(shift_ids)).all() if shift_ids else []
+
+        # Create dicts
+        vehicle_dict = {v.vehicle_id: v for v in vehicles}
+        driver_dict = {d.driver_id: d for d in drivers}
+        vendor_dict = {v.vendor_id: v for v in vendors}
+        shift_route_dict = {s.shift_id: s for s in shifts_route}
+
+        # Fetch all route bookings for passengers
+        all_route_bookings = db.query(RouteManagementBooking).filter(RouteManagementBooking.route_id.in_(route_ids)).all() if route_ids else []
+        all_booking_ids = list(set(rb.booking_id for rb in all_route_bookings))
+        all_bookings = db.query(Booking).filter(Booking.booking_id.in_(all_booking_ids)).all() if all_booking_ids else []
+        all_employee_ids = list(set(b.employee_id for b in all_bookings))
+        all_employees = db.query(Employee).filter(Employee.employee_id.in_(all_employee_ids)).all() if all_employee_ids else []
+        booking_pass_dict = {b.booking_id: b for b in all_bookings}
+        employee_pass_dict = {e.employee_id: e for e in all_employees}
+
+        # Build passengers per route
+        route_passengers = {}
+        for r in routes:
+            passengers = []
+            for rb in all_route_bookings:
+                if rb.route_id == r.route_id:
+                    booking = booking_pass_dict.get(rb.booking_id)
+                    if booking:
+                        employee = employee_pass_dict.get(booking.employee_id)
+                        if employee:
+                            passengers.append({
+                                "employee_name": employee.name,
+                                "headcount": 1,
+                                "position": rb.order_id,
+                                "booking_status": booking.status.value
+                            })
+            passengers.sort(key=lambda x: x['position'])
+            route_passengers[r.route_id] = passengers
+
+        # Add shift_time and route_details to each booking
         bookings_with_shift = []
         for booking in items:
             booking_dict = BookingResponse.model_validate(booking, from_attributes=True).dict()
             if booking.shift:
                 booking_dict["shift_time"] = booking.shift.shift_time
+            
+            # Add route details if booking is routed
+            route_booking = route_dict.get(booking.booking_id)
+            if route_booking:
+                route = route_obj_dict.get(route_booking.route_id)
+                if route:
+                    vehicle_details = None
+                    if route.assigned_vehicle_id and route.assigned_vehicle_id in vehicle_dict:
+                        vehicle = vehicle_dict[route.assigned_vehicle_id]
+                        vehicle_details = {
+                            "vehicle_id": vehicle.vehicle_id,
+                            "vehicle_number": vehicle.rc_number,
+                            "vehicle_type": vehicle.vehicle_type.name if vehicle.vehicle_type else None,
+                            "capacity": vehicle.vehicle_type.seats if vehicle.vehicle_type else None,
+                        }
+
+                    driver_details = None
+                    if route.assigned_driver_id and route.assigned_driver_id in driver_dict:
+                        driver = driver_dict[route.assigned_driver_id]
+                        driver_details = {
+                            "driver_id": driver.driver_id,
+                            "driver_name": driver.name,
+                            "driver_phone": driver.phone,
+                            "license_number": driver.license_number,
+                        }
+
+                    vendor_details = None
+                    if route.assigned_vendor_id and route.assigned_vendor_id in vendor_dict:
+                        vendor = vendor_dict[route.assigned_vendor_id]
+                        vendor_details = {
+                            "vendor_id": vendor.vendor_id,
+                            "vendor_name": vendor.name,
+                            "vendor_code": vendor.vendor_code,
+                        }
+
+                    shift_details = None
+                    if route.shift_id and route.shift_id in shift_route_dict:
+                        shift_route = shift_route_dict[route.shift_id]
+                        shift_details = {
+                            "shift_id": shift_route.shift_id,
+                            "shift_time": shift_route.shift_time.strftime("%H:%M:%S") if shift_route.shift_time else None,
+                            "log_type": shift_route.log_type.value if shift_route.log_type else None,
+                        }
+
+                    route_info = {
+                        "route_id": route.route_id,
+                        "route_code": route.route_code,
+                        "status": route.status.value,
+                        "shift_details": shift_details,
+                        "vehicle_details": vehicle_details,
+                        "driver_details": driver_details,
+                        "vendor_details": vendor_details,
+                        "escort_required": route.escort_required,
+                        "estimated_total_time": route.estimated_total_time,
+                        "estimated_total_distance": route.estimated_total_distance,
+                        "actual_total_time": route.actual_total_time,
+                        "actual_total_distance": route.actual_total_distance,
+                    }
+                    booking_dict["route_details"] = route_info
+                else:
+                    booking_dict["route_details"] = None
+            else:
+                booking_dict["route_details"] = None
+            
             bookings_with_shift.append(booking_dict)
 
         return ResponseWrapper.paginated(
@@ -475,12 +596,130 @@ def get_bookings_by_employee(
 
         total, items = paginate_query(query, skip, limit)
 
-        # Add shift_time to each booking
+        # Fetch route data in bulk for efficiency
+        booking_ids = [b.booking_id for b in items]
+        route_bookings = db.query(RouteManagementBooking).filter(RouteManagementBooking.booking_id.in_(booking_ids)).all()
+        route_ids = list(set(rb.route_id for rb in route_bookings))
+        routes = db.query(RouteManagement).filter(RouteManagement.route_id.in_(route_ids)).all() if route_ids else []
+
+        # Create mappings
+        route_dict = {rb.booking_id: rb for rb in route_bookings}
+        route_obj_dict = {r.route_id: r for r in routes}
+
+        # Fetch related data in bulk
+        vehicle_ids = [r.assigned_vehicle_id for r in routes if r.assigned_vehicle_id]
+        driver_ids = [r.assigned_driver_id for r in routes if r.assigned_driver_id]
+        vendor_ids = [r.assigned_vendor_id for r in routes if r.assigned_vendor_id]
+        vehicles = db.query(Vehicle).filter(Vehicle.vehicle_id.in_(vehicle_ids)).all() if vehicle_ids else []
+        drivers = db.query(Driver).filter(Driver.driver_id.in_(driver_ids)).all() if driver_ids else []
+        vendors = db.query(Vendor).filter(Vendor.vendor_id.in_(vendor_ids)).all() if vendor_ids else []
+        shift_ids = [r.shift_id for r in routes if r.shift_id]
+        shifts_route = db.query(Shift).filter(Shift.shift_id.in_(shift_ids)).all() if shift_ids else []
+
+        # Create dicts
+        vehicle_dict = {v.vehicle_id: v for v in vehicles}
+        driver_dict = {d.driver_id: d for d in drivers}
+        vendor_dict = {v.vendor_id: v for v in vendors}
+        shift_route_dict = {s.shift_id: s for s in shifts_route}
+
+        # Fetch all route bookings for passengers
+        all_route_bookings = db.query(RouteManagementBooking).filter(RouteManagementBooking.route_id.in_(route_ids)).all() if route_ids else []
+        all_booking_ids = list(set(rb.booking_id for rb in all_route_bookings))
+        all_bookings = db.query(Booking).filter(Booking.booking_id.in_(all_booking_ids)).all() if all_booking_ids else []
+        all_employee_ids = list(set(b.employee_id for b in all_bookings))
+        all_employees = db.query(Employee).filter(Employee.employee_id.in_(all_employee_ids)).all() if all_employee_ids else []
+        booking_pass_dict = {b.booking_id: b for b in all_bookings}
+        employee_pass_dict = {e.employee_id: e for e in all_employees}
+
+        # Build passengers per route
+        route_passengers = {}
+        for r in routes:
+            passengers = []
+            for rb in all_route_bookings:
+                if rb.route_id == r.route_id:
+                    booking = booking_pass_dict.get(rb.booking_id)
+                    if booking:
+                        employee = employee_pass_dict.get(booking.employee_id)
+                        if employee:
+                            passengers.append({
+                                "employee_name": employee.name,
+                                "headcount": 1,
+                                "position": rb.order_id,
+                                "booking_status": booking.status.value
+                            })
+            passengers.sort(key=lambda x: x['position'])
+            route_passengers[r.route_id] = passengers
+
+        # Add shift_time and route_details to each booking
         bookings_with_shift = []
         for booking in items:
             booking_dict = BookingResponse.model_validate(booking, from_attributes=True).dict()
             if booking.shift:
                 booking_dict["shift_time"] = booking.shift.shift_time
+            
+            # Add route details if booking is routed
+            route_booking = route_dict.get(booking.booking_id)
+            if route_booking:
+                route = route_obj_dict.get(route_booking.route_id)
+                if route:
+                    vehicle_details = None
+                    if route.assigned_vehicle_id and route.assigned_vehicle_id in vehicle_dict:
+                        vehicle = vehicle_dict[route.assigned_vehicle_id]
+                        vehicle_details = {
+                            "vehicle_id": vehicle.vehicle_id,
+                            "vehicle_number": vehicle.rc_number,
+                            "vehicle_type": vehicle.vehicle_type.name if vehicle.vehicle_type else None,
+                            "capacity": vehicle.vehicle_type.seats if vehicle.vehicle_type else None,
+                        }
+
+                    driver_details = None
+                    if route.assigned_driver_id and route.assigned_driver_id in driver_dict:
+                        driver = driver_dict[route.assigned_driver_id]
+                        driver_details = {
+                            "driver_id": driver.driver_id,
+                            "driver_name": driver.name,
+                            "driver_phone": driver.phone,
+                            "license_number": driver.license_number,
+                        }
+
+                    vendor_details = None
+                    if route.assigned_vendor_id and route.assigned_vendor_id in vendor_dict:
+                        vendor = vendor_dict[route.assigned_vendor_id]
+                        vendor_details = {
+                            "vendor_id": vendor.vendor_id,
+                            "vendor_name": vendor.name,
+                            "vendor_code": vendor.vendor_code,
+                        }
+
+                    shift_details = None
+                    if route.shift_id and route.shift_id in shift_route_dict:
+                        shift_route = shift_route_dict[route.shift_id]
+                        shift_details = {
+                            "shift_id": shift_route.shift_id,
+                            "shift_time": shift_route.shift_time.strftime("%H:%M:%S") if shift_route.shift_time else None,
+                            "log_type": shift_route.log_type.value if shift_route.log_type else None,
+                        }
+
+                    route_info = {
+                        "route_id": route.route_id,
+                        "route_code": route.route_code,
+                        "status": route.status.value,
+                        "shift_details": shift_details,
+                        "vehicle_details": vehicle_details,
+                        "driver_details": driver_details,
+                        "vendor_details": vendor_details,
+                        "escort_required": route.escort_required,
+                        "estimated_total_time": route.estimated_total_time,
+                        "estimated_total_distance": route.estimated_total_distance,
+                        "actual_total_time": route.actual_total_time,
+                        "actual_total_distance": route.actual_total_distance,
+                    }
+                    booking_dict["route_details"] = route_info
+                else:
+                    booking_dict["route_details"] = None
+            else:
+                booking_dict["route_details"] = None
+            
             bookings_with_shift.append(booking_dict)
 
         return ResponseWrapper.paginated(
@@ -532,6 +771,96 @@ def get_booking_by_id(
         booking_dict = BookingResponse.model_validate(booking, from_attributes=True).dict()
         if booking.shift:
             booking_dict["shift_time"] = booking.shift.shift_time
+
+        # Add route details if booking is routed
+        route_booking = db.query(RouteManagementBooking).filter(RouteManagementBooking.booking_id == booking.booking_id).first()
+        if route_booking:
+            route = db.query(RouteManagement).filter(RouteManagement.route_id == route_booking.route_id).first()
+            if route:
+                # Fetch passengers
+                all_route_bookings = db.query(RouteManagementBooking).filter(RouteManagementBooking.route_id == route.route_id).all()
+                all_booking_ids = [rb.booking_id for rb in all_route_bookings]
+                all_bookings = db.query(Booking).filter(Booking.booking_id.in_(all_booking_ids)).all()
+                all_employee_ids = [b.employee_id for b in all_bookings]
+                all_employees = db.query(Employee).filter(Employee.employee_id.in_(all_employee_ids)).all()
+                booking_pass_dict = {b.booking_id: b for b in all_bookings}
+                employee_pass_dict = {e.employee_id: e for e in all_employees}
+                passengers = []
+                for rb in all_route_bookings:
+                    booking_pass = booking_pass_dict.get(rb.booking_id)
+                    if booking_pass:
+                        employee = employee_pass_dict.get(booking_pass.employee_id)
+                        if employee:
+                            passengers.append({
+                                "employee_name": employee.name,
+                                "headcount": 1,
+                                "position": rb.order_id,
+                                "booking_status": booking_pass.status.value
+                            })
+                passengers.sort(key=lambda x: x['position'])
+
+                vehicle_details = None
+                if route.assigned_vehicle_id:
+                    vehicle = db.query(Vehicle).filter(Vehicle.vehicle_id == route.assigned_vehicle_id).first()
+                    if vehicle:
+                        vehicle_details = {
+                            "vehicle_id": vehicle.vehicle_id,
+                            "vehicle_number": vehicle.rc_number,
+                            "vehicle_type": vehicle.vehicle_type.name if vehicle.vehicle_type else None,
+                            "capacity": vehicle.vehicle_type.seats if vehicle.vehicle_type else None,
+                        }
+
+                driver_details = None
+                if route.assigned_driver_id:
+                    driver = db.query(Driver).filter(Driver.driver_id == route.assigned_driver_id).first()
+                    if driver:
+                        driver_details = {
+                            "driver_id": driver.driver_id,
+                            "driver_name": driver.name,
+                            "driver_phone": driver.phone,
+                            "license_number": driver.license_number,
+                        }
+
+                vendor_details = None
+                if route.assigned_vendor_id:
+                    vendor = db.query(Vendor).filter(Vendor.vendor_id == route.assigned_vendor_id).first()
+                    if vendor:
+                        vendor_details = {
+                            "vendor_id": vendor.vendor_id,
+                            "vendor_name": vendor.name,
+                            "vendor_code": vendor.vendor_code,
+                        }
+
+                shift_details = None
+                if route.shift_id:
+                    shift_route = db.query(Shift).filter(Shift.shift_id == route.shift_id).first()
+                    if shift_route:
+                        shift_details = {
+                            "shift_id": shift_route.shift_id,
+                            "shift_time": shift_route.shift_time.strftime("%H:%M:%S") if shift_route.shift_time else None,
+                            "log_type": shift_route.log_type.value if shift_route.log_type else None,
+                        }
+
+                route_info = {
+                    "route_id": route.route_id,
+                    "route_code": route.route_code,
+                    "status": route.status.value,
+                    "shift_details": shift_details,
+                    "vehicle_details": vehicle_details,
+                    "driver_details": driver_details,
+                    "vendor_details": vendor_details,
+                    "escort_required": route.escort_required,
+                    "estimated_total_time": route.estimated_total_time,
+                    "estimated_total_distance": route.estimated_total_distance,
+                    "actual_total_time": route.actual_total_time,
+                    "actual_total_distance": route.actual_total_distance,
+                    "passengers": passengers,
+                }
+                booking_dict["route_details"] = route_info
+            else:
+                booking_dict["route_details"] = None
+        else:
+            booking_dict["route_details"] = None
 
         return ResponseWrapper.success(
             data=booking_dict,
