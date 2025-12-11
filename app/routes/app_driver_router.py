@@ -946,7 +946,7 @@ async def end_duty(
     """
     End the driver's duty for a route.
     - Only allowed for routes assigned to the driver and in ONGOING state.
-    - Marks pending bookings as NO_SHOW (or marks ongoing bookings COMPLETED).
+    - Only allowed if all bookings are COMPLETED, NO_SHOW, or CANCELLED.
     - Completes the route and sets actual end time.
     """
     try:
@@ -990,40 +990,26 @@ async def end_duty(
                 ),
             )
 
-        # --- Collect bookings for route and decide their end status ---
-        route_booking_rows = (
-            db.query(RouteManagementBooking, Booking)
+        # --- Check if all bookings are finalized ---
+        pending_bookings = (
+            db.query(RouteManagementBooking)
             .join(Booking, RouteManagementBooking.booking_id == Booking.booking_id)
-            .filter(RouteManagementBooking.route_id == route_id)
-            .all()
+            .filter(
+                RouteManagementBooking.route_id == route_id,
+                Booking.status.notin_([BookingStatusEnum.COMPLETED, BookingStatusEnum.NO_SHOW, BookingStatusEnum.CANCELLED]),
+            )
+            .count()
         )
 
-        marked_no_show = 0
-        marked_completed = 0
-
-        for rb, booking in route_booking_rows:
-            # Skip canceled and already completed/no-show
-            if booking.status in [BookingStatusEnum.COMPLETED, BookingStatusEnum.NO_SHOW, BookingStatusEnum.CANCELLED]:
-                continue
-
-            if booking.status == BookingStatusEnum.ONGOING:
-                # If the employee was already onboard and it was ongoing, mark as completed
-                booking.status = BookingStatusEnum.COMPLETED
-                booking.updated_at = now
-                marked_completed += 1
-                # record drop time on route booking if attribute exists
-                if hasattr(rb, "actual_drop_time") and not getattr(rb, "actual_drop_time", None):
-                    rb.actual_drop_time = now.strftime("%H:%M")
-            else:
-                # For scheduled/requested bookings that weren't done, mark as no-show
-                booking.status = BookingStatusEnum.NO_SHOW
-                booking.reason = reason or "Driver ended duty"
-                booking.updated_at = now
-                marked_no_show += 1
-                if hasattr(rb, "actual_pick_up_time") and not getattr(rb, "actual_pick_up_time", None):
-                    rb.actual_pick_up_time = now.strftime("%H:%M")
-
-            db.add_all([booking, rb])
+        if pending_bookings > 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Cannot end duty. All bookings must be completed or marked as no-show first.",
+                    error_code="PENDING_BOOKINGS_EXIST",
+                    details={"pending_count": pending_bookings},
+                ),
+            )
 
         # --- Complete the route ---
         route.status = RouteManagementStatusEnum.COMPLETED
@@ -1034,15 +1020,13 @@ async def end_duty(
         db.add(route)
         db.commit()
 
-        logger.info(f"[driver.end_duty] Route {route_id} completed by driver {driver_id}. Marked {marked_completed} completed, {marked_no_show} no-shows.")
+        logger.info(f"[driver.end_duty] Route {route_id} completed by driver {driver_id}.")
 
         return ResponseWrapper.success(
             message="Duty ended and route closed",
             data={
                 "route_id": route_id,
                 "route_status": route.status.value,
-                "marked_completed": marked_completed,
-                "marked_no_show": marked_no_show,
             },
         )
 
