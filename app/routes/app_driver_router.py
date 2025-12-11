@@ -134,6 +134,118 @@ def validate_driver_location(
 
 from sqlalchemy import func, and_
 
+@router.post("/duty/start", status_code=status.HTTP_200_OK)
+async def start_duty(
+    route_id: int,
+    db: Session = Depends(get_db),
+    ctx=Depends(DriverAuth),
+):
+    """
+    Start the driver's duty for a route.
+    - Changes route status from DRIVER_ASSIGNED to ONGOING
+    - Validates no other ongoing routes exist for this driver
+    - Driver cannot revert once duty is started
+    """
+    try:
+        tenant_id = ctx["tenant_id"]
+        driver_id = ctx["driver_id"]
+        now = get_current_ist_time()
+
+        logger.info(f"[driver.start_duty] tenant={tenant_id}, driver={driver_id}, route={route_id}")
+
+        # --- Validate route exists and is assigned to driver ---
+        route = (
+            db.query(RouteManagement)
+            .filter(
+                RouteManagement.route_id == route_id,
+                RouteManagement.tenant_id == tenant_id,
+                RouteManagement.assigned_driver_id == driver_id,
+            )
+            .first()
+        )
+        if not route:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Route not found or not assigned to driver",
+                    error_code="ROUTE_NOT_FOUND",
+                    details={"route_id": route_id, "driver_id": driver_id},
+                ),
+            )
+
+        # --- Check route is in DRIVER_ASSIGNED state ---
+        if route.status == RouteManagementStatusEnum.ONGOING:
+            # Idempotent: already started
+            return ResponseWrapper.success(
+                message="Duty already started for this route",
+                data={
+                    "route_id": route.route_id,
+                    "route_status": route.status.value,
+                },
+            )
+
+        if route.status != RouteManagementStatusEnum.DRIVER_ASSIGNED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Route must be in DRIVER_ASSIGNED state to start duty",
+                    error_code="INVALID_ROUTE_STATE",
+                    details={"current_status": route.status.value},
+                ),
+            )
+
+        # --- Check if driver has any other ongoing route ---
+        ongoing_route = (
+            db.query(RouteManagement)
+            .filter(
+                RouteManagement.tenant_id == tenant_id,
+                RouteManagement.assigned_driver_id == driver_id,
+                RouteManagement.status == RouteManagementStatusEnum.ONGOING,
+                RouteManagement.route_id != route_id,
+            )
+            .first()
+        )
+
+        if ongoing_route:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Driver already has an ongoing route. Please complete it before starting a new duty.",
+                    error_code="DRIVER_HAS_ONGOING_ROUTE",
+                    details={
+                        "ongoing_route_id": ongoing_route.route_id,
+                        "ongoing_route_code": ongoing_route.route_code,
+                    },
+                ),
+            )
+
+        # --- Update route to ONGOING ---
+        route.status = RouteManagementStatusEnum.ONGOING
+        route.updated_at = now
+
+        db.add(route)
+        db.commit()
+        db.refresh(route)
+
+        logger.info(f"[driver.start_duty] Duty started for route {route_id} by driver {driver_id}")
+
+        return ResponseWrapper.success(
+            message="Duty started successfully",
+            data={
+                "route_id": route.route_id,
+                "route_status": route.status.value,
+            },
+        )
+
+    except HTTPException as e:
+        logger.warning(f"[driver.start_duty] HTTP error: {e.detail}")
+        raise handle_http_error(e)
+    except Exception as e:
+        logger.exception("[driver.start_duty] Unexpected error")
+        db.rollback()
+        return handle_db_error(e)
+
+
 @router.get("/trips", status_code=status.HTTP_200_OK)
 async def get_driver_trips(
     status_filter: str = Query(..., regex="^(upcoming|ongoing|completed)$", description="Trip status filter"),
@@ -314,7 +426,7 @@ async def get_driver_trips(
         logger.exception("[driver.trips] Unexpected error")
         return handle_db_error(e)
 
-@router.post("/start", status_code=status.HTTP_200_OK)
+@router.post("/trip/start", status_code=status.HTTP_200_OK)
 async def start_trip(
     route_id: int,
     booking_id: int,
@@ -325,9 +437,10 @@ async def start_trip(
     ctx=Depends(DriverAuth),
 ):
     """
-    Start the trip for the given route.
-    - Verify OTP for the first booking (order_id=1)
-    - Update both booking and route statuses to 'Ongoing'
+    Start pickup for a booking (employee boards the vehicle).
+    - Route must already be in ONGOING state (duty started)
+    - Verify OTP and location
+    - Update booking status to ONGOING
     - Update actual_pick_up_time
     - Return next stop details
     """
@@ -337,7 +450,7 @@ async def start_trip(
 
         logger.info(f"[driver.start_trip] tenant={tenant_id}, driver={driver_id}, route={route_id}, booking={booking_id}")
 
-        # --- Validate route ---
+        # --- Validate route exists and is ONGOING ---
         route = (
             db.query(RouteManagement)
             .filter(
@@ -354,6 +467,17 @@ async def start_trip(
                     message="Route not found or not assigned to driver",
                     error_code="ROUTE_NOT_FOUND",
                     details={"route_id": route_id, "driver_id": driver_id},
+                ),
+            )
+
+        # Route must be ONGOING (duty already started)
+        if route.status != RouteManagementStatusEnum.ONGOING:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Route must be in ONGOING state. Please start duty first.",
+                    error_code="ROUTE_NOT_ONGOING",
+                    details={"current_status": route.status.value},
                 ),
             )
 
@@ -398,7 +522,6 @@ async def start_trip(
                 ),
             )
 
-
         # --- Validate booking object ---
         booking = (
             db.query(Booking)
@@ -441,15 +564,13 @@ async def start_trip(
         else:
             logger.info(f"[driver.start_trip] No boarding OTP required for booking {booking_id}")
 
-        # --- Update statuses + timestamps ---
+        # --- Update booking status and pickup time (route already ONGOING) ---
         now = get_current_ist_time()
         booking.status = BookingStatusEnum.ONGOING
-        route.status = RouteManagementStatusEnum.ONGOING
         rb.actual_pick_up_time = now.strftime("%H:%M")
 
-        db.add_all([booking, route, rb])
+        db.add_all([booking, rb])
         db.commit()
-        db.refresh(route)
 
         logger.info(
             f"[driver.start_trip] Trip started: route={route_id}, booking={booking_id}, "
@@ -614,62 +735,18 @@ async def mark_no_show(
                 ),
             )
 
-        # --- Update booking as NO_SHOW ---
+        # --- Update booking as NO_SHOW (DO NOT change route status) ---
         booking.status = BookingStatusEnum.NO_SHOW
         booking.reason = reason or "Employee did not board"
         booking.updated_at = now
         rb.actual_pick_up_time = now.strftime("%H:%M")
 
-        # --- If route not ongoing yet, set it ---
-        if route.status != RouteManagementStatusEnum.ONGOING:
-            route.status = RouteManagementStatusEnum.ONGOING
-            route.updated_at = now
-
-        db.add_all([booking, rb, route])
+        db.add_all([booking, rb])
         db.commit()
 
         logger.info(
             f"[driver.no_show] Booking {booking_id} marked NO_SHOW; route={route_id}, driver={driver_id}"
         )
-
-        # --- Count total bookings & completed drops ---
-        total_bookings = (
-            db.query(Booking)
-            .join(RouteManagementBooking, RouteManagementBooking.booking_id == Booking.booking_id)
-            .filter(RouteManagementBooking.route_id == route_id)
-            .count()
-        )
-        completed_drops = (
-            db.query(Booking)
-            .join(RouteManagementBooking, RouteManagementBooking.booking_id == Booking.booking_id)
-            .filter(
-                RouteManagementBooking.route_id == route_id,
-                Booking.status == BookingStatusEnum.COMPLETED,
-            )
-            .count()
-        )
-
-        route_completed = False
-
-        # ✅ Case 1: If route has only one booking → auto-complete immediately
-        if total_bookings == 1:
-            route.status = RouteManagementStatusEnum.COMPLETED
-            route.updated_at = now
-            if hasattr(route, "actual_end_time"):
-                setattr(route, "actual_end_time", now)
-            db.commit()
-            route_completed = True
-            logger.info(f"[driver.no_show] Single-booking route {route_id} marked COMPLETED after no-show")
-
-        # ✅ Case 2: If all drops are completed → mark route completed
-        elif total_bookings > 1 and completed_drops == total_bookings:
-            route.status = RouteManagementStatusEnum.COMPLETED
-            route.updated_at = now
-            if hasattr(route, "actual_end_time"):
-                setattr(route, "actual_end_time", now)
-            db.commit()
-            route_completed = True
-            logger.info(f"[driver.no_show] Route {route_id} marked COMPLETED — all drops done.")
 
         # --- Get next stop ---
         next_rb = (
@@ -698,9 +775,7 @@ async def mark_no_show(
                 }
 
         return ResponseWrapper.success(
-            message="Booking marked as no-show successfully"
-            if not route_completed
-            else "Booking marked as no-show; route closed as completed",
+            message="Booking marked as no-show successfully",
             data={
                 "route_id": route.route_id,
                 "route_status": route.status.value,
@@ -708,7 +783,6 @@ async def mark_no_show(
                 "booking_status": booking.status.value,
                 "actual_pick_up_time": rb.actual_pick_up_time,
                 "next_stop": next_stop,
-                "route_completed": route_completed,
             },
         )
 
@@ -831,7 +905,7 @@ async def verify_drop_and_complete_route(
                 },
             )
 
-        # --- Mark booking as completed ---
+        # --- Mark booking as completed (DO NOT complete route) ---
         booking.status = BookingStatusEnum.COMPLETED
         booking.updated_at = now
         rb.actual_drop_time = now.strftime("%H:%M")
@@ -841,45 +915,14 @@ async def verify_drop_and_complete_route(
 
         logger.info(f"[driver.drop] Booking {booking_id} marked as completed by driver {driver_id}")
 
-        # --- Check if route should be completed ---
-        total_bookings = (
-            db.query(Booking)
-            .join(RouteManagementBooking, RouteManagementBooking.booking_id == Booking.booking_id)
-            .filter(RouteManagementBooking.route_id == route_id)
-            .count()
-        )
-
-        # Bookings still pending (neither completed nor no-show)
-        pending = (
-            db.query(Booking)
-            .join(RouteManagementBooking, RouteManagementBooking.booking_id == Booking.booking_id)
-            .filter(
-                RouteManagementBooking.route_id == route_id,
-                Booking.status.notin_([BookingStatusEnum.COMPLETED, BookingStatusEnum.NO_SHOW]),
-            )
-            .count()
-        )
-
-        # --- Auto-complete route if all bookings are done or no-shows ---
-        route_completed = False
-        if total_bookings > 0 and pending == 0:
-            route.status = RouteManagementStatusEnum.COMPLETED
-            route.updated_at = now
-            if hasattr(route, "actual_end_time"):
-                setattr(route, "actual_end_time", now)
-            db.commit()
-            route_completed = True
-            logger.info(f"[driver.drop] Auto-completed route_id={route_id} (all drops done or no-shows)")
-
         return ResponseWrapper.success(
-            message="Drop verified successfully" if not route_completed else "Drop verified and trip auto-completed",
+            message="Drop verified successfully",
             data={
                 "route_id": route.route_id,
                 "booking_id": booking.booking_id,
                 "booking_status": booking.status.value,
                 "actual_drop_time": rb.actual_drop_time,
                 "route_status": route.status.value,
-                "route_completed": route_completed,
             },
         )
 
@@ -890,4 +933,124 @@ async def verify_drop_and_complete_route(
     except Exception as e:
         db.rollback()
         logger.exception("[driver.drop] Unexpected error")
+        return handle_db_error(e)
+
+
+@router.put("/duty/end", status_code=status.HTTP_200_OK)
+async def end_duty(
+    route_id: int,
+    reason: Optional[str] = Query(None, description="Reason for ending duty"),
+    db: Session = Depends(get_db),
+    ctx=Depends(DriverAuth),
+):
+    """
+    End the driver's duty for a route.
+    - Only allowed for routes assigned to the driver and in ONGOING state.
+    - Marks pending bookings as NO_SHOW (or marks ongoing bookings COMPLETED).
+    - Completes the route and sets actual end time.
+    """
+    try:
+        tenant_id = ctx["tenant_id"]
+        driver_id = ctx["driver_id"]
+        now = get_current_ist_time()
+
+        logger.info(f"[driver.end_duty] tenant={tenant_id}, driver={driver_id}, route={route_id}")
+
+        # --- Validate route ---
+        route = (
+            db.query(RouteManagement)
+            .filter(
+                RouteManagement.route_id == route_id,
+                RouteManagement.tenant_id == tenant_id,
+                RouteManagement.assigned_driver_id == driver_id,
+            )
+            .first()
+        )
+        if not route:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Route not found or not assigned to driver",
+                    error_code="ROUTE_NOT_FOUND",
+                    details={"route_id": route_id, "driver_id": driver_id},
+                ),
+            )
+
+        # Only allow ending a route that is ongoing
+        if route.status != RouteManagementStatusEnum.ONGOING:
+            # Idempotent: if already completed, return success
+            if route.status == RouteManagementStatusEnum.COMPLETED:
+                return ResponseWrapper.success(message="Route already completed", data={"route_id": route.route_id, "route_status": route.status.value})
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Route must be ongoing to end duty",
+                    error_code="INVALID_ROUTE_STATE",
+                    details={"route_status": route.status.value},
+                ),
+            )
+
+        # --- Collect bookings for route and decide their end status ---
+        route_booking_rows = (
+            db.query(RouteManagementBooking, Booking)
+            .join(Booking, RouteManagementBooking.booking_id == Booking.booking_id)
+            .filter(RouteManagementBooking.route_id == route_id)
+            .all()
+        )
+
+        marked_no_show = 0
+        marked_completed = 0
+
+        for rb, booking in route_booking_rows:
+            # Skip canceled and already completed/no-show
+            if booking.status in [BookingStatusEnum.COMPLETED, BookingStatusEnum.NO_SHOW, BookingStatusEnum.CANCELLED]:
+                continue
+
+            if booking.status == BookingStatusEnum.ONGOING:
+                # If the employee was already onboard and it was ongoing, mark as completed
+                booking.status = BookingStatusEnum.COMPLETED
+                booking.updated_at = now
+                marked_completed += 1
+                # record drop time on route booking if attribute exists
+                if hasattr(rb, "actual_drop_time") and not getattr(rb, "actual_drop_time", None):
+                    rb.actual_drop_time = now.strftime("%H:%M")
+            else:
+                # For scheduled/requested bookings that weren't done, mark as no-show
+                booking.status = BookingStatusEnum.NO_SHOW
+                booking.reason = reason or "Driver ended duty"
+                booking.updated_at = now
+                marked_no_show += 1
+                if hasattr(rb, "actual_pick_up_time") and not getattr(rb, "actual_pick_up_time", None):
+                    rb.actual_pick_up_time = now.strftime("%H:%M")
+
+            db.add_all([booking, rb])
+
+        # --- Complete the route ---
+        route.status = RouteManagementStatusEnum.COMPLETED
+        route.updated_at = now
+        if hasattr(route, "actual_end_time"):
+            setattr(route, "actual_end_time", now)
+
+        db.add(route)
+        db.commit()
+
+        logger.info(f"[driver.end_duty] Route {route_id} completed by driver {driver_id}. Marked {marked_completed} completed, {marked_no_show} no-shows.")
+
+        return ResponseWrapper.success(
+            message="Duty ended and route closed",
+            data={
+                "route_id": route_id,
+                "route_status": route.status.value,
+                "marked_completed": marked_completed,
+                "marked_no_show": marked_no_show,
+            },
+        )
+
+    except HTTPException as e:
+        db.rollback()
+        logger.warning(f"[driver.end_duty] HTTP error: {e.detail}")
+        raise handle_http_error(e)
+    except Exception as e:
+        db.rollback()
+        logger.exception("[driver.end_duty] Unexpected error")
         return handle_db_error(e)
