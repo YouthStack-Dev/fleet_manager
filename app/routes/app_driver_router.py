@@ -143,7 +143,9 @@ async def get_driver_trips(
 ):
     """
     Fetch driver trips by status: upcoming | ongoing | completed.
-    Filters by booking_date from the Booking table.
+    Filters by booking_date from the Booking table for `upcoming` and `completed`.
+    For `ongoing`, the endpoint returns all currently ongoing routes assigned to the driver regardless
+    of the booking_date (covers overnight / timezone edge cases where a route started on a different date).
     Unified structure for mobile driver app.
     Derives start time from the earliest actual/estimated pickup in RouteManagementBooking.
     """
@@ -162,7 +164,9 @@ async def get_driver_trips(
             status_enum = RouteManagementStatusEnum.COMPLETED
 
         # --- Fetch all routes for the driver for the given date ---
-        routes = (
+        # For 'ongoing' we intentionally do NOT restrict by booking_date so routes that are ongoing
+        # and started on a different date (edge-cases like overnight or timezone offsets) are still returned.
+        base_query = (
             db.query(RouteManagement)
             .join(RouteManagementBooking, RouteManagementBooking.route_id == RouteManagement.route_id)
             .join(Booking, Booking.booking_id == RouteManagementBooking.booking_id)
@@ -170,11 +174,15 @@ async def get_driver_trips(
                 RouteManagement.tenant_id == tenant_id,
                 RouteManagement.assigned_driver_id == driver_id,
                 RouteManagement.status == status_enum,
-                func.date(Booking.booking_date) == booking_date,
             )
-            .group_by(RouteManagement.route_id)
-            .order_by(RouteManagement.created_at.desc())
-            .all()
+        )
+        if status_filter != "ongoing":
+            base_query = base_query.filter(func.date(Booking.booking_date) == booking_date)
+        else:
+            logger.info(f"[driver.trips] fetching ongoing routes without date filter to cover edge cases (driver_id={driver_id})")
+
+        routes = (
+            base_query.group_by(RouteManagement.route_id).order_by(RouteManagement.created_at.desc()).all()
         )
 
         if not routes:
@@ -187,17 +195,16 @@ async def get_driver_trips(
 
         for route in routes:
             # --- Get all bookings for the route ---
-            rows = (
+            rows_q = (
                 db.query(RouteManagementBooking, Booking, Employee)
                 .join(Booking, RouteManagementBooking.booking_id == Booking.booking_id)
                 .outerjoin(Employee, Booking.employee_id == Employee.employee_id)
-                .filter(
-                    RouteManagementBooking.route_id == route.route_id,
-                    func.date(Booking.booking_date) == booking_date,
-                )
-                .order_by(RouteManagementBooking.order_id)
-                .all()
+                .filter(RouteManagementBooking.route_id == route.route_id)
             )
+            # For 'upcoming' and 'completed' we still restrict rows to the requested booking_date.
+            if status_filter != "ongoing":
+                rows_q = rows_q.filter(func.date(Booking.booking_date) == booking_date)
+            rows = rows_q.order_by(RouteManagementBooking.order_id).all()
 
             if not rows:
                 continue
