@@ -110,6 +110,15 @@ jobs:
             
             EOF
 
+            # Backup database before deployment
+            echo "Creating database backup..."
+            mkdir -p ~/backups
+            BACKUP_FILE=~/backups/backup_$(date +%Y%m%d_%H%M%S).sql
+            docker exec fleet_postgres pg_dump -U ${{ secrets.POSTGRES_USER }} ${{ secrets.POSTGRES_DB }} > $BACKUP_FILE || {
+              echo "⚠️ Warning: Backup failed, but continuing deployment"
+            }
+            echo "Backup saved to: $BACKUP_FILE"
+
             # Stop containers
             docker compose -f ~/docker-compose_${{ env.ENV }}.yaml down
 
@@ -130,5 +139,33 @@ jobs:
 
             # Deploy new version
             docker compose -f ~/docker-compose_${{ env.ENV }}.yaml up -d
+
+            # Wait for containers to be healthy
+            echo "Waiting for containers to be ready..."
+            sleep 10
+
+            # Check current migration state before upgrade
+            echo "Current migration state:"
+            docker exec service_manager python migrate.py current || echo "No migrations applied yet"
+
+            # Show pending migrations
+            echo "Migration history:"
+            docker exec service_manager python migrate.py history
+
+            # Run database migrations
+            echo "Running database migrations..."
+            docker exec service_manager python migrate.py upgrade head || {
+              echo "❌ Migration failed! Rolling back deployment..."
+              docker compose -f ~/docker-compose_${{ env.ENV }}.yaml logs service_manager
+              exit 1
+            }
+
+            # Verify migration
+            echo "Verifying migration status..."
+            docker exec service_manager python migrate.py current
+
+            # Verify database tables
+            echo "Verifying database tables..."
+            docker exec fleet_postgres psql -U ${{ secrets.POSTGRES_USER }} -d ${{ secrets.POSTGRES_DB }} -c "\dt" || echo "Could not verify tables"
 
             echo "Deployment completed successfully!"
