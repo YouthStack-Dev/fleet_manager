@@ -187,6 +187,67 @@ def validate_policy_permissions(existing_policies, user_permissions: set, operat
     
     print(f"DEBUG - Permission validation passed")
 
+
+def serialize_permission(permission) -> str:
+    """Return a string representation for a Permission object: 'module.action'"""
+    try:
+        module = getattr(permission, "module", None)
+        action = getattr(permission, "action", None)
+        if module and action:
+            return f"{module}.{action}"
+        # Fallbacks
+        if hasattr(permission, "name"):
+            return str(permission.name)
+        if hasattr(permission, "permission_name"):
+            return str(permission.permission_name)
+    except Exception:
+        pass
+    return str(permission)
+
+
+def serialize_policy(policy) -> dict:
+    """Serialize a Policy object including its list of permissions."""
+    perms = []
+    try:
+        for p in getattr(policy, "permissions", []) or []:
+            perms.append(serialize_permission(p))
+    except Exception:
+        perms = []
+
+    return {
+        "policy_id": getattr(policy, "policy_id", None),
+        "name": getattr(policy, "name", None),
+        "description": getattr(policy, "description", None),
+        "is_active": getattr(policy, "is_active", None),
+        "is_system_policy": getattr(policy, "is_system_policy", None),
+        "tenant_id": getattr(policy, "tenant_id", None),
+        "created_at": getattr(policy, "created_at", None),
+        "updated_at": getattr(policy, "updated_at", None),
+        "permissions": perms,
+    }
+
+
+def serialize_role(role) -> dict:
+    """Serialize a Role object including its associated policies and each policy's permissions."""
+    policies = []
+    try:
+        for pol in getattr(role, "policies", []) or []:
+            policies.append(serialize_policy(pol))
+    except Exception:
+        policies = []
+
+    return {
+        "role_id": getattr(role, "role_id", None),
+        "name": getattr(role, "name", None),
+        "description": getattr(role, "description", None),
+        "is_active": getattr(role, "is_active", None),
+        "tenant_id": getattr(role, "tenant_id", None),
+        "is_system_role": getattr(role, "is_system_role", None),
+        "created_at": getattr(role, "created_at", None),
+        "updated_at": getattr(role, "updated_at", None),
+        "policies": policies,
+    }
+
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_role(
     role: RoleCreate,
@@ -375,7 +436,7 @@ async def get_role(
             )
     
     return ResponseWrapper.success(
-        data=role,
+        data=serialize_role(role),
         message="Role retrieved successfully"
     )
 
