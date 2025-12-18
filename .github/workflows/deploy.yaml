@@ -114,7 +114,7 @@ jobs:
             echo "Creating database backup..."
             mkdir -p ~/backups
             BACKUP_FILE=~/backups/backup_$(date +%Y%m%d_%H%M%S).sql
-            docker exec fleet_postgres pg_dump -U ${{ secrets.POSTGRES_USER }} ${{ secrets.POSTGRES_DB }} > $BACKUP_FILE || {
+            docker exec fleet_postgres pg_dump -U fleetadmin fleet_db > $BACKUP_FILE || {
               echo "⚠️ Warning: Backup failed, but continuing deployment"
             }
             echo "Backup saved to: $BACKUP_FILE"
@@ -166,6 +166,6 @@ jobs:
 
             # Verify database tables
             echo "Verifying database tables..."
-            docker exec fleet_postgres psql -U ${{ secrets.POSTGRES_USER }} -d ${{ secrets.POSTGRES_DB }} -c "\dt" || echo "Could not verify tables"
+            docker exec fleet_postgres psql -U fleetadmin -d fleet_db -c "\dt" || echo "Could not verify tables"
 
             echo "Deployment completed successfully!"
