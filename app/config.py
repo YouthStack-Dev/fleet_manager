@@ -10,8 +10,8 @@ class Settings(BaseSettings):
     POSTGRES_USER: str = os.getenv("POSTGRES_USER", "fleetadmin")
     POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD", "fleetpass")
     POSTGRES_DB: str = os.getenv("POSTGRES_DB", "fleet_db")
-    PORT: int = int(os.getenv("PORT", "5432"))
-    DATABASE_URL: str = os.getenv("DATABASE_URL", f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{PORT}/{POSTGRES_DB}")
+    POSTGRES_PORT: int = int(os.getenv("POSTGRES_PORT", os.getenv("PORT", "5432")))
+    DATABASE_URL: str = os.getenv("DATABASE_URL", f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}")
     
     # Database connection pool settings
     DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "10"))

@@ -1,0 +1,120 @@
+# Fleet Manager - Database Migration Workflow
+# This workflow runs migration checks on every push
+
+name: Database Migration CI
+
+on:
+  push:
+    branches: [ main, develop, feat-* ]
+    paths:
+      - 'migrations/**'
+      - 'app/models/**'
+      - 'alembic.ini'
+      - '.github/workflows/migration-ci.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'migrations/**'
+      - 'app/models/**'
+      - 'alembic.ini'
+
+jobs:
+  migration-checks:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: fleetadmin
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: fleet_test_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Set environment variables
+      run: |
+        echo "POSTGRES_HOST=localhost" >> $GITHUB_ENV
+        echo "POSTGRES_USER=fleetadmin" >> $GITHUB_ENV
+        echo "POSTGRES_PASSWORD=testpassword" >> $GITHUB_ENV
+        echo "POSTGRES_DB=fleet_test_db" >> $GITHUB_ENV
+        echo "PORT=5432" >> $GITHUB_ENV
+        echo "ENV=development" >> $GITHUB_ENV
+    
+    - name: Run migration validation
+      run: python validate_migrations.py
+    
+    - name: Run migration checks
+      run: python scripts/check_migrations.py
+      continue-on-error: true
+    
+    - name: Check migration history
+      run: alembic history
+    
+    - name: Check current state
+      run: alembic current || echo "No migrations applied yet"
+    
+    - name: Test migration upgrade
+      run: alembic upgrade head
+    
+    - name: Verify database after migration
+      run: |
+        PGPASSWORD=testpassword psql -h localhost -U fleetadmin -d fleet_test_db -c "\dt"
+    
+    - name: Test migration downgrade
+      run: alembic downgrade -1 || echo "No migrations to downgrade"
+    
+    - name: Re-upgrade to test idempotency
+      run: alembic upgrade head
+    
+    - name: Generate migration report
+      run: |
+        echo "## Migration Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Current State" >> $GITHUB_STEP_SUMMARY
+        alembic current >> $GITHUB_STEP_SUMMARY 2>&1 || echo "No migrations applied" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Migration History" >> $GITHUB_STEP_SUMMARY
+        alembic history >> $GITHUB_STEP_SUMMARY 2>&1 || echo "No migration history" >> $GITHUB_STEP_SUMMARY
+
+  security-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Check for sensitive data in migrations
+      run: |
+        echo "Checking for sensitive data patterns..."
+        if grep -r -i "password\|secret\|api_key\|token" migrations/versions/*.py; then
+          echo "⚠️ Warning: Potential sensitive data found in migrations"
+          exit 1
+        else
+          echo "✅ No sensitive data patterns found"
+        fi
+    
+    - name: Verify migration file naming
+      run: |
+        echo "Checking migration file naming conventions..."
+        python scripts/check_migrations.py
