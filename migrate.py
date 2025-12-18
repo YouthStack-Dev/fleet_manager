@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Migration Management Script for Fleet Manager
 Provides easy commands for database migrations
@@ -7,6 +8,11 @@ Provides easy commands for database migrations
 import sys
 import os
 from pathlib import Path
+
+# Fix Windows Unicode encoding
+if sys.platform == 'win32':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 # Add project root to path
 project_root = Path(__file__).parent
