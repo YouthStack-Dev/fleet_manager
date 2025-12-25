@@ -257,14 +257,20 @@ async def create_role(
     """Create a new role with associated policies"""
     print(f"DEBUG - Creating role with policy_ids: {role.policy_ids}")
     print(f"DEBUG - User data: {user_data}")
+    print(f"DEBUG - Role tenant_id: {role.tenant_id}, is_system_role: {role.is_system_role}")
     
     user_permissions = extract_user_permissions(user_data)
     
-    # Validate and resolve tenant_id based on user type
-    if role.tenant_id and not role.is_system_role:
+    # Handle tenant_id based on role type
+    if role.is_system_role:
+        # System roles should NOT have a tenant_id
+        role.tenant_id = None
+        print(f"DEBUG - System role: setting tenant_id to None")
+    else:
+        # Non-system roles MUST have a tenant_id
         resolved_tenant_id = resolve_tenant_id(user_data, role.tenant_id)
-        # Ensure the role uses the validated tenant_id
         role.tenant_id = resolved_tenant_id
+        print(f"DEBUG - Non-system role: resolved tenant_id to {resolved_tenant_id}")
     
     # CRITICAL: Validate policy permissions BEFORE creating role
     if role.policy_ids:
@@ -292,7 +298,10 @@ async def create_role(
         )
     except IntegrityError as e:
         db.rollback()
-        error_msg = str(e.orig)
+        error_msg = str(e.orig) if hasattr(e, 'orig') else str(e)
+        print(f"DEBUG - IntegrityError occurred: {error_msg}")
+        print(f"DEBUG - Full exception: {e}")
+        
         if "uq_role_tenant_name" in error_msg or "duplicate key" in error_msg.lower():
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -306,7 +315,13 @@ async def create_role(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ResponseWrapper.error(
                 message="Failed to create role due to database constraint violation",
-                error_code="DATABASE_CONSTRAINT_VIOLATION"
+                error_code="DATABASE_CONSTRAINT_VIOLATION",
+                details={
+                    "error_message": error_msg,
+                    "role_name": role.name,
+                    "tenant_id": role.tenant_id,
+                    "policy_ids": role.policy_ids
+                }
             )
         )
 
@@ -510,7 +525,9 @@ async def update_role(
         )
     except IntegrityError as e:
         db.rollback()
-        error_msg = str(e.orig)
+        error_msg = str(e.orig) if hasattr(e, 'orig') else str(e)
+        print(f"DEBUG - IntegrityError on update: {error_msg}")
+        
         if "uq_role_tenant_name" in error_msg or "duplicate key" in error_msg.lower():
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -524,7 +541,12 @@ async def update_role(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ResponseWrapper.error(
                 message="Failed to update role due to database constraint violation",
-                error_code="DATABASE_CONSTRAINT_VIOLATION"
+                error_code="DATABASE_CONSTRAINT_VIOLATION",
+                details={
+                    "error_message": error_msg,
+                    "role_id": role_id,
+                    "role_name": role_update.name if role_update.name else role.name
+                }
             )
         )
 

@@ -99,6 +99,43 @@ async def create_vehicle(
                     ),
                 )
 
+        # --- Employee role ---
+        elif user_type == "employee":
+            logger.info(f"[VehicleCreate] Employee creating vehicle for vendor_id={vendor_id} by user_id={user_data.get('user_id')}")
+            if not vendor_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="vendor_id is required for employee users",
+                        error_code="VENDOR_ID_REQUIRED",
+                    ),
+                )
+            
+            # Validate that vendor belongs to employee's tenant
+            token_tenant_id = user_data.get("tenant_id")
+            vendor = vendor_crud.get_by_id(db, vendor_id=vendor_id)
+            if not vendor:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message="Vendor not found",
+                        error_code="VENDOR_NOT_FOUND",
+                    ),
+                )
+            
+            if vendor.tenant_id != token_tenant_id:
+                logger.warning(
+                    f"[VehicleCreate] Employee user_id={user_data.get('user_id')} attempted to create vehicle "
+                    f"for vendor_id={vendor_id} outside their tenant (employee_tenant={token_tenant_id}, vendor_tenant={vendor.tenant_id})"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="You can only create vehicles for vendors in your tenant",
+                        error_code="FORBIDDEN",
+                    ),
+                )
+
         # --- Others blocked ---
         else:
             raise HTTPException(
