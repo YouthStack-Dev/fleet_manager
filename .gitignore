@@ -41,4 +41,22 @@ postgres_data/
 uploads/
 local_storage/
 
+# Firebase credentials
 app/firebase/firebase_key.json
+
+# Migration test results (informational only)
+MIGRATION_TEST_RESULTS.md
+MIGRATION_SETUP_COMPLETE.md
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Database backups
+backups/
+*.sql
+
+# Alembic cache
+migrations/__pycache__/
+migrations/versions/__pycache__/
