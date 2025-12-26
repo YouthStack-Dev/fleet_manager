@@ -466,6 +466,30 @@ async def update_vehicle(
                     detail=ResponseWrapper.error("You don't have permission to update this vehicle", "FORBIDDEN"),
                 )
             vendor_id = int(token_vendor_id)
+        elif user_type == "employee":
+            # Employee can update vehicles from vendors in their tenant
+            token_tenant_id = user_data.get("tenant_id")
+            vehicle_vendor = vendor_crud.get_by_id(db, vendor_id=db_vehicle.vendor_id)
+            if not vehicle_vendor:
+                logger.warning(f"[VehicleUpdate] Vendor not found for vehicle_id={vehicle_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error("Vendor not found", "VENDOR_NOT_FOUND"),
+                )
+            
+            if vehicle_vendor.tenant_id != token_tenant_id:
+                logger.warning(
+                    f"[VehicleUpdate] Employee user_id={user_id} attempted to update vehicle "
+                    f"outside their tenant (employee_tenant={token_tenant_id}, vehicle_tenant={vehicle_vendor.tenant_id})"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        "You can only update vehicles from vendors in your tenant",
+                        "FORBIDDEN"
+                    ),
+                )
+            vendor_id = db_vehicle.vendor_id
         elif user_type in {"admin", "superadmin"}:
             vendor_id = db_vehicle.vendor_id
         else:
@@ -653,15 +677,39 @@ def update_vehicle_status(
             )
 
         # --- Permission check ---
-        if user_type == "vendor" and int(db_vehicle.vendor_id) != token_vendor_id:
-            logger.warning(f"[VehicleStatusUpdate] Unauthorized status change attempt | user_vendor={token_vendor_id}, vehicle_vendor={db_vehicle.vendor_id}")
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=ResponseWrapper.error(
-                    "You don't have permission to update this vehicle", "FORBIDDEN"
-                ),
-            )
-        elif user_type not in {"vendor", "admin", "superadmin"}:
+        if user_type == "vendor":
+            if int(db_vehicle.vendor_id) != token_vendor_id:
+                logger.warning(f"[VehicleStatusUpdate] Unauthorized status change attempt | user_vendor={token_vendor_id}, vehicle_vendor={db_vehicle.vendor_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        "You don't have permission to update this vehicle", "FORBIDDEN"
+                    ),
+                )
+        elif user_type == "employee":
+            # Employee can update vehicles from vendors in their tenant
+            token_tenant_id = user_data.get("tenant_id")
+            vehicle_vendor = vendor_crud.get_by_id(db, vendor_id=db_vehicle.vendor_id)
+            if not vehicle_vendor:
+                logger.warning(f"[VehicleStatusUpdate] Vendor not found for vehicle_id={vehicle_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error("Vendor not found", "VENDOR_NOT_FOUND"),
+                )
+            
+            if vehicle_vendor.tenant_id != token_tenant_id:
+                logger.warning(
+                    f"[VehicleStatusUpdate] Employee user_id={user_id} attempted to update vehicle status "
+                    f"outside their tenant (employee_tenant={token_tenant_id}, vehicle_tenant={vehicle_vendor.tenant_id})"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        "You can only update vehicles from vendors in your tenant",
+                        "FORBIDDEN"
+                    ),
+                )
+        elif user_type not in {"vendor", "employee", "admin", "superadmin"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
