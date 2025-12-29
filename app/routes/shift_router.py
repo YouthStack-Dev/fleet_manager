@@ -11,6 +11,7 @@ from app.crud.tenant import tenant_crud
 from app.utils.pagination import paginate_query
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
+from app.utils import cache_manager
 from app.core.logging_config import get_logger
 from app.utils.audit_helper import log_audit
 
@@ -388,6 +389,10 @@ def update_shift(
 
         db.commit()
         db.refresh(db_shift)
+        
+        # Invalidate shift cache after update
+        cache_manager.invalidate_shift(shift_id, db_shift.tenant_id)
+        logger.info(f"Invalidated cache for shift {shift_id}")
 
         # 🔍 Capture new values after update
         new_values = {

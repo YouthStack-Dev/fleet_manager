@@ -10,7 +10,7 @@ from app.models.vehicle import Vehicle
 from app.models.vendor import Vendor
 from app.models.weekoff_config import WeekoffConfig
 from fastapi import APIRouter, Depends, HTTPException, Path, status, Query,Body
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 from typing import Optional, List
 from datetime import date, datetime, datetime, timedelta, timezone
 from app.database.session import get_db
@@ -19,6 +19,7 @@ from app.schemas.booking import BookingCreate, BookingUpdate, BookingResponse,  
 from app.utils.pagination import paginate_query
 from common_utils.auth.permission_checker import PermissionChecker
 from common_utils import get_current_ist_time
+from app.utils import cache_manager
 from app.schemas.base import BaseResponse, PaginatedResponse
 from app.utils.response_utils import ResponseWrapper, handle_http_error, validate_pagination_params, handle_db_error
 from sqlalchemy.exc import SQLAlchemyError
@@ -26,6 +27,64 @@ from app.core.logging_config import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/bookings", tags=["bookings"])
+
+# Helper functions for cached configuration retrieval
+def get_tenant_cached(db: Session, tenant_id: str) -> Tenant:
+    """Get tenant with caching (1 hour TTL)"""
+    cached_data = cache_manager.get_cached_tenant(tenant_id)
+    if cached_data:
+        # Reconstruct tenant object from cached dict
+        tenant = Tenant(**cached_data)
+        return tenant
+    
+    # Cache miss - query database
+    tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+    if tenant:
+        tenant_dict = {c.name: getattr(tenant, c.name) for c in tenant.__table__.columns}
+        cache_manager.cache_tenant(tenant_id, tenant_dict)
+    return tenant
+
+def get_shift_cached(db: Session, shift_id: int, tenant_id: str) -> Shift:
+    """Get shift with caching (1 hour TTL)"""
+    cached_data = cache_manager.get_cached_shift(shift_id, tenant_id)
+    if cached_data:
+        shift = Shift(**cached_data)
+        return shift
+    
+    # Cache miss - query database
+    shift = db.query(Shift).filter(Shift.shift_id == shift_id, Shift.tenant_id == tenant_id).first()
+    if shift:
+        shift_dict = {c.name: getattr(shift, c.name) for c in shift.__table__.columns}
+        cache_manager.cache_shift(shift_id, tenant_id, shift_dict)
+    return shift
+
+def get_cutoff_cached(db: Session, tenant_id: str) -> Cutoff:
+    """Get cutoff config with caching (1 hour TTL)"""
+    cached_data = cache_manager.get_cached_cutoff(tenant_id)
+    if cached_data:
+        cutoff = Cutoff(**cached_data)
+        return cutoff
+    
+    # Cache miss - query database
+    cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == tenant_id).first()
+    if cutoff:
+        cutoff_dict = {c.name: getattr(cutoff, c.name) for c in cutoff.__table__.columns}
+        cache_manager.cache_cutoff(tenant_id, cutoff_dict)
+    return cutoff
+
+def get_weekoff_cached(db: Session, employee_id: int) -> WeekoffConfig:
+    """Get weekoff config with caching (1 hour TTL)"""
+    cached_data = cache_manager.get_cached_weekoff(employee_id)
+    if cached_data:
+        weekoff = WeekoffConfig(**cached_data)
+        return weekoff
+    
+    # Cache miss - query database
+    weekoff = db.query(WeekoffConfig).filter(WeekoffConfig.employee_id == employee_id).first()
+    if weekoff:
+        weekoff_dict = {c.name: getattr(weekoff, c.name) for c in weekoff.__table__.columns}
+        cache_manager.cache_weekoff(employee_id, weekoff_dict)
+    return weekoff
 
 def booking_validate_future_dates(dates: list[date], context: str = "dates"):
     today = date.today()
@@ -98,34 +157,31 @@ def create_booking(
                 ),
             )
 
-        # --- Shift validation ---
-        shift = (
-            db.query(Shift)
-            .filter(Shift.shift_id == booking.shift_id, Shift.tenant_id == tenant_id)
-            .first()
-        )
+        # --- Shift validation (with caching) ---
+        shift = get_shift_cached(db, booking.shift_id, tenant_id)
         if not shift:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error("Shift not found for this tenant", "SHIFT_NOT_FOUND"),
             )
 
-        # --- Tenant lookup ---
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        # --- Tenant lookup (with caching) ---
+        tenant = get_tenant_cached(db, tenant_id)
         if not tenant:
             raise HTTPException(status_code=404, detail="Tenant not found")
 
-        # --- Weekoff & Cutoff configs ---
-        weekoff_config = db.query(WeekoffConfig).filter(
-            WeekoffConfig.employee_id == employee.employee_id
-        ).first()
-        cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == tenant_id).first()
+        # --- Weekoff & Cutoff configs (with caching) ---
+        weekoff_config = get_weekoff_cached(db, employee.employee_id)
+        cutoff = get_cutoff_cached(db, tenant_id)
 
-        created_bookings = []
+        # Collect booking data for bulk insert
+        bookings_to_create = []
         weekday_map = {0: "monday", 1: "tuesday", 2: "wednesday", 3: "thursday",
                        4: "friday", 5: "saturday", 6: "sunday"}
         booking_validate_future_dates(booking.booking_dates, context="dates")
         unique_dates = sorted(set(booking.booking_dates))
+        
+        # First pass: Validate all dates and collect booking data
         for booking_date in unique_dates:
             
             weekday = booking_date.weekday()
@@ -259,40 +315,53 @@ def create_booking(
                 drop_lat, drop_lng = employee.latitude, employee.longitude
                 drop_addr = employee.address
 
-            # 5️⃣ Create booking object
-            db_booking = Booking(
-                tenant_id=tenant_id,
-                employee_id=employee.employee_id,
-                employee_code=employee.employee_code,
-                team_id=employee.team_id,
-                shift_id=booking.shift_id,
-                booking_date=booking_date,
-                pickup_latitude=pickup_lat,
-                pickup_longitude=pickup_lng,
-                pickup_location=pickup_addr,
-                drop_latitude=drop_lat,
-                drop_longitude=drop_lng,
-                drop_location=drop_addr,
-                status="Request",
-                booking_type=booking.booking_type,
+            # 5️⃣ Collect booking data for bulk insert
+            booking_data = {
+                'tenant_id': tenant_id,
+                'employee_id': employee.employee_id,
+                'employee_code': employee.employee_code,
+                'team_id': employee.team_id,
+                'shift_id': booking.shift_id,
+                'booking_date': booking_date,
+                'pickup_latitude': pickup_lat,
+                'pickup_longitude': pickup_lng,
+                'pickup_location': pickup_addr,
+                'drop_latitude': drop_lat,
+                'drop_longitude': drop_lng,
+                'drop_location': drop_addr,
+                'status': BookingStatusEnum.REQUEST,
+                'booking_type': booking.booking_type,
+            }
+            bookings_to_create.append(booking_data)
+
+        # Bulk insert all bookings in a single operation
+        created_bookings = []
+        if bookings_to_create:
+            db.bulk_insert_mappings(Booking, bookings_to_create)
+            db.commit()
+            
+            # Query back the created bookings to get IDs and return to user
+            created_bookings = (
+                db.query(Booking)
+                .filter(
+                    Booking.employee_id == employee.employee_id,
+                    Booking.shift_id == booking.shift_id,
+                    Booking.booking_date.in_([bd['booking_date'] for bd in bookings_to_create])
+                )
+                .all()
             )
-            db.add(db_booking)
-            db.flush()
-            created_bookings.append(db_booking)
-
-        db.commit()
-        for b in created_bookings:
-            db.refresh(b)
-
-        logger.info(
-            f"Created {len(created_bookings)} bookings for employee_id={employee.employee_id} "
-            f"on dates={[b.booking_date for b in created_bookings]}"
-        )
+            
+            logger.info(
+                f"Bulk created {len(created_bookings)} bookings for employee_id={employee.employee_id} "
+                f"on dates={[b.booking_date for b in created_bookings]}"
+            )
+        else:
+            logger.warning(f"No bookings to create for employee_id={employee.employee_id}")
 
         # Add shift_time to each created booking
         bookings_with_shift = []
-        for booking in created_bookings:
-            booking_dict = BookingResponse.model_validate(booking).dict()
+        for booking_item in created_bookings:
+            booking_dict = BookingResponse.model_validate(booking_item).dict()
             if shift:
                 booking_dict["shift_time"] = shift.shift_time
             bookings_with_shift.append(booking_dict)
@@ -369,8 +438,12 @@ def get_bookings(
             f"date_filter={booking_date}, skip={skip}, limit={limit}"
         )
 
-        # --- Build query ---
-        query = db.query(Booking).filter(Booking.tenant_id == effective_tenant_id)
+        # --- Build query with eager loading to prevent N+1 queries ---
+        query = db.query(Booking).options(
+            joinedload(Booking.employee),
+            joinedload(Booking.shift)
+        ).filter(Booking.tenant_id == effective_tenant_id)
+        
         if booking_date:
             logger.info(f"Applying date filter: {booking_date}")
             query = query.filter(Booking.booking_date == booking_date)
@@ -386,59 +459,46 @@ def get_bookings(
 
         total, items = paginate_query(query, skip, limit)
 
-        # Fetch route data in bulk for efficiency
+        # Fetch route data with eager loading for efficiency (single optimized query)
         booking_ids = [b.booking_id for b in items]
-        route_bookings = db.query(RouteManagementBooking).filter(RouteManagementBooking.booking_id.in_(booking_ids)).all()
+        
+        # Optimized query with all joins to prevent N+1
+        route_bookings = db.query(RouteManagementBooking).options(
+            joinedload(RouteManagementBooking.route)
+            .joinedload(RouteManagement.assigned_vehicle)
+            .joinedload(Vehicle.vehicle_type),
+            joinedload(RouteManagementBooking.route)
+            .joinedload(RouteManagement.assigned_driver),
+            joinedload(RouteManagementBooking.route)
+            .joinedload(RouteManagement.assigned_vendor),
+            joinedload(RouteManagementBooking.route)
+            .joinedload(RouteManagement.shift)
+        ).filter(RouteManagementBooking.booking_id.in_(booking_ids)).all()
+        
         route_ids = list(set(rb.route_id for rb in route_bookings))
-        routes = db.query(RouteManagement).filter(RouteManagement.route_id.in_(route_ids)).all() if route_ids else []
-
-        # Create mappings
         route_dict = {rb.booking_id: rb for rb in route_bookings}
-        route_obj_dict = {r.route_id: r for r in routes}
+        route_obj_dict = {rb.route.route_id: rb.route for rb in route_bookings if rb.route}
 
-        # Fetch related data in bulk
-        vehicle_ids = [r.assigned_vehicle_id for r in routes if r.assigned_vehicle_id]
-        driver_ids = [r.assigned_driver_id for r in routes if r.assigned_driver_id]
-        vendor_ids = [r.assigned_vendor_id for r in routes if r.assigned_vendor_id]
-        vehicles = db.query(Vehicle).filter(Vehicle.vehicle_id.in_(vehicle_ids)).all() if vehicle_ids else []
-        drivers = db.query(Driver).filter(Driver.driver_id.in_(driver_ids)).all() if driver_ids else []
-        vendors = db.query(Vendor).filter(Vendor.vendor_id.in_(vendor_ids)).all() if vendor_ids else []
-        shift_ids = [r.shift_id for r in routes if r.shift_id]
-        shifts_route = db.query(Shift).filter(Shift.shift_id.in_(shift_ids)).all() if shift_ids else []
-
-        # Create dicts
-        vehicle_dict = {v.vehicle_id: v for v in vehicles}
-        driver_dict = {d.driver_id: d for d in drivers}
-        vendor_dict = {v.vendor_id: v for v in vendors}
-        shift_route_dict = {s.shift_id: s for s in shifts_route}
-
-        # Fetch all route bookings for passengers
-        all_route_bookings = db.query(RouteManagementBooking).filter(RouteManagementBooking.route_id.in_(route_ids)).all() if route_ids else []
-        all_booking_ids = list(set(rb.booking_id for rb in all_route_bookings))
-        all_bookings = db.query(Booking).filter(Booking.booking_id.in_(all_booking_ids)).all() if all_booking_ids else []
-        all_employee_ids = list(set(b.employee_id for b in all_bookings))
-        all_employees = db.query(Employee).filter(Employee.employee_id.in_(all_employee_ids)).all() if all_employee_ids else []
-        booking_pass_dict = {b.booking_id: b for b in all_bookings}
-        employee_pass_dict = {e.employee_id: e for e in all_employees}
-
+        # Fetch all route bookings for passengers with eager loading
+        all_route_bookings = db.query(RouteManagementBooking).options(
+            joinedload(RouteManagementBooking.booking)
+            .joinedload(Booking.employee)
+        ).filter(RouteManagementBooking.route_id.in_(route_ids)).all() if route_ids else []
+        
         # Build passengers per route
         route_passengers = {}
-        for r in routes:
+        for route_id in route_ids:
             passengers = []
             for rb in all_route_bookings:
-                if rb.route_id == r.route_id:
-                    booking = booking_pass_dict.get(rb.booking_id)
-                    if booking:
-                        employee = employee_pass_dict.get(booking.employee_id)
-                        if employee:
-                            passengers.append({
-                                "employee_name": employee.name,
-                                "headcount": 1,
-                                "position": rb.order_id,
-                                "booking_status": booking.status.value
-                            })
+                if rb.route_id == route_id and rb.booking and rb.booking.employee:
+                    passengers.append({
+                        "employee_name": rb.booking.employee.name,
+                        "headcount": 1,
+                        "position": rb.order_id,
+                        "booking_status": rb.booking.status.value
+                    })
             passengers.sort(key=lambda x: x['position'])
-            route_passengers[r.route_id] = passengers
+            route_passengers[route_id] = passengers
 
         # Add shift_time and route_details to each booking
         bookings_with_shift = []
@@ -447,66 +507,64 @@ def get_bookings(
             if booking.shift:
                 booking_dict["shift_time"] = booking.shift.shift_time
             
-            # Add route details if booking is routed
+            # Add route details if booking is routed (using eager-loaded data)
             route_booking = route_dict.get(booking.booking_id)
-            if route_booking:
-                route = route_obj_dict.get(route_booking.route_id)
-                if route:
-                    vehicle_details = None
-                    if route.assigned_vehicle_id and route.assigned_vehicle_id in vehicle_dict:
-                        vehicle = vehicle_dict[route.assigned_vehicle_id]
-                        vehicle_details = {
-                            "vehicle_id": vehicle.vehicle_id,
-                            "vehicle_number": vehicle.rc_number,
-                            "vehicle_type": vehicle.vehicle_type.name if vehicle.vehicle_type else None,
-                            "capacity": vehicle.vehicle_type.seats if vehicle.vehicle_type else None,
-                        }
-
-                    driver_details = None
-                    if route.assigned_driver_id and route.assigned_driver_id in driver_dict:
-                        driver = driver_dict[route.assigned_driver_id]
-                        driver_details = {
-                            "driver_id": driver.driver_id,
-                            "driver_name": driver.name,
-                            "driver_phone": driver.phone,
-                            "license_number": driver.license_number,
-                        }
-
-                    vendor_details = None
-                    if route.assigned_vendor_id and route.assigned_vendor_id in vendor_dict:
-                        vendor = vendor_dict[route.assigned_vendor_id]
-                        vendor_details = {
-                            "vendor_id": vendor.vendor_id,
-                            "vendor_name": vendor.name,
-                            "vendor_code": vendor.vendor_code,
-                        }
-
-                    shift_details = None
-                    if route.shift_id and route.shift_id in shift_route_dict:
-                        shift_route = shift_route_dict[route.shift_id]
-                        shift_details = {
-                            "shift_id": shift_route.shift_id,
-                            "shift_time": shift_route.shift_time.strftime("%H:%M:%S") if shift_route.shift_time else None,
-                            "log_type": shift_route.log_type.value if shift_route.log_type else None,
-                        }
-
-                    route_info = {
-                        "route_id": route.route_id,
-                        "route_code": route.route_code,
-                        "status": route.status.value,
-                        "shift_details": shift_details,
-                        "vehicle_details": vehicle_details,
-                        "driver_details": driver_details,
-                        "vendor_details": vendor_details,
-                        "escort_required": route.escort_required,
-                        "estimated_total_time": route.estimated_total_time,
-                        "estimated_total_distance": route.estimated_total_distance,
-                        "actual_total_time": route.actual_total_time,
-                        "actual_total_distance": route.actual_total_distance,
+            if route_booking and route_booking.route:
+                route = route_booking.route
+                
+                vehicle_details = None
+                if route.assigned_vehicle:
+                    vehicle = route.assigned_vehicle
+                    vehicle_details = {
+                        "vehicle_id": vehicle.vehicle_id,
+                        "vehicle_number": vehicle.rc_number,
+                        "vehicle_type": vehicle.vehicle_type.name if vehicle.vehicle_type else None,
+                        "capacity": vehicle.vehicle_type.seats if vehicle.vehicle_type else None,
                     }
-                    booking_dict["route_details"] = route_info
-                else:
-                    booking_dict["route_details"] = None
+
+                driver_details = None
+                if route.assigned_driver:
+                    driver = route.assigned_driver
+                    driver_details = {
+                        "driver_id": driver.driver_id,
+                        "driver_name": driver.name,
+                        "driver_phone": driver.phone,
+                        "license_number": driver.license_number,
+                    }
+
+                vendor_details = None
+                if route.assigned_vendor:
+                    vendor = route.assigned_vendor
+                    vendor_details = {
+                        "vendor_id": vendor.vendor_id,
+                        "vendor_name": vendor.name,
+                        "vendor_code": vendor.vendor_code,
+                    }
+
+                shift_details = None
+                if route.shift:
+                    shift_route = route.shift
+                    shift_details = {
+                        "shift_id": shift_route.shift_id,
+                        "shift_time": shift_route.shift_time.strftime("%H:%M:%S") if shift_route.shift_time else None,
+                        "log_type": shift_route.log_type.value if shift_route.log_type else None,
+                    }
+
+                route_info = {
+                    "route_id": route.route_id,
+                    "route_code": route.route_code,
+                    "status": route.status.value,
+                    "shift_details": shift_details,
+                    "vehicle_details": vehicle_details,
+                    "driver_details": driver_details,
+                    "vendor_details": vendor_details,
+                    "escort_required": route.escort_required,
+                    "estimated_total_time": route.estimated_total_time,
+                    "estimated_total_distance": route.estimated_total_distance,
+                    "actual_total_time": route.actual_total_time,
+                    "actual_total_distance": route.actual_total_distance,
+                }
+                booking_dict["route_details"] = route_info
             else:
                 booking_dict["route_details"] = None
             
@@ -593,62 +651,55 @@ def get_bookings_by_employee(
         # Tenant enforcement for non-admin employees
         if user_type != "admin":
             query = query.filter(Booking.tenant_id == tenant_id)
+        
+        # Add eager loading to prevent N+1 queries
+        query = query.options(
+            joinedload(Booking.employee),
+            joinedload(Booking.shift)
+        )
 
         total, items = paginate_query(query, skip, limit)
 
-        # Fetch route data in bulk for efficiency
+        # Fetch route data with eager loading for efficiency (single optimized query)
         booking_ids = [b.booking_id for b in items]
-        route_bookings = db.query(RouteManagementBooking).filter(RouteManagementBooking.booking_id.in_(booking_ids)).all()
+        
+        # Optimized query with all joins to prevent N+1
+        route_bookings = db.query(RouteManagementBooking).options(
+            joinedload(RouteManagementBooking.route)
+            .joinedload(RouteManagement.assigned_vehicle)
+            .joinedload(Vehicle.vehicle_type),
+            joinedload(RouteManagementBooking.route)
+            .joinedload(RouteManagement.assigned_driver),
+            joinedload(RouteManagementBooking.route)
+            .joinedload(RouteManagement.assigned_vendor),
+            joinedload(RouteManagementBooking.route)
+            .joinedload(RouteManagement.shift)
+        ).filter(RouteManagementBooking.booking_id.in_(booking_ids)).all()
+        
         route_ids = list(set(rb.route_id for rb in route_bookings))
-        routes = db.query(RouteManagement).filter(RouteManagement.route_id.in_(route_ids)).all() if route_ids else []
-
-        # Create mappings
         route_dict = {rb.booking_id: rb for rb in route_bookings}
-        route_obj_dict = {r.route_id: r for r in routes}
+        route_obj_dict = {rb.route.route_id: rb.route for rb in route_bookings if rb.route}
 
-        # Fetch related data in bulk
-        vehicle_ids = [r.assigned_vehicle_id for r in routes if r.assigned_vehicle_id]
-        driver_ids = [r.assigned_driver_id for r in routes if r.assigned_driver_id]
-        vendor_ids = [r.assigned_vendor_id for r in routes if r.assigned_vendor_id]
-        vehicles = db.query(Vehicle).filter(Vehicle.vehicle_id.in_(vehicle_ids)).all() if vehicle_ids else []
-        drivers = db.query(Driver).filter(Driver.driver_id.in_(driver_ids)).all() if driver_ids else []
-        vendors = db.query(Vendor).filter(Vendor.vendor_id.in_(vendor_ids)).all() if vendor_ids else []
-        shift_ids = [r.shift_id for r in routes if r.shift_id]
-        shifts_route = db.query(Shift).filter(Shift.shift_id.in_(shift_ids)).all() if shift_ids else []
-
-        # Create dicts
-        vehicle_dict = {v.vehicle_id: v for v in vehicles}
-        driver_dict = {d.driver_id: d for d in drivers}
-        vendor_dict = {v.vendor_id: v for v in vendors}
-        shift_route_dict = {s.shift_id: s for s in shifts_route}
-
-        # Fetch all route bookings for passengers
-        all_route_bookings = db.query(RouteManagementBooking).filter(RouteManagementBooking.route_id.in_(route_ids)).all() if route_ids else []
-        all_booking_ids = list(set(rb.booking_id for rb in all_route_bookings))
-        all_bookings = db.query(Booking).filter(Booking.booking_id.in_(all_booking_ids)).all() if all_booking_ids else []
-        all_employee_ids = list(set(b.employee_id for b in all_bookings))
-        all_employees = db.query(Employee).filter(Employee.employee_id.in_(all_employee_ids)).all() if all_employee_ids else []
-        booking_pass_dict = {b.booking_id: b for b in all_bookings}
-        employee_pass_dict = {e.employee_id: e for e in all_employees}
-
+        # Fetch all route bookings for passengers with eager loading
+        all_route_bookings = db.query(RouteManagementBooking).options(
+            joinedload(RouteManagementBooking.booking)
+            .joinedload(Booking.employee)
+        ).filter(RouteManagementBooking.route_id.in_(route_ids)).all() if route_ids else []
+        
         # Build passengers per route
         route_passengers = {}
-        for r in routes:
+        for route_id in route_ids:
             passengers = []
             for rb in all_route_bookings:
-                if rb.route_id == r.route_id:
-                    booking = booking_pass_dict.get(rb.booking_id)
-                    if booking:
-                        employee = employee_pass_dict.get(booking.employee_id)
-                        if employee:
-                            passengers.append({
-                                "employee_name": employee.name,
-                                "headcount": 1,
-                                "position": rb.order_id,
-                                "booking_status": booking.status.value
-                            })
+                if rb.route_id == route_id and rb.booking and rb.booking.employee:
+                    passengers.append({
+                        "employee_name": rb.booking.employee.name,
+                        "headcount": 1,
+                        "position": rb.order_id,
+                        "booking_status": rb.booking.status.value
+                    })
             passengers.sort(key=lambda x: x['position'])
-            route_passengers[r.route_id] = passengers
+            route_passengers[route_id] = passengers
 
         # Add shift_time and route_details to each booking
         bookings_with_shift = []
@@ -657,66 +708,64 @@ def get_bookings_by_employee(
             if booking.shift:
                 booking_dict["shift_time"] = booking.shift.shift_time
             
-            # Add route details if booking is routed
+            # Add route details if booking is routed (using eager-loaded data)
             route_booking = route_dict.get(booking.booking_id)
-            if route_booking:
-                route = route_obj_dict.get(route_booking.route_id)
-                if route:
-                    vehicle_details = None
-                    if route.assigned_vehicle_id and route.assigned_vehicle_id in vehicle_dict:
-                        vehicle = vehicle_dict[route.assigned_vehicle_id]
-                        vehicle_details = {
-                            "vehicle_id": vehicle.vehicle_id,
-                            "vehicle_number": vehicle.rc_number,
-                            "vehicle_type": vehicle.vehicle_type.name if vehicle.vehicle_type else None,
-                            "capacity": vehicle.vehicle_type.seats if vehicle.vehicle_type else None,
-                        }
-
-                    driver_details = None
-                    if route.assigned_driver_id and route.assigned_driver_id in driver_dict:
-                        driver = driver_dict[route.assigned_driver_id]
-                        driver_details = {
-                            "driver_id": driver.driver_id,
-                            "driver_name": driver.name,
-                            "driver_phone": driver.phone,
-                            "license_number": driver.license_number,
-                        }
-
-                    vendor_details = None
-                    if route.assigned_vendor_id and route.assigned_vendor_id in vendor_dict:
-                        vendor = vendor_dict[route.assigned_vendor_id]
-                        vendor_details = {
-                            "vendor_id": vendor.vendor_id,
-                            "vendor_name": vendor.name,
-                            "vendor_code": vendor.vendor_code,
-                        }
-
-                    shift_details = None
-                    if route.shift_id and route.shift_id in shift_route_dict:
-                        shift_route = shift_route_dict[route.shift_id]
-                        shift_details = {
-                            "shift_id": shift_route.shift_id,
-                            "shift_time": shift_route.shift_time.strftime("%H:%M:%S") if shift_route.shift_time else None,
-                            "log_type": shift_route.log_type.value if shift_route.log_type else None,
-                        }
-
-                    route_info = {
-                        "route_id": route.route_id,
-                        "route_code": route.route_code,
-                        "status": route.status.value,
-                        "shift_details": shift_details,
-                        "vehicle_details": vehicle_details,
-                        "driver_details": driver_details,
-                        "vendor_details": vendor_details,
-                        "escort_required": route.escort_required,
-                        "estimated_total_time": route.estimated_total_time,
-                        "estimated_total_distance": route.estimated_total_distance,
-                        "actual_total_time": route.actual_total_time,
-                        "actual_total_distance": route.actual_total_distance,
+            if route_booking and route_booking.route:
+                route = route_booking.route
+                
+                vehicle_details = None
+                if route.assigned_vehicle:
+                    vehicle = route.assigned_vehicle
+                    vehicle_details = {
+                        "vehicle_id": vehicle.vehicle_id,
+                        "vehicle_number": vehicle.rc_number,
+                        "vehicle_type": vehicle.vehicle_type.name if vehicle.vehicle_type else None,
+                        "capacity": vehicle.vehicle_type.seats if vehicle.vehicle_type else None,
                     }
-                    booking_dict["route_details"] = route_info
-                else:
-                    booking_dict["route_details"] = None
+
+                driver_details = None
+                if route.assigned_driver:
+                    driver = route.assigned_driver
+                    driver_details = {
+                        "driver_id": driver.driver_id,
+                        "driver_name": driver.name,
+                        "driver_phone": driver.phone,
+                        "license_number": driver.license_number,
+                    }
+
+                vendor_details = None
+                if route.assigned_vendor:
+                    vendor = route.assigned_vendor
+                    vendor_details = {
+                        "vendor_id": vendor.vendor_id,
+                        "vendor_name": vendor.name,
+                        "vendor_code": vendor.vendor_code,
+                    }
+
+                shift_details = None
+                if route.shift:
+                    shift_route = route.shift
+                    shift_details = {
+                        "shift_id": shift_route.shift_id,
+                        "shift_time": shift_route.shift_time.strftime("%H:%M:%S") if shift_route.shift_time else None,
+                        "log_type": shift_route.log_type.value if shift_route.log_type else None,
+                    }
+
+                route_info = {
+                    "route_id": route.route_id,
+                    "route_code": route.route_code,
+                    "status": route.status.value,
+                    "shift_details": shift_details,
+                    "vehicle_details": vehicle_details,
+                    "driver_details": driver_details,
+                    "vendor_details": vendor_details,
+                    "escort_required": route.escort_required,
+                    "estimated_total_time": route.estimated_total_time,
+                    "estimated_total_distance": route.estimated_total_distance,
+                    "actual_total_time": route.actual_total_time,
+                    "actual_total_distance": route.actual_total_distance,
+                }
+                booking_dict["route_details"] = route_info
             else:
                 booking_dict["route_details"] = None
             

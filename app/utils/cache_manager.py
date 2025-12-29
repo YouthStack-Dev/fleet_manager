@@ -185,3 +185,84 @@ def calculate_hit_rate(hits: int, misses: int) -> float:
     """Calculate cache hit rate percentage"""
     total = hits + misses
     return (hits / total * 100) if total > 0 else 0.0
+# ============================================================
+# Static/Slow-Changing Data Caching (Long TTL)
+# ============================================================
+
+def _build_cache_key(entity_type: str, *identifiers) -> str:
+    """
+    Build a cache key from entity type and identifiers
+    
+    Example:
+        _build_cache_key("tenant", "abc123") -> "tenant:abc123"
+        _build_cache_key("shift", "abc123", 5) -> "shift:abc123:5"
+    """
+    parts = [entity_type] + [str(identifier) for identifier in identifiers]
+    return ":".join(parts)
+
+def _cache_entity(entity_type: str, data: dict, ttl: int, *identifiers) -> bool:
+    """Generic cache setter for any entity"""
+    key = _build_cache_key(entity_type, *identifiers)
+    return cache.set(key, data, ttl)
+
+def _get_cached_entity(entity_type: str, *identifiers) -> Optional[dict]:
+    """Generic cache getter for any entity"""
+    key = _build_cache_key(entity_type, *identifiers)
+    return cache.get(key)
+
+def _invalidate_entity(entity_type: str, *identifiers) -> bool:
+    """Generic cache invalidation for any entity"""
+    key = _build_cache_key(entity_type, *identifiers)
+    return cache.delete(key)
+
+# Tenant caching
+def cache_tenant(tenant_id: str, tenant_data: dict, ttl: int = 3600):
+    """Cache tenant data for 1 hour (rarely changes)"""
+    return _cache_entity("tenant", tenant_data, ttl, tenant_id)
+
+def get_cached_tenant(tenant_id: str) -> Optional[dict]:
+    """Get cached tenant data"""
+    return _get_cached_entity("tenant", tenant_id)
+
+def invalidate_tenant(tenant_id: str):
+    """Invalidate tenant cache when data changes"""
+    return _invalidate_entity("tenant", tenant_id)
+
+# Shift caching
+def cache_shift(shift_id: int, tenant_id: str, shift_data: dict, ttl: int = 3600):
+    """Cache shift configuration for 1 hour (rarely changes)"""
+    return _cache_entity("shift", shift_data, ttl, tenant_id, shift_id)
+
+def get_cached_shift(shift_id: int, tenant_id: str) -> Optional[dict]:
+    """Get cached shift configuration"""
+    return _get_cached_entity("shift", tenant_id, shift_id)
+
+def invalidate_shift(shift_id: int, tenant_id: str):
+    """Invalidate shift cache when configuration changes"""
+    return _invalidate_entity("shift", tenant_id, shift_id)
+
+# Cutoff caching
+def cache_cutoff(tenant_id: str, cutoff_data: dict, ttl: int = 3600):
+    """Cache cutoff configuration for 1 hour (rarely changes)"""
+    return _cache_entity("cutoff", cutoff_data, ttl, tenant_id)
+
+def get_cached_cutoff(tenant_id: str) -> Optional[dict]:
+    """Get cached cutoff configuration"""
+    return _get_cached_entity("cutoff", tenant_id)
+
+def invalidate_cutoff(tenant_id: str):
+    """Invalidate cutoff cache when configuration changes"""
+    return _invalidate_entity("cutoff", tenant_id)
+
+# Weekoff caching
+def cache_weekoff(employee_id: int, weekoff_data: dict, ttl: int = 3600):
+    """Cache weekoff configuration for 1 hour (rarely changes)"""
+    return _cache_entity("weekoff", weekoff_data, ttl, employee_id)
+
+def get_cached_weekoff(employee_id: int) -> Optional[dict]:
+    """Get cached weekoff configuration"""
+    return _get_cached_entity("weekoff", employee_id)
+
+def invalidate_weekoff(employee_id: int):
+    """Invalidate weekoff cache when configuration changes"""
+    return _invalidate_entity("weekoff", employee_id)
