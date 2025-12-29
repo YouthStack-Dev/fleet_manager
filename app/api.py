@@ -12,8 +12,7 @@ from app.routes import (
     employee_router,
     shift_router,
     booking_router,
-    route_router,
-    route_booking_router,
+    route_grouping_router,
     weekoff_config_router,
     reports_router,
     audit_log_router,
@@ -37,8 +36,7 @@ api_router.include_router(tenant_router.router, prefix="/api")
 api_router.include_router(employee_router.router, prefix="/api")
 api_router.include_router(shift_router.router, prefix="/api")
 api_router.include_router(booking_router.router, prefix="/api")
-api_router.include_router(route_router.router, prefix="/api")
-api_router.include_router(route_booking_router.router, prefix="/api")
+api_router.include_router(route_grouping_router.router, prefix="/api/v1")
 api_router.include_router(weekoff_config_router.router, prefix="/api")
 api_router.include_router(reports_router.router, prefix="/api")
 api_router.include_router(audit_log_router.router, prefix="/api")
