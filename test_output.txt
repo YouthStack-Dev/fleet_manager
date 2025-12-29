@@ -1,0 +1,26 @@
+﻿C:/projects/fleet_manager/fleet_manager/env/Scripts/python.exe : ImportError while loading 
+conftest 'C:\projects\fleet_manager\fleet_manager\tests\conftest.py'.
+At line:1 char:1
++ C:/projects/fleet_manager/fleet_manager/env/Scripts/python.exe -m pyt ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (ImportError whi...s\conftest.py'.:String) [], Remo 
+   teException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+tests\conftest.py:12: in <module>
+    from main import app
+main.py:21: in <module>
+    from app.routes import (
+app\routes\__init__.py:1: in <module>
+    from app.routes.employee_router import router as employee_router
+app\routes\employee_router.py:2: in <module>
+    from app.core.email_service import get_email_service
+app\core\email_service.py:15: in <module>
+    from app.core.logging_config import get_logger
+app\core\logging_config.py:175: in <module>
+    print(f"\n\033[36m\U0001f504 IMPORTING LOGGING CONFIG\033[0m", file=sys.stdout, flush=True)
+C:\Users\DELL\AppData\Local\Programs\Python\Python313\Lib\encodings\cp1252.py:19: in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   UnicodeEncodeError: 'charmap' codec can't encode character '\U0001f504' in position 7: 
+character maps to <undefined>

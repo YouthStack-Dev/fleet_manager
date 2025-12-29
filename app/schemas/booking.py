@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from datetime import date, datetime, time
 from typing import Optional, List
 from enum import Enum
@@ -13,8 +13,8 @@ class BookingStatusEnum(str, Enum):
     NO_SHOW = "No-Show"
     EXPIRED = "Expired"
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "REQUEST": "Request",
                 "SCHEDULED": "Scheduled",
@@ -25,6 +25,7 @@ class BookingStatusEnum(str, Enum):
                 "EXPIRED": "Expired",
             }
         }
+    )
 
 
 class BookingTypeEnum(str, Enum):
@@ -88,5 +89,4 @@ class BookingResponse(BookingBase):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

@@ -154,8 +154,8 @@ def run_seeder(tenant_id: str, num: int, team_id: Optional[int], api_url: str, t
 async def trigger_booking_seeding(
     background_tasks: BackgroundTasks,
     tenant_id: str = Query(...),
-    from_date: str = Query(..., regex="^\\d{4}-\\d{2}-\\d{2}$"),
-    to_date: str = Query(..., regex="^\\d{4}-\\d{2}-\\d{2}$"),
+    from_date: str = Query(..., pattern="^\\d{4}-\\d{2}-\\d{2}$"),
+    to_date: str = Query(..., pattern="^\\d{4}-\\d{2}-\\d{2}$"),
     shift_id: int = Query(...),
     team_id: Optional[int] = Query(None),
     api_url: str = Query(...),

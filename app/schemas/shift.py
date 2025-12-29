@@ -1,4 +1,4 @@
-from pydantic import BaseModel, field_validator, model_serializer
+from pydantic import BaseModel, field_validator, model_serializer, ConfigDict
 from typing import Optional, List, Any
 from datetime import datetime, time
 from enum import Enum
@@ -78,8 +78,7 @@ class ShiftResponse(ShiftBase):
                 data['shift_time'] = shift_time.strftime("%H:%M")
         return data
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class ShiftPaginationResponse(BaseModel):
     total: int

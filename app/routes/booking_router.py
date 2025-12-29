@@ -462,22 +462,61 @@ def get_bookings(
         # Fetch route data with eager loading for efficiency (single optimized query)
         booking_ids = [b.booking_id for b in items]
         
-        # Optimized query with all joins to prevent N+1
+        # Get route bookings
         route_bookings = db.query(RouteManagementBooking).options(
-            joinedload(RouteManagementBooking.route)
-            .joinedload(RouteManagement.assigned_vehicle)
-            .joinedload(Vehicle.vehicle_type),
-            joinedload(RouteManagementBooking.route)
-            .joinedload(RouteManagement.assigned_driver),
-            joinedload(RouteManagementBooking.route)
-            .joinedload(RouteManagement.assigned_vendor),
-            joinedload(RouteManagementBooking.route)
-            .joinedload(RouteManagement.shift)
+            joinedload(RouteManagementBooking.route_management)
         ).filter(RouteManagementBooking.booking_id.in_(booking_ids)).all()
         
         route_ids = list(set(rb.route_id for rb in route_bookings))
         route_dict = {rb.booking_id: rb for rb in route_bookings}
-        route_obj_dict = {rb.route.route_id: rb.route for rb in route_bookings if rb.route}
+        route_obj_dict = {rb.route_management.route_id: rb.route_management for rb in route_bookings if rb.route_management}
+        
+        # Fetch all related data for routes in batch queries to prevent N+1
+        from app.models.vehicle import Vehicle
+        from app.models.driver import Driver
+        from app.models.vendor import Vendor
+        
+        # Get vehicles with vehicle types
+        vehicles_dict = {}
+        if route_obj_dict:
+            vehicle_ids = [r.assigned_vehicle_id for r in route_obj_dict.values() if r.assigned_vehicle_id]
+            if vehicle_ids:
+                vehicles = db.query(Vehicle).options(
+                    joinedload(Vehicle.vehicle_type)
+                ).filter(Vehicle.vehicle_id.in_(vehicle_ids)).all()
+                vehicles_dict = {v.vehicle_id: v for v in vehicles}
+        
+        # Get drivers
+        drivers_dict = {}
+        if route_obj_dict:
+            driver_ids = [r.assigned_driver_id for r in route_obj_dict.values() if r.assigned_driver_id]
+            if driver_ids:
+                drivers = db.query(Driver).filter(Driver.driver_id.in_(driver_ids)).all()
+                drivers_dict = {d.driver_id: d for d in drivers}
+        
+        # Get vendors
+        vendors_dict = {}
+        if route_obj_dict:
+            vendor_ids = [r.assigned_vendor_id for r in route_obj_dict.values() if r.assigned_vendor_id]
+            if vendor_ids:
+                vendors = db.query(Vendor).filter(Vendor.vendor_id.in_(vendor_ids)).all()
+                vendors_dict = {v.vendor_id: v for v in vendors}
+        
+        # Get shifts (using cached version)
+        shifts_dict = {}
+        if route_obj_dict:
+            shift_ids = [r.shift_id for r in route_obj_dict.values() if r.shift_id]
+            for shift_id in shift_ids:
+                shift_data = get_shift_cached(shift_id, tenant_id or effective_tenant_id)
+                if not shift_data:
+                    shift_obj = db.query(Shift).filter(Shift.shift_id == shift_id).first()
+                    if shift_obj:
+                        cache_manager.cache_shift(shift_id, tenant_id or effective_tenant_id, {
+                            "shift_id": shift_obj.shift_id,
+                            "shift_time": shift_obj.shift_time.strftime("%H:%M:%S") if shift_obj.shift_time else None,
+                            "log_type": shift_obj.log_type.value if shift_obj.log_type else None
+                        })
+                        shifts_dict[shift_id] = shift_obj
 
         # Fetch all route bookings for passengers with eager loading
         all_route_bookings = db.query(RouteManagementBooking).options(
@@ -503,18 +542,18 @@ def get_bookings(
         # Add shift_time and route_details to each booking
         bookings_with_shift = []
         for booking in items:
-            booking_dict = BookingResponse.model_validate(booking, from_attributes=True).dict()
+            booking_dict = BookingResponse.model_validate(booking, from_attributes=True).model_dump()
             if booking.shift:
                 booking_dict["shift_time"] = booking.shift.shift_time
             
             # Add route details if booking is routed (using eager-loaded data)
             route_booking = route_dict.get(booking.booking_id)
-            if route_booking and route_booking.route:
-                route = route_booking.route
+            if route_booking and route_booking.route_management:
+                route = route_booking.route_management
                 
                 vehicle_details = None
-                if route.assigned_vehicle:
-                    vehicle = route.assigned_vehicle
+                if route.assigned_vehicle_id and route.assigned_vehicle_id in vehicles_dict:
+                    vehicle = vehicles_dict[route.assigned_vehicle_id]
                     vehicle_details = {
                         "vehicle_id": vehicle.vehicle_id,
                         "vehicle_number": vehicle.rc_number,
@@ -523,8 +562,8 @@ def get_bookings(
                     }
 
                 driver_details = None
-                if route.assigned_driver:
-                    driver = route.assigned_driver
+                if route.assigned_driver_id and route.assigned_driver_id in drivers_dict:
+                    driver = drivers_dict[route.assigned_driver_id]
                     driver_details = {
                         "driver_id": driver.driver_id,
                         "driver_name": driver.name,
@@ -533,8 +572,8 @@ def get_bookings(
                     }
 
                 vendor_details = None
-                if route.assigned_vendor:
-                    vendor = route.assigned_vendor
+                if route.assigned_vendor_id and route.assigned_vendor_id in vendors_dict:
+                    vendor = vendors_dict[route.assigned_vendor_id]
                     vendor_details = {
                         "vendor_id": vendor.vendor_id,
                         "vendor_name": vendor.name,
@@ -542,9 +581,13 @@ def get_bookings(
                     }
 
                 shift_details = None
-                if route.shift:
-                    shift_route = route.shift
-                    shift_details = {
+                if route.shift_id:
+                    shift_data = get_shift_cached(route.shift_id, tenant_id)
+                    if shift_data:
+                        shift_details = shift_data
+                    elif route.shift_id in shifts_dict:
+                        shift_route = shifts_dict[route.shift_id]
+                        shift_details = {
                         "shift_id": shift_route.shift_id,
                         "shift_time": shift_route.shift_time.strftime("%H:%M:%S") if shift_route.shift_time else None,
                         "log_type": shift_route.log_type.value if shift_route.log_type else None,
@@ -663,22 +706,67 @@ def get_bookings_by_employee(
         # Fetch route data with eager loading for efficiency (single optimized query)
         booking_ids = [b.booking_id for b in items]
         
-        # Optimized query with all joins to prevent N+1
+        # Get route bookings
         route_bookings = db.query(RouteManagementBooking).options(
-            joinedload(RouteManagementBooking.route)
-            .joinedload(RouteManagement.assigned_vehicle)
-            .joinedload(Vehicle.vehicle_type),
-            joinedload(RouteManagementBooking.route)
-            .joinedload(RouteManagement.assigned_driver),
-            joinedload(RouteManagementBooking.route)
-            .joinedload(RouteManagement.assigned_vendor),
-            joinedload(RouteManagementBooking.route)
-            .joinedload(RouteManagement.shift)
+            joinedload(RouteManagementBooking.route_management)
         ).filter(RouteManagementBooking.booking_id.in_(booking_ids)).all()
         
         route_ids = list(set(rb.route_id for rb in route_bookings))
         route_dict = {rb.booking_id: rb for rb in route_bookings}
-        route_obj_dict = {rb.route.route_id: rb.route for rb in route_bookings if rb.route}
+        route_obj_dict = {rb.route_management.route_id: rb.route_management for rb in route_bookings if rb.route_management}
+        
+        # Fetch all related data for routes in batch queries to prevent N+1
+        from app.models.vehicle import Vehicle
+        from app.models.driver import Driver
+        from app.models.vendor import Vendor
+        
+        # Get vehicles with vehicle types
+        vehicles_dict = {}
+        if route_obj_dict:
+            vehicle_ids = [r.assigned_vehicle_id for r in route_obj_dict.values() if r.assigned_vehicle_id]
+            if vehicle_ids:
+                vehicles = db.query(Vehicle).options(
+                    joinedload(Vehicle.vehicle_type)
+                ).filter(Vehicle.vehicle_id.in_(vehicle_ids)).all()
+                vehicles_dict = {v.vehicle_id: v for v in vehicles}
+        
+        # Get drivers
+        drivers_dict = {}
+        if route_obj_dict:
+            driver_ids = [r.assigned_driver_id for r in route_obj_dict.values() if r.assigned_driver_id]
+            if driver_ids:
+                drivers = db.query(Driver).filter(Driver.driver_id.in_(driver_ids)).all()
+                drivers_dict = {d.driver_id: d for d in drivers}
+        
+        # Get vendors
+        vendors_dict = {}
+        if route_obj_dict:
+            vendor_ids = [r.assigned_vendor_id for r in route_obj_dict.values() if r.assigned_vendor_id]
+            if vendor_ids:
+                vendors = db.query(Vendor).filter(Vendor.vendor_id.in_(vendor_ids)).all()
+                vendors_dict = {v.vendor_id: v for v in vendors}
+        
+        # Get shifts (using cached version)
+        shifts_dict = {}
+        if route_obj_dict:
+            shift_ids = [r.shift_id for r in route_obj_dict.values() if r.shift_id]
+            for shift_id in shift_ids:
+                shift_data = get_shift_cached(shift_id, tenant_id)
+                if not shift_data:
+                    shift_obj = db.query(Shift).filter(Shift.shift_id == shift_id).first()
+                    if shift_obj:
+                        cache_manager.cache_shift(shift_id, tenant_id, {
+                            "shift_id": shift_obj.shift_id,
+                            "shift_time": shift_obj.shift_time.strftime("%H:%M:%S") if shift_obj.shift_time else None,
+                            "log_type": shift_obj.log_type.value if shift_obj.log_type else None
+                        })
+                        shifts_dict[shift_id] = shift_obj
+
+        # Fetch all route bookings for passengers with eager loading
+        
+        route_ids = list(set(rb.route_id for rb in route_bookings))
+        route_dict = {rb.booking_id: rb for rb in route_bookings}
+        route_obj_dict = {rb.route_management.route_id: rb.route_management for rb in route_bookings if rb.route_management}
 
         # Fetch all route bookings for passengers with eager loading
         all_route_bookings = db.query(RouteManagementBooking).options(
@@ -704,18 +792,18 @@ def get_bookings_by_employee(
         # Add shift_time and route_details to each booking
         bookings_with_shift = []
         for booking in items:
-            booking_dict = BookingResponse.model_validate(booking, from_attributes=True).dict()
+            booking_dict = BookingResponse.model_validate(booking, from_attributes=True).model_dump()
             if booking.shift:
                 booking_dict["shift_time"] = booking.shift.shift_time
             
             # Add route details if booking is routed (using eager-loaded data)
             route_booking = route_dict.get(booking.booking_id)
-            if route_booking and route_booking.route:
-                route = route_booking.route
+            if route_booking and route_booking.route_management:
+                route = route_booking.route_management
                 
                 vehicle_details = None
-                if route.assigned_vehicle:
-                    vehicle = route.assigned_vehicle
+                if route.assigned_vehicle_id and route.assigned_vehicle_id in vehicles_dict:
+                    vehicle = vehicles_dict[route.assigned_vehicle_id]
                     vehicle_details = {
                         "vehicle_id": vehicle.vehicle_id,
                         "vehicle_number": vehicle.rc_number,
@@ -724,8 +812,8 @@ def get_bookings_by_employee(
                     }
 
                 driver_details = None
-                if route.assigned_driver:
-                    driver = route.assigned_driver
+                if route.assigned_driver_id and route.assigned_driver_id in drivers_dict:
+                    driver = drivers_dict[route.assigned_driver_id]
                     driver_details = {
                         "driver_id": driver.driver_id,
                         "driver_name": driver.name,
@@ -734,8 +822,8 @@ def get_bookings_by_employee(
                     }
 
                 vendor_details = None
-                if route.assigned_vendor:
-                    vendor = route.assigned_vendor
+                if route.assigned_vendor_id and route.assigned_vendor_id in vendors_dict:
+                    vendor = vendors_dict[route.assigned_vendor_id]
                     vendor_details = {
                         "vendor_id": vendor.vendor_id,
                         "vendor_name": vendor.name,
@@ -743,9 +831,13 @@ def get_bookings_by_employee(
                     }
 
                 shift_details = None
-                if route.shift:
-                    shift_route = route.shift
-                    shift_details = {
+                if route.shift_id:
+                    shift_data = get_shift_cached(route.shift_id, tenant_id)
+                    if shift_data:
+                        shift_details = shift_data
+                    elif route.shift_id in shifts_dict:
+                        shift_route = shifts_dict[route.shift_id]
+                        shift_details = {
                         "shift_id": shift_route.shift_id,
                         "shift_time": shift_route.shift_time.strftime("%H:%M:%S") if shift_route.shift_time else None,
                         "log_type": shift_route.log_type.value if shift_route.log_type else None,
@@ -817,7 +909,7 @@ def get_booking_by_id(
                 ),
             )
 
-        booking_dict = BookingResponse.model_validate(booking, from_attributes=True).dict()
+        booking_dict = BookingResponse.model_validate(booking, from_attributes=True).model_dump()
         if booking.shift:
             booking_dict["shift_time"] = booking.shift.shift_time
 
@@ -1044,7 +1136,7 @@ def cancel_booking(
             f"Booking {booking.booking_id} cancelled successfully by employee {employee_id}"
         )
 
-        booking_dict = BookingResponse.model_validate(booking, from_attributes=True).dict()
+        booking_dict = BookingResponse.model_validate(booking, from_attributes=True).model_dump()
         if booking.shift:
             booking_dict["shift_time"] = booking.shift.shift_time
 
@@ -1274,3 +1366,4 @@ async def get_bookings_grouped_by_shift(
                 details={"error": str(e)},
             ),
         )
+

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field, validator, ConfigDict
+from pydantic import BaseModel, EmailStr, Field, validator, field_validator, ConfigDict
 from typing import Optional, List, Dict, Any
 from app.schemas.employee import EmployeeResponse
 import re
@@ -49,7 +49,8 @@ class PasswordChangeRequest(BaseModel):
     current_password: str
     new_password: str
     
-    @validator('new_password')
+    @field_validator('new_password')
+    @classmethod
     def password_strength(cls, v):
         if not re.match(PASSWORD_PATTERN, v):
             raise ValueError(

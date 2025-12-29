@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 from typing import Optional, Dict, List
 import jwt
@@ -35,8 +35,8 @@ def create_access_token(
     # 🚨 remove all None values
     to_encode = {k: v for k, v in to_encode.items() if v is not None}
 
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire, "iat": datetime.utcnow()})
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire, "iat": datetime.now(timezone.utc)})
 
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -46,13 +46,13 @@ def create_refresh_token(
     user_type: str = "generic",
     custom_claims: Optional[Dict] = None,
 ) -> str:
-    expire = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode = {
         "user_id": user_id,
         "token_type": "refresh",
         "user_type": user_type,  # 👈 keep it consistent
         "exp": expire,
-        "iat": datetime.utcnow(),
+        "iat": datetime.now(timezone.utc),
     }
 
     if custom_claims:
