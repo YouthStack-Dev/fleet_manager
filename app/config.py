@@ -1,5 +1,6 @@
 import os
 from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
 
 class Settings(BaseSettings):
     ENV: str = os.getenv("ENV", "development")  # development, dev-server, production
@@ -125,8 +126,9 @@ class Settings(BaseSettings):
     APP_NAME: str = "Fleet Manager"
     APP_VERSION: str = "1.0.0"
     
-    class Config:
-        case_sensitive = True
-        env_file = None
+    model_config = ConfigDict(
+        case_sensitive=True,
+        env_file=None
+    )
 
 settings = Settings()

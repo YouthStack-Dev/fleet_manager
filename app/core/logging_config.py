@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import sys
 import os
 from typing import Optional
@@ -24,9 +24,9 @@ class ColoredFormatter(logging.Formatter):
         
         # Debug color detection with a simple test
         if self.use_colors:
-            print(f"\033[32m🎨 COLORS ENABLED\033[0m - Testing: \033[31mRED\033[0m \033[33mYELLOW\033[0m \033[36mCYAN\033[0m", flush=True)
+            print(f"\033[32mCOLORS ENABLED\033[0m - Testing: \033[31mRED\033[0m \033[33mYELLOW\033[0m \033[36mCYAN\033[0m", flush=True)
         else:
-            print("🎨 COLORS DISABLED", flush=True)
+            print("COLORS DISABLED", flush=True)
         
     def _should_use_colors(self, use_colors: bool) -> bool:
         """Simplified color detection - more aggressive for terminals"""
@@ -37,12 +37,12 @@ class ColoredFormatter(logging.Formatter):
             
         # Force disable colors if explicitly set
         if os.environ.get('NO_COLOR', '').lower() in ('1', 'true', 'yes'):
-            print("🎨 Colors DISABLED via NO_COLOR environment variable", flush=True)
+            print("Colors DISABLED via NO_COLOR environment variable", flush=True)
             return False
         
         # Force enable colors if explicitly set
         if os.environ.get('FORCE_COLOR', '').lower() in ('1', 'true', 'yes'):
-            print("🎨 Colors FORCED via FORCE_COLOR environment variable", flush=True)
+            print("Colors FORCED via FORCE_COLOR environment variable", flush=True)
             return True
             
         # For most terminals and environments, just enable colors
@@ -50,11 +50,11 @@ class ColoredFormatter(logging.Formatter):
         
         # Check if we're in a known non-color environment
         if os.environ.get('TERM') == 'dumb':
-            print("🎨 Colors DISABLED - TERM=dumb", flush=True)
+            print("Colors DISABLED - TERM=dumb", flush=True)
             return False
             
         # Enable colors for all other cases (be optimistic)
-        print("🎨 Colors ENABLED - terminal environment detected", flush=True)
+        print("Colors ENABLED - terminal environment detected", flush=True)
         return True
     
     def format(self, record):
@@ -145,17 +145,17 @@ def setup_logging(
         
         # Print setup message with direct color codes (not through logger yet)
         if formatter.use_colors:
-            print(f"\n\033[32m🚀 LOGGING SETUP: Configured with level {log_level} (numeric: {numeric_level}) - Colors: Enabled\033[0m\n", 
+            print(f"\n\033[32mLOGGING SETUP: Configured with level {log_level} (numeric: {numeric_level}) - Colors: Enabled\033[0m\n", 
                   file=sys.stdout, flush=True)
         else:
-            print(f"\n🚀 LOGGING SETUP: Configured with level {log_level} (numeric: {numeric_level}) - Colors: Disabled\n", 
+            print(f"\nLOGGING SETUP: Configured with level {log_level} (numeric: {numeric_level}) - Colors: Disabled\n", 
                   file=sys.stdout, flush=True)
         
         # Test the logger immediately with different levels to show colors
-        root_logger.debug("🔧 Debug logging is enabled")
-        root_logger.info("✅ Root logger configured successfully")
-        root_logger.warning("⚠️  Warning level logging is active")
-        root_logger.error("❌ Error level logging test (this is just a test)")
+        root_logger.debug("Debug logging is enabled")
+        root_logger.info("Root logger configured successfully")
+        root_logger.warning("Warning level logging is active")
+        root_logger.error("Error level logging test (this is just a test)")
 
 def get_logger(name: str) -> logging.Logger:
     """
@@ -167,13 +167,15 @@ def get_logger(name: str) -> logging.Logger:
     logger.propagate = True
     
     # Test log immediately with direct color output
-    print(f"\033[94m📝 LOGGER CREATED: {name}\033[0m\n", file=sys.stdout, flush=True)
+    print(f"\033[94mLOGGER CREATED: {name}\033[0m\n", file=sys.stdout, flush=True)
     
     return logger
 
 # Test colors immediately when module loads
-print(f"\n\033[36m🔄 IMPORTING LOGGING CONFIG\033[0m", file=sys.stdout, flush=True)
+print(f"\n\033[36mIMPORTING LOGGING CONFIG\033[0m", file=sys.stdout, flush=True)
 print(f"Color test: \033[32mGREEN\033[0m \033[33mYELLOW\033[0m \033[31mRED\033[0m \033[36mCYAN\033[0m", flush=True)
 
 setup_logging(force_configure=True)
-print(f"\033[32m✅ LOGGING CONFIG IMPORTED\033[0m\n", file=sys.stdout, flush=True)
+print(f"\033[32mLOGGING CONFIG IMPORTED\033[0m\n", file=sys.stdout, flush=True)
+
+

@@ -1,7 +1,7 @@
 from typing import Any, Dict, Generic, List, Optional, TypeVar
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field, ConfigDict
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Generic type for data payload
 DataType = TypeVar('DataType')
@@ -13,13 +13,9 @@ class BaseResponse(BaseModel, Generic[DataType]):
     success: bool = Field(True, description="Indicates if the request was successful")
     message: str = Field("Success", description="Human readable message")
     data: Optional[DataType] = Field(None, description="Response data payload")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Response timestamp")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Response timestamp")
     
-    model_config = ConfigDict(
-        json_encoders={
-            datetime: lambda v: v.isoformat()
-        }
-    )
+    model_config = ConfigDict()
 
 class ErrorResponse(BaseModel):
     """
@@ -29,13 +25,9 @@ class ErrorResponse(BaseModel):
     message: str = Field(..., description="Error message")
     error_code: Optional[str] = Field(None, description="Specific error code")
     details: Optional[Dict[str, Any]] = Field(None, description="Additional error details")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Error timestamp")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Error timestamp")
     
-    model_config = ConfigDict(
-        json_encoders={
-            datetime: lambda v: v.isoformat()
-        }
-    )
+    model_config = ConfigDict()
 
 class PaginationMeta(BaseModel):
     """
@@ -56,13 +48,9 @@ class PaginatedResponse(BaseModel, Generic[DataType]):
     message: str = Field("Success", description="Human readable message")
     data: List[DataType] = Field(..., description="List of items")
     meta: PaginationMeta = Field(..., description="Pagination metadata")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Response timestamp")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Response timestamp")
     
-    model_config = ConfigDict(
-        json_encoders={
-            datetime: lambda v: v.isoformat()
-        }
-    )
+    model_config = ConfigDict()
 
 class SuccessResponse(BaseModel):
     """
@@ -70,13 +58,9 @@ class SuccessResponse(BaseModel):
     """
     success: bool = Field(True, description="Indicates if the request was successful")
     message: str = Field("Operation completed successfully", description="Success message")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Response timestamp")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Response timestamp")
     
-    model_config = ConfigDict(
-        json_encoders={
-            datetime: lambda v: v.isoformat()
-        }
-    )
+    model_config = ConfigDict()
 
 # Utility functions for creating consistent responses
 def create_success_response(data: Any = None, message: str = "Success") -> Dict[str, Any]:
@@ -85,7 +69,7 @@ def create_success_response(data: Any = None, message: str = "Success") -> Dict[
         "success": True,
         "message": message,
         "data": data,
-        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     }
 
 def create_error_response(message: str, error_code: Optional[str] = None, details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -95,7 +79,7 @@ def create_error_response(message: str, error_code: Optional[str] = None, detail
         "message": message,
         "error_code": error_code,
         "details": details,
-        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     }
 
 def create_paginated_response(
@@ -120,5 +104,5 @@ def create_paginated_response(
             "has_next": page < total_pages,
             "has_prev": page > 1
         },
-        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     }

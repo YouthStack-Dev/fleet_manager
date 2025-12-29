@@ -18,6 +18,7 @@ from app.schemas.team import TeamCreate, TeamUpdate, TeamResponse, TeamPaginatio
 from app.utils.pagination import paginate_query
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_db_error, handle_http_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
+from app.utils import cache_manager
 from app.core.logging_config import get_logger
 from app.core.email_service import get_email_service
 
@@ -77,7 +78,7 @@ def create_tenant(
     * `409 Conflict`: Tenant with the same ID or name already exists.
     * `500 Internal Server Error`: Unexpected server error while creating tenant.
     """
-    logger.info(f"Create tenant request received: {tenant.dict()}")
+    logger.info(f"Create tenant request received: {tenant.model_dump()}")
 
     try:
         # --- Restrict access ---
@@ -90,7 +91,11 @@ def create_tenant(
                 ),
             )
 
-        with db.begin():  # Ensures atomic commit/rollback
+        # Check if transaction is already active (e.g., in tests)
+        # If active, skip creating a new transaction context
+        use_explicit_transaction = not db.in_transaction()
+        
+        def perform_tenant_creation():
             # --- Check duplicates ---
             if tenant_crud.get_by_id(db, tenant_id=tenant.tenant_id):
                 logger.warning(f"Tenant creation failed - duplicate id: {tenant.tenant_id}")
@@ -240,6 +245,18 @@ def create_tenant(
                 f"Employee created for tenant {new_tenant.tenant_id}: "
                 f"{new_employee.name} ({new_employee.email})"
             )
+            
+            return new_tenant, default_team, admin_role, admin_policy, new_employee, employee_name, employee_email
+        
+        # Execute the tenant creation logic
+        if use_explicit_transaction:
+            with db.begin():
+                new_tenant, default_team, admin_role, admin_policy, new_employee, employee_name, employee_email = perform_tenant_creation()
+        else:
+            # Already in transaction (e.g., in tests), just execute directly
+            new_tenant, default_team, admin_role, admin_policy, new_employee, employee_name, employee_email = perform_tenant_creation()
+            # Commit within the existing transaction
+            db.commit()
 
         # --- Send Welcome Emails via Background Task ---
         background_tasks.add_task(
@@ -541,7 +558,7 @@ def update_tenant(
                 ),
             )
 
-        update_data = tenant_update.dict(exclude_unset=True)
+        update_data = tenant_update.model_dump(exclude_unset=True)
 
         # --- Handle tenant field updates ---
         tenant_fields = {k: v for k, v in update_data.items() if k != "permission_ids"}
@@ -599,6 +616,10 @@ def update_tenant(
 
         db.commit()
         db.refresh(db_tenant)
+        
+        # Invalidate tenant cache after update
+        cache_manager.invalidate_tenant(tenant_id)
+        logger.info(f"Invalidated cache for tenant {tenant_id}")
 
         # --- ALWAYS fetch the admin policy for the response (no logic change) ---
         admin_policy = (

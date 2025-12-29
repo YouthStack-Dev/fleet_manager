@@ -248,7 +248,7 @@ async def start_duty(
 
 @router.get("/trips", status_code=status.HTTP_200_OK)
 async def get_driver_trips(
-    status_filter: str = Query(..., regex="^(upcoming|ongoing|completed)$", description="Trip status filter"),
+    status_filter: str = Query(..., pattern="^(upcoming|ongoing|completed)$", description="Trip status filter"),
     booking_date: date = Query(default=date.today(), description="Filter trips by booking date (YYYY-MM-DD)"),
     db: Session = Depends(get_db),
     ctx=Depends(DriverAuth),
