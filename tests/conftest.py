@@ -598,6 +598,28 @@ def employee_user(test_db, seed_permissions):
 
 
 @pytest.fixture(scope="function")
+def test_role(test_db):
+    """
+    Create a test Driver role for driver tests.
+    """
+    # Check if Driver role already exists
+    driver_role = test_db.query(Role).filter(Role.name == "Driver", Role.is_system_role == True).first()
+    if not driver_role:
+        driver_role = Role(
+            tenant_id=None,
+            name="Driver",
+            description="System Driver Role",
+            is_system_role=True,
+            is_active=True
+        )
+        test_db.add(driver_role)
+        test_db.commit()
+        test_db.refresh(driver_role)
+    
+    return driver_role
+
+
+@pytest.fixture(scope="function")
 def admin_token(admin_user):
     """
     Generate JWT token for admin user.
