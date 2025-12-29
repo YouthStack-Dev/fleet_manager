@@ -26,6 +26,8 @@ from app.core.logging_config import get_logger, setup_logging
 from app.utils.response_utils import ResponseWrapper, handle_db_error
 from app.utils.audit_helper import log_audit
 from app.utils.cache_manager import cached
+from app.utils.task_manager import run_background_task
+from common_utils import datetime_to_minutes, get_current_ist_time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -450,7 +452,7 @@ async def create_routes(
         )
 
 @router.get("/", status_code=status.HTTP_200_OK)
-@cached(ttl_seconds=180, key_prefix="routes")  # Cache for 3 minutes
+# @cached(ttl_seconds=180, key_prefix="routes")  # Cache for 3 minutes
 async def get_all_routes(
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     shift_id: Optional[int] = Query(None, description="Filter by shift ID"),
@@ -680,7 +682,7 @@ async def get_all_routes(
         return handle_db_error(e)
 
 @router.get("/unrouted", status_code=status.HTTP_200_OK)
-@cached(ttl_seconds=120, key_prefix="unrouted")  # Cache for 2 minutes
+# @cached(ttl_seconds=120, key_prefix="unrouted")  # Cache for 2 minutes
 async def get_unrouted_bookings(
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     shift_id: int = Query(..., description="Filter by shift ID"),
@@ -1082,17 +1084,24 @@ async def assign_vehicle_to_route(
         cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == tenant_id).first()
         tenant_config = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
         # Check if escort is assigned to this route AND route requires escort
-        escort_enabled = route.assigned_escort_id 
+        escort_enabled = route.assigned_escort_id
         route_bookings = db.query(RouteManagementBooking).filter(RouteManagementBooking.route_id == route.route_id).all()
+
+        logger.info(f"[assign_vehicle_to_route] Starting OTP generation for route {route_id} with {len(route_bookings)} bookings")
+
         for rb in route_bookings:
             booking = db.query(Booking).filter(Booking.booking_id == rb.booking_id).first()
             # Recalculate OTP count and purposes at assignment time
             shift = db.query(Shift).filter(Shift.shift_id == booking.shift_id).first()
             required_otp_count = get_required_otp_count(booking.booking_type, shift.log_type.value if shift else "IN", tenant_config, escort_enabled)
-            
+
+            logger.info(f"[assign_vehicle_to_route] Booking {rb.booking_id}: shift_type={shift.log_type.value if shift else 'IN'}, escort_enabled={bool(escort_enabled)}, required_otp_count={required_otp_count}")
+
             # Generate OTPs based on required count
             otp_codes = generate_otp_codes(required_otp_count)
-            
+
+            logger.info(f"[assign_vehicle_to_route] Generated {len(otp_codes)} OTP codes for booking {rb.booking_id}: {otp_codes}")
+
             # Determine which OTP fields to assign based on configuration
             required_otps = []
 
@@ -1112,6 +1121,8 @@ async def assign_vehicle_to_route(
             if escort_enabled:
                 required_otps.append('escort')
 
+            logger.info(f"[assign_vehicle_to_route] Required OTP types for booking {rb.booking_id}: {required_otps}")
+
             # Assign OTP codes to required fields in order
             assignments = {}
             for i, otp_type in enumerate(required_otps):
@@ -1119,6 +1130,8 @@ async def assign_vehicle_to_route(
                     assignments[otp_type] = otp_codes[i]
                 else:
                     assignments[otp_type] = None
+
+            logger.info(f"[assign_vehicle_to_route] OTP assignments for booking {rb.booking_id}: {assignments}")
 
             # Set all fields (None for not required)
             db.query(Booking).filter(Booking.booking_id == rb.booking_id).update(
@@ -1129,7 +1142,10 @@ async def assign_vehicle_to_route(
                 },
                 synchronize_session=False
             )
+
         db.commit()
+
+        logger.info(f"[assign_vehicle_to_route] OTP generation completed for route {route_id}")
 
         logger.info(
             f"[assign_vehicle_to_route] Vehicle={vehicle_id} (Driver={driver.driver_id}) assigned to Route={route_id} (Tenant={tenant_id})"
@@ -2538,7 +2554,7 @@ async def assign_escort_to_route(
         # ---- Assign escort to route ----
         old_escort_id = route.assigned_escort_id
         route.assigned_escort_id = escort_id
-        route.updated_at = datetime.utcnow()
+        route.updated_at = get_current_ist_time()
 
         db.commit()
 

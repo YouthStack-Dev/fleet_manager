@@ -35,6 +35,7 @@ from app.routes import (
     weekoff_config_router,
     reports_router,
     app_driver_router,
+    app_employee_router,
     audit_log_router,
     route_grouping,  # Keep for backward compatibility
     grouping,        # Add new grouping router
@@ -100,6 +101,7 @@ app.add_middleware(
 app.include_router(audit_log_router, prefix="/api/v1")
 app.include_router(reports_router, prefix="/api/v1")
 app.include_router(app_driver_router, prefix="/api/v1")
+app.include_router(app_employee_router, prefix="/api/v1")
 app.include_router(seed_router, prefix="/api/v1")
 app.include_router(employee_router, prefix="/api/v1")
 app.include_router(driver_router, prefix="/api/v1")

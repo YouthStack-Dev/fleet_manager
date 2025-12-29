@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from typing import List, Optional
 from app.database.session import get_db
 from app.models.iam import Role, Policy
@@ -8,11 +9,69 @@ from app.schemas.iam import (
 )
 from app.crud.iam import role_crud, policy_crud
 from common_utils.auth.permission_checker import PermissionChecker
+from app.utils.response_utils import ResponseWrapper
 
 router = APIRouter(
     prefix="/roles",
     tags=["IAM Roles"]
 )
+
+def resolve_tenant_id(user_data: dict, tenant_id_from_request: Optional[str] = None) -> str:
+    """
+    Resolve tenant_id based on user type.
+    
+    Args:
+        user_data: User data from token
+        tenant_id_from_request: tenant_id from request body/payload (for admin users)
+    
+    Returns:
+        Resolved tenant_id
+        
+    Raises:
+        HTTPException: If tenant_id cannot be resolved
+    """
+    user_type = user_data.get("user_type")
+    
+    if user_type in ["employee", "vendor"]:
+        resolved_tenant_id = user_data.get("tenant_id")
+        if not resolved_tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant ID missing in token",
+                    error_code="TENANT_ID_REQUIRED"
+                )
+            )
+        # Employee/vendor can only create for their own tenant
+        if tenant_id_from_request and str(tenant_id_from_request) != str(resolved_tenant_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You can only create roles for your own tenant",
+                    error_code="UNAUTHORIZED_TENANT_ACCESS"
+                )
+            )
+    elif user_type == "admin":
+        if tenant_id_from_request:
+            resolved_tenant_id = tenant_id_from_request
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Tenant ID is required in request for admin",
+                    error_code="TENANT_ID_REQUIRED"
+                )
+            )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ResponseWrapper.error(
+                message="Unauthorized user type for this operation",
+                error_code="UNAUTHORIZED_USER_TYPE"
+            )
+        )
+    
+    return resolved_tenant_id
 
 def extract_user_permissions(user_data) -> set:
     """Extract permission names from user_data"""
@@ -114,13 +173,82 @@ def validate_policy_permissions(existing_policies, user_permissions: set, operat
     if missing_permissions:
         print(f"DEBUG - Missing permissions: {sorted(missing_permissions)}")
         raise HTTPException(
-            status_code=403, 
-            detail=f"Access denied: Cannot assign policies with permissions you don't have: {', '.join(sorted(missing_permissions))}"
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ResponseWrapper.error(
+                message="Access denied: Cannot assign policies with permissions you don't have",
+                error_code="INSUFFICIENT_PERMISSIONS",
+                details={
+                    "missing_permissions": sorted(missing_permissions),
+                    "required_permissions": sorted(policy_permissions),
+                    "user_permissions": sorted(user_permissions)
+                }
+            )
         )
     
     print(f"DEBUG - Permission validation passed")
 
-@router.post("/", response_model=RoleResponse, status_code=status.HTTP_201_CREATED)
+
+def serialize_permission(permission) -> str:
+    """Return a string representation for a Permission object: 'module.action'"""
+    try:
+        module = getattr(permission, "module", None)
+        action = getattr(permission, "action", None)
+        if module and action:
+            return f"{module}.{action}"
+        # Fallbacks
+        if hasattr(permission, "name"):
+            return str(permission.name)
+        if hasattr(permission, "permission_name"):
+            return str(permission.permission_name)
+    except Exception:
+        pass
+    return str(permission)
+
+
+def serialize_policy(policy) -> dict:
+    """Serialize a Policy object including its list of permissions."""
+    perms = []
+    try:
+        for p in getattr(policy, "permissions", []) or []:
+            perms.append(serialize_permission(p))
+    except Exception:
+        perms = []
+
+    return {
+        "policy_id": getattr(policy, "policy_id", None),
+        "name": getattr(policy, "name", None),
+        "description": getattr(policy, "description", None),
+        "is_active": getattr(policy, "is_active", None),
+        "is_system_policy": getattr(policy, "is_system_policy", None),
+        "tenant_id": getattr(policy, "tenant_id", None),
+        "created_at": getattr(policy, "created_at", None),
+        "updated_at": getattr(policy, "updated_at", None),
+        "permissions": perms,
+    }
+
+
+def serialize_role(role) -> dict:
+    """Serialize a Role object including its associated policies and each policy's permissions."""
+    policies = []
+    try:
+        for pol in getattr(role, "policies", []) or []:
+            policies.append(serialize_policy(pol))
+    except Exception:
+        policies = []
+
+    return {
+        "role_id": getattr(role, "role_id", None),
+        "name": getattr(role, "name", None),
+        "description": getattr(role, "description", None),
+        "is_active": getattr(role, "is_active", None),
+        "tenant_id": getattr(role, "tenant_id", None),
+        "is_system_role": getattr(role, "is_system_role", None),
+        "created_at": getattr(role, "created_at", None),
+        "updated_at": getattr(role, "updated_at", None),
+        "policies": policies,
+    }
+
+@router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_role(
     role: RoleCreate,
     db: Session = Depends(get_db),
@@ -129,13 +257,20 @@ async def create_role(
     """Create a new role with associated policies"""
     print(f"DEBUG - Creating role with policy_ids: {role.policy_ids}")
     print(f"DEBUG - User data: {user_data}")
+    print(f"DEBUG - Role tenant_id: {role.tenant_id}, is_system_role: {role.is_system_role}")
     
     user_permissions = extract_user_permissions(user_data)
     
-    # If tenant-specific role, validate tenant access
-    if role.tenant_id and not role.is_system_role:
-        if int(role.tenant_id) != int(user_data.get("tenant_id", 0)) and "admin.create" not in user_permissions:
-            raise HTTPException(status_code=403, detail="Not authorized to create roles for this tenant")
+    # Handle tenant_id based on role type
+    if role.is_system_role:
+        # System roles should NOT have a tenant_id
+        role.tenant_id = None
+        print(f"DEBUG - System role: setting tenant_id to None")
+    else:
+        # Non-system roles MUST have a tenant_id
+        resolved_tenant_id = resolve_tenant_id(user_data, role.tenant_id)
+        role.tenant_id = resolved_tenant_id
+        print(f"DEBUG - Non-system role: resolved tenant_id to {resolved_tenant_id}")
     
     # CRITICAL: Validate policy permissions BEFORE creating role
     if role.policy_ids:
@@ -143,14 +278,54 @@ async def create_role(
             Policy.policy_id.in_(role.policy_ids)
         ).all()
         if len(existing_policies) != len(role.policy_ids):
-            raise HTTPException(status_code=400, detail="One or more policy IDs are invalid")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="One or more policy IDs are invalid",
+                    error_code="INVALID_POLICY_IDS",
+                    details={"requested_policy_ids": role.policy_ids}
+                )
+            )
         
         # This should block if user doesn't have the required permissions
         validate_policy_permissions(existing_policies, user_permissions, "create")
     
-    return role_crud.create_with_policies(db=db, obj_in=role)
+    try:
+        created_role = role_crud.create_with_policies(db=db, obj_in=role)
+        return ResponseWrapper.success(
+            data=created_role,
+            message="Role created successfully"
+        )
+    except IntegrityError as e:
+        db.rollback()
+        error_msg = str(e.orig) if hasattr(e, 'orig') else str(e)
+        print(f"DEBUG - IntegrityError occurred: {error_msg}")
+        print(f"DEBUG - Full exception: {e}")
+        
+        if "uq_role_tenant_name" in error_msg or "duplicate key" in error_msg.lower():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=ResponseWrapper.error(
+                    message=f"Role with name '{role.name}' already exists for this tenant",
+                    error_code="DUPLICATE_ROLE_NAME",
+                    details={"role_name": role.name, "tenant_id": role.tenant_id}
+                )
+            )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ResponseWrapper.error(
+                message="Failed to create role due to database constraint violation",
+                error_code="DATABASE_CONSTRAINT_VIOLATION",
+                details={
+                    "error_message": error_msg,
+                    "role_name": role.name,
+                    "tenant_id": role.tenant_id,
+                    "policy_ids": role.policy_ids
+                }
+            )
+        )
 
-@router.get("/", response_model=RolePaginationResponse)
+@router.get("/")
 async def get_roles(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=100),
@@ -160,31 +335,92 @@ async def get_roles(
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["role.read"], check_tenant=True))
 ):
-    """Get a list of roles with optional filters"""
+    """
+    Get a list of roles with optional filters.
+    
+    Rules:
+    - Admin: Must provide tenant_id as query parameter
+    - Employee/Vendor: tenant_id taken from token
+    - All users get system roles (is_system_role=true) + their tenant-specific roles
+    """
     filters = {}
     if name:
         filters["name"] = name
     if is_system_role is not None:
         filters["is_system_role"] = is_system_role
     
-    # Handle tenant filtering based on user permissions
-    has_admin_perm = any("admin.read" in p for p in user_data.get("permissions", []))
+    user_type = user_data.get("user_type")
     
-    if tenant_id:
-        # Only allow if it's the user's tenant or they have admin permission
-        if int(tenant_id) != int(user_data.get("tenant_id", 0)) and not has_admin_perm:
-            raise HTTPException(status_code=403, detail="Not authorized to view roles for this tenant")
-        filters["tenant_id"] = tenant_id
-    elif not has_admin_perm:
-        # Regular users can only see their tenant's roles and system roles
-        filters["tenant_id"] = [None, user_data.get("tenant_id")]
-        
-    roles = role_crud.get_multi(db, skip=skip, limit=limit, filters=filters)
-    total = role_crud.count(db, filters=filters)
+    # Admin must provide tenant_id
+    if user_type == "admin":
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Tenant ID is required as query parameter for admin",
+                    error_code="TENANT_ID_REQUIRED"
+                )
+            )
+        # Admin can view any tenant's roles
+        resolved_tenant_id = tenant_id
+    elif user_type in ["employee", "vendor"]:
+        # Employee/vendor use their token tenant_id
+        resolved_tenant_id = user_data.get("tenant_id")
+        if not resolved_tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant ID missing in token",
+                    error_code="TENANT_ID_REQUIRED"
+                )
+            )
+        # Employee/vendor cannot request other tenants
+        if tenant_id and str(tenant_id) != str(resolved_tenant_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You can only view roles for your own tenant",
+                    error_code="UNAUTHORIZED_TENANT_ACCESS"
+                )
+            )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ResponseWrapper.error(
+                message="Unauthorized user type for this operation",
+                error_code="UNAUTHORIZED_USER_TYPE"
+            )
+        )
     
-    return {"total": total, "items": roles}
+    # Include system roles (tenant_id=null) + tenant-specific roles
+    # Query system roles separately to ensure they're included
+    from sqlalchemy import or_
+    
+    base_query = db.query(Role).filter(
+        or_(
+            Role.is_system_role == True,  # System roles (tenant_id should be null)
+            Role.tenant_id == resolved_tenant_id  # Tenant-specific roles
+        )
+    )
+    
+    # Apply other filters
+    if name:
+        base_query = base_query.filter(Role.name.ilike(f"%{name}%"))
+    if is_system_role is not None:
+        base_query = base_query.filter(Role.is_system_role == is_system_role)
+    
+    # Get total count
+    total = base_query.count()
+    
+    # Apply pagination
+    roles = base_query.offset(skip).limit(limit).all()
+    
+    return ResponseWrapper.success(
+        data={"total": total, "items": roles},
+        message="Roles retrieved successfully"
+    )
 
-@router.get("/{role_id}", response_model=RoleResponse)
+@router.get("/{role_id}")
 async def get_role(
     role_id: int,
     db: Session = Depends(get_db),
@@ -193,17 +429,33 @@ async def get_role(
     """Get a specific role by ID"""
     role = role_crud.get(db, id=role_id)
     if not role:
-        raise HTTPException(status_code=404, detail="Role not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ResponseWrapper.error(
+                message="Role not found",
+                error_code="ROLE_NOT_FOUND",
+                details={"role_id": role_id}
+            )
+        )
     
     # Check tenant access for non-system roles
     if role.tenant_id and not role.is_system_role:
         has_admin_perm = any("admin.read" in p for p in user_data.get("permissions", []))
-        if int(role.tenant_id) != int(user_data.get("tenant_id", 0)) and not has_admin_perm:
-            raise HTTPException(status_code=403, detail="Not authorized to access this role")
+        if str(role.tenant_id) != str(user_data.get("tenant_id", "")) and not has_admin_perm:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Not authorized to access this role",
+                    error_code="UNAUTHORIZED_ROLE_ACCESS"
+                )
+            )
     
-    return role
+    return ResponseWrapper.success(
+        data=serialize_role(role),
+        message="Role retrieved successfully"
+    )
 
-@router.put("/{role_id}", response_model=RoleResponse)
+@router.put("/{role_id}")
 async def update_role(
     role_id: int,
     role_update: RoleUpdate,
@@ -213,14 +465,38 @@ async def update_role(
     """Update a role and its policies"""
     role = role_crud.get(db, id=role_id)
     if not role:
-        raise HTTPException(status_code=404, detail="Role not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ResponseWrapper.error(
+                message="Role not found",
+                error_code="ROLE_NOT_FOUND",
+                details={"role_id": role_id}
+            )
+        )
     
     user_permissions = extract_user_permissions(user_data)
+    user_type = user_data.get("user_type")
+    
+    # System roles can only be updated by admin users
+    if role.is_system_role and user_type != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ResponseWrapper.error(
+                message="Only admin users can update system roles",
+                error_code="UNAUTHORIZED_SYSTEM_ROLE_UPDATE"
+            )
+        )
     
     # Check tenant access for non-system roles
     if role.tenant_id and not role.is_system_role:
-        if int(role.tenant_id) != int(user_data.get("tenant_id", 0)) and "admin.update" not in user_permissions:
-            raise HTTPException(status_code=403, detail="Not authorized to update this role")
+        if str(role.tenant_id) != str(user_data.get("tenant_id", "")) and "admin.update" not in user_permissions:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Not authorized to update this role",
+                    error_code="UNAUTHORIZED_ROLE_UPDATE"
+                )
+            )
     
     # CRITICAL: Validate policy permissions if policies are being updated
     if role_update.policy_ids is not None:
@@ -229,12 +505,50 @@ async def update_role(
                 Policy.policy_id.in_(role_update.policy_ids)
             ).all()
             if len(existing_policies) != len(role_update.policy_ids):
-                raise HTTPException(status_code=400, detail="One or more policy IDs are invalid")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="One or more policy IDs are invalid",
+                        error_code="INVALID_POLICY_IDS",
+                        details={"requested_policy_ids": role_update.policy_ids}
+                    )
+                )
             
             # This should block if user doesn't have the required permissions
             validate_policy_permissions(existing_policies, user_permissions, "update")
     
-    return role_crud.update_with_policies(db, db_obj=role, obj_in=role_update)
+    try:
+        updated_role = role_crud.update_with_policies(db, db_obj=role, obj_in=role_update)
+        return ResponseWrapper.success(
+            data=updated_role,
+            message="Role updated successfully"
+        )
+    except IntegrityError as e:
+        db.rollback()
+        error_msg = str(e.orig) if hasattr(e, 'orig') else str(e)
+        print(f"DEBUG - IntegrityError on update: {error_msg}")
+        
+        if "uq_role_tenant_name" in error_msg or "duplicate key" in error_msg.lower():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=ResponseWrapper.error(
+                    message=f"Role with name '{role_update.name}' already exists for this tenant",
+                    error_code="DUPLICATE_ROLE_NAME",
+                    details={"role_name": role_update.name, "role_id": role_id}
+                )
+            )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ResponseWrapper.error(
+                message="Failed to update role due to database constraint violation",
+                error_code="DATABASE_CONSTRAINT_VIOLATION",
+                details={
+                    "error_message": error_msg,
+                    "role_id": role_id,
+                    "role_name": role_update.name if role_update.name else role.name
+                }
+            )
+        )
 
 @router.delete("/{role_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_role(
@@ -245,13 +559,29 @@ async def delete_role(
     """Delete a role"""
     role = role_crud.get(db, id=role_id)
     if not role:
-        raise HTTPException(status_code=404, detail="Role not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ResponseWrapper.error(
+                message="Role not found",
+                error_code="ROLE_NOT_FOUND",
+                details={"role_id": role_id}
+            )
+        )
     
     # Check tenant access for non-system roles
     if role.tenant_id and not role.is_system_role:
         has_admin_perm = any("admin.delete" in p for p in user_data.get("permissions", []))
-        if int(role.tenant_id) != int(user_data.get("tenant_id", 0)) and not has_admin_perm:
-            raise HTTPException(status_code=403, detail="Not authorized to delete this role")
+        if str(role.tenant_id) != str(user_data.get("tenant_id", "")) and not has_admin_perm:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Not authorized to delete this role",
+                    error_code="UNAUTHORIZED_ROLE_DELETE"
+                )
+            )
     
     role_crud.remove(db, id=role_id)
-    return None
+    return ResponseWrapper.success(
+        data=None,
+        message="Role deleted successfully"
+    )
