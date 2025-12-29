@@ -644,7 +644,8 @@ def admin_token(admin_user):
                 "route_merge.create", "route_merge.read", "route_merge.update", "route_merge.delete",
                 "vehicle-type.create", "vehicle-type.read", "vehicle-type.update", "vehicle-type.delete",
                 "vehicle.create", "vehicle.read", "vehicle.update", "vehicle.delete",
-                "driver.create", "driver.read", "driver.update", "driver.delete"
+                "driver.create", "driver.read", "driver.update", "driver.delete",
+                "vendor.create", "vendor.read", "vendor.update", "vendor.delete"
             ]
         }
     )
