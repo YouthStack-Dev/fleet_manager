@@ -646,7 +646,8 @@ def admin_token(admin_user):
                 "vehicle.create", "vehicle.read", "vehicle.update", "vehicle.delete",
                 "driver.create", "driver.read", "driver.update", "driver.delete",
                 "vendor.create", "vendor.read", "vendor.update", "vendor.delete",
-                "vendor-user.create", "vendor-user.read", "vendor-user.update", "vendor-user.delete"
+                "vendor-user.create", "vendor-user.read", "vendor-user.update", "vendor-user.delete",
+                "escort.create", "escort.read", "escort.update", "escort.delete"
             ]
         }
     )
@@ -674,7 +675,8 @@ def employee_token(employee_user):
                 "route.create", "route.read", "route.update", "route.delete",
                 "route_vendor_assignment.create", "route_vendor_assignment.read", "route_vendor_assignment.update", "route_vendor_assignment.delete",
                 "route_vehicle_assignment.create", "route_vehicle_assignment.read", "route_vehicle_assignment.update", "route_vehicle_assignment.delete",
-                "route_merge.create", "route_merge.read", "route_merge.update", "route_merge.delete"
+                "route_merge.create", "route_merge.read", "route_merge.update", "route_merge.delete",
+                "escort.create", "escort.read", "escort.update", "escort.delete"
             ]
         }
     )
@@ -693,6 +695,23 @@ def vendor_token():
         custom_claims={
             "email": "vendor@test.com",
             "permissions": ["route.read"]
+        }
+    )
+    return f"Bearer {token}"
+
+
+@pytest.fixture(scope="function")
+def driver_token(test_driver, test_tenant):
+    """
+    Generate JWT token for driver user (very limited access).
+    """
+    token = create_access_token(
+        user_id=str(test_driver.driver_id),
+        tenant_id=test_tenant.tenant_id,
+        user_type="driver",
+        custom_claims={
+            "email": test_driver.email,
+            "permissions": []
         }
     )
     return f"Bearer {token}"
@@ -935,6 +954,65 @@ def second_vendor(test_db, second_tenant):
     test_db.commit()
     test_db.refresh(vendor)
     return vendor
+
+@pytest.fixture(scope="function")
+def test_escort(test_db, test_tenant, test_vendor):
+    """Create a test escort"""
+    from app.models.escort import Escort
+    escort = Escort(
+        tenant_id=test_tenant.tenant_id,
+        vendor_id=test_vendor.vendor_id,
+        name="Test Escort",
+        phone="9876543210",
+        email="escort@test.com",
+        gender="FEMALE",
+        is_active=True,
+        is_available=True
+    )
+    test_db.add(escort)
+    test_db.commit()
+    test_db.refresh(escort)
+    return escort
+
+
+@pytest.fixture(scope="function")
+def second_tenant_escort(test_db, second_tenant, second_tenant_vendor):
+    """Create escort in second tenant"""
+    from app.models.escort import Escort
+    escort = Escort(
+        tenant_id=second_tenant.tenant_id,
+        vendor_id=second_tenant_vendor.vendor_id,
+        name="Second Tenant Escort",
+        phone="8765432109",
+        email="escort2@test.com",
+        gender="MALE",
+        is_active=True,
+        is_available=True
+    )
+    test_db.add(escort)
+    test_db.commit()
+    test_db.refresh(escort)
+    return escort
+
+
+@pytest.fixture(scope="function")
+def second_tenant_vendor(test_db, second_tenant):
+    """Create vendor in second tenant"""
+    from app.models.vendor import Vendor
+    vendor = Vendor(
+        vendor_id=100,
+        tenant_id=second_tenant.tenant_id,
+        vendor_code="VEND100",
+        name="Second Tenant Vendor",
+        email="vendor_t2@test.com",
+        phone="1111111111",
+        is_active=True
+    )
+    test_db.add(vendor)
+    test_db.commit()
+    test_db.refresh(vendor)
+    return vendor
+
 
 @pytest.fixture(scope="function")
 def test_driver(test_db, test_tenant, test_vendor):
