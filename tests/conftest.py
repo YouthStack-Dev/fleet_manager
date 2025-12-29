@@ -645,7 +645,8 @@ def admin_token(admin_user):
                 "vehicle-type.create", "vehicle-type.read", "vehicle-type.update", "vehicle-type.delete",
                 "vehicle.create", "vehicle.read", "vehicle.update", "vehicle.delete",
                 "driver.create", "driver.read", "driver.update", "driver.delete",
-                "vendor.create", "vendor.read", "vendor.update", "vendor.delete"
+                "vendor.create", "vendor.read", "vendor.update", "vendor.delete",
+                "vendor-user.create", "vendor-user.read", "vendor-user.update", "vendor-user.delete"
             ]
         }
     )
