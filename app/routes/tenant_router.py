@@ -18,6 +18,7 @@ from app.schemas.team import TeamCreate, TeamUpdate, TeamResponse, TeamPaginatio
 from app.utils.pagination import paginate_query
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_db_error, handle_http_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
+from app.utils import cache_manager
 from app.core.logging_config import get_logger
 from app.core.email_service import get_email_service
 
@@ -615,6 +616,10 @@ def update_tenant(
 
         db.commit()
         db.refresh(db_tenant)
+        
+        # Invalidate tenant cache after update
+        cache_manager.invalidate_tenant(tenant_id)
+        logger.info(f"Invalidated cache for tenant {tenant_id}")
 
         # --- ALWAYS fetch the admin policy for the response (no logic change) ---
         admin_policy = (

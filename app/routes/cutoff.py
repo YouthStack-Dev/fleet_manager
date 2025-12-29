@@ -11,6 +11,7 @@ from common_utils.auth.permission_checker import PermissionChecker
 from sqlalchemy.exc import SQLAlchemyError
 from app.core.logging_config import get_logger
 from app.utils.audit_helper import log_audit
+from app.utils import cache_manager
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/cutoffs", tags=["cutoffs"])
@@ -129,6 +130,10 @@ def update_cutoff(
         cutoff = cutoff_crud.update_by_tenant(db, tenant_id=tenant_id, obj_in=update_in)
         db.commit()
         db.refresh(cutoff)
+        
+        # Invalidate cutoff cache after update
+        cache_manager.invalidate_cutoff(tenant_id)
+        logger.info(f"Invalidated cache for cutoff config tenant {tenant_id}")
 
         # 🔍 Audit Log: Cutoff Update
         try:
