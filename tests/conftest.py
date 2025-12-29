@@ -648,7 +648,8 @@ def admin_token(admin_user):
                 "vendor.create", "vendor.read", "vendor.update", "vendor.delete",
                 "vendor-user.create", "vendor-user.read", "vendor-user.update", "vendor-user.delete",
                 "escort.create", "escort.read", "escort.update", "escort.delete",
-                "tenant_config.read", "tenant_config.update", "tenant_config.escort"
+                "tenant_config.read", "tenant_config.update", "tenant_config.escort",
+                "weekoff-config.read", "weekoff-config.update"
             ]
         }
     )
@@ -678,7 +679,8 @@ def employee_token(employee_user):
                 "route_vehicle_assignment.create", "route_vehicle_assignment.read", "route_vehicle_assignment.update", "route_vehicle_assignment.delete",
                 "route_merge.create", "route_merge.read", "route_merge.update", "route_merge.delete",
                 "escort.create", "escort.read", "escort.update", "escort.delete",
-                "tenant_config.read", "tenant_config.update", "tenant_config.escort"
+                "tenant_config.read", "tenant_config.update", "tenant_config.escort",
+                "weekoff-config.read", "weekoff-config.update"
             ]
         }
     )
