@@ -45,6 +45,8 @@ from app.routes import (
     monitoring_router,  # Add monitoring router
     tenant_config_router  # Add tenant config router
 )
+from app.routes.alert_router import router as alert_router
+from app.routes.alert_config_router import router as alert_config_router
 from app.seed.seed_api import router as seed_router
 
 # Import the IAM routers
@@ -124,6 +126,10 @@ app.include_router(grouping.router, prefix="/api/v1")        # Add new grouping 
 app.include_router(route_management.router, prefix="/api/v1") # Add new route management router
 app.include_router(auth_router, prefix="/api/v1")  # Add the auth router
 app.include_router(monitoring_router, prefix="/api/v1")  # Add monitoring router
+
+# Include alert routers (SOS system)
+app.include_router(alert_router)  # Already has /api/v1/alerts prefix
+app.include_router(alert_config_router)  # Already has /api/v1/alert-config prefix
 
 # Include IAM routers
 app.include_router(permission_router, prefix="/api/v1/iam")

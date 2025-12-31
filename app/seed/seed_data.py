@@ -117,13 +117,17 @@ def seed_iam(db: Session):
         "dashboard",
         "escort",
         "tenant_config",
+        "alert",
     ]
 
     actions = ["create", "read", "update", "delete"]
+    alert_actions = ["create", "read", "respond", "close", "escalate", "update", "delete"]
 
     permissions_map = {}
     for module in modules:
-        for action in actions:
+        # Use alert_actions for alert module, standard actions for others
+        module_actions = alert_actions if module == "alert" else actions
+        for action in module_actions:
             existing = (
                 db.query(Permission)
                 .filter(Permission.module == module, Permission.action == action)
@@ -147,7 +151,9 @@ def seed_iam(db: Session):
     policies_map = {}
     for module in modules:
         policy_name = f"{module.capitalize()}Policy".replace("-", "").replace(".", "")
-        perms = [f"{module}:{a}" for a in actions]
+        # Use alert_actions for alert module, standard actions for others
+        module_actions = alert_actions if module == "alert" else actions
+        perms = [f"{module}:{a}" for a in module_actions]
 
         policy = db.query(Policy).filter(Policy.name == policy_name, Policy.is_system_policy == True).first()
         if not policy:
@@ -192,7 +198,7 @@ def seed_iam(db: Session):
         "Admin": [
             p for p in policies_map.keys()
             if p not in ["PermissionsPolicy", "PolicyPolicy", "RolePolicy"]
-        ],
+        ],  # Includes AlertPolicy
         "Employee": [
             "BookingPolicy",
             "RoutebookingPolicy",
@@ -204,6 +210,7 @@ def seed_iam(db: Session):
             "DashboardPolicy",
             "RouteVendorAssignmentPolicy",
             "RouteVehicleAssignmentPolicy",
+            "AlertPolicy",
         ],
         "Driver": ["AppdriverPolicy"],
         "VendorAdmin": [
@@ -218,6 +225,7 @@ def seed_iam(db: Session):
             "PermissionsPolicy",
             "PolicyPolicy",
             "RolePolicy",
+            "AlertPolicy",
         ],
     }
 
