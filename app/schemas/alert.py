@@ -35,10 +35,9 @@ class AlertAcknowledgeRequest(BaseModel):
 
 class AlertCloseRequest(BaseModel):
     """Request to close an alert"""
-    closed_by: str = Field(..., max_length=100, description="Name/ID of person closing")
-    closure_notes: str = Field(..., max_length=2000, description="Detailed closure notes")
+    closed_by: int = Field(..., description="User ID of person closing")
+    resolution_notes: str = Field(..., max_length=2000, description="Detailed resolution notes")
     is_false_alarm: bool = Field(False, description="Mark as false alarm")
-    resolution_notes: Optional[str] = Field(None, max_length=2000, description="How issue was resolved")
 
 
 class AlertEscalateRequest(BaseModel):
@@ -65,11 +64,10 @@ class AlertEscalationResponse(BaseModel):
     escalation_id: int
     alert_id: int
     escalation_level: int
-    escalated_to: str
+    escalated_to_recipients: List[Dict[str, Any]]  # JSON array of recipients
     escalated_at: datetime
-    escalated_by: Optional[str]
-    reason: Optional[str]
-    is_auto_escalation: bool
+    escalation_reason: Optional[str]
+    is_automatic: bool
     
     model_config = ConfigDict(from_attributes=True)
 
@@ -86,7 +84,6 @@ class AlertNotificationResponse(BaseModel):
     status: str
     sent_at: Optional[datetime]
     delivered_at: Optional[datetime]
-    failed_at: Optional[datetime]
     failure_reason: Optional[str]
     
     model_config = ConfigDict(from_attributes=True)
@@ -98,32 +95,29 @@ class AlertResponse(BaseModel):
     tenant_id: str
     employee_id: int
     booking_id: Optional[int]
-    route_id: Optional[int]
-    driver_id: Optional[int]
-    vehicle_id: Optional[int]
     
     alert_type: str
     severity: str
     status: str
     
-    trigger_latitude: Optional[float]
-    trigger_longitude: Optional[float]
-    trigger_address: Optional[str]
+    trigger_latitude: float
+    trigger_longitude: float
     
     triggered_at: datetime
     acknowledged_at: Optional[datetime]
-    acknowledged_by: Optional[str]
-    resolved_at: Optional[datetime]
-    resolved_by: Optional[str]
+    acknowledged_by: Optional[int]
+    acknowledged_by_name: Optional[str]
+    acknowledgment_notes: Optional[str]
+    estimated_arrival_minutes: Optional[int]
     closed_at: Optional[datetime]
-    closed_by: Optional[str]
+    closed_by: Optional[int]
+    closed_by_name: Optional[str]
     
     response_time_seconds: Optional[int]
     resolution_time_seconds: Optional[int]
     
     trigger_notes: Optional[str]
     resolution_notes: Optional[str]
-    closure_notes: Optional[str]
     evidence_urls: Optional[List[str]]
     
     is_false_alarm: bool

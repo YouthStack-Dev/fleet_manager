@@ -355,11 +355,11 @@ class TestGetSingleTeam:
         assert data["data"]["team"]["tenant_id"] == tenant_id
 
     def test_get_team_as_employee_other_tenant(
-        self, client, employee_token, admin_user, test_db
+        self, client, employee_token, second_tenant, test_db
     ):
         """Test that employee cannot get team from another tenant."""
-        # Create team in different tenant
-        other_tenant_id = admin_user["tenant"].tenant_id
+        # Create team in different tenant (TEST002)
+        other_tenant_id = second_tenant.tenant_id
         team = Team(tenant_id=other_tenant_id, name="Other Team", description="Test")
         test_db.add(team)
         test_db.commit()
@@ -489,10 +489,10 @@ class TestUpdateTeam:
         assert data["data"]["team"]["name"] == update_data["name"]
 
     def test_update_team_as_employee_other_tenant(
-        self, client, employee_token, admin_user, test_db
+        self, client, employee_token, second_tenant, test_db
     ):
         """Test that employee cannot update team from another tenant."""
-        other_tenant_id = admin_user["tenant"].tenant_id
+        other_tenant_id = second_tenant.tenant_id
         team = Team(tenant_id=other_tenant_id, name="Other Team", description="Test")
         test_db.add(team)
         test_db.commit()
@@ -654,10 +654,10 @@ class TestToggleTeamStatus:
         assert data["data"]["team"]["is_active"] is False
 
     def test_toggle_team_status_as_employee_other_tenant(
-        self, client, employee_token, admin_user, test_db
+        self, client, employee_token, second_tenant, test_db
     ):
         """Test that employee cannot toggle team status in other tenant."""
-        other_tenant_id = admin_user["tenant"].tenant_id
+        other_tenant_id = second_tenant.tenant_id
         team = Team(tenant_id=other_tenant_id, name="Other Team", description="Test", is_active=True)
         test_db.add(team)
         test_db.commit()
@@ -778,16 +778,16 @@ class TestTeamIntegration:
         assert lifecycle_team["is_active"] is False
 
     def test_employee_tenant_isolation(
-        self, client, employee_token, employee_user, admin_user, test_db
+        self, client, employee_token, employee_user, second_tenant, test_db
     ):
         """Test that employees can only access teams in their tenant."""
         # Create teams in different tenants
         emp_tenant_id = employee_user["tenant"].tenant_id
-        admin_tenant_id = admin_user["tenant"].tenant_id
+        other_tenant_id = second_tenant.tenant_id
         
         emp_team = Team(tenant_id=emp_tenant_id, name="Employee Team", description="Test")
-        admin_team = Team(tenant_id=admin_tenant_id, name="Admin Team", description="Test")
-        test_db.add_all([emp_team, admin_team])
+        other_team = Team(tenant_id=other_tenant_id, name="Other Tenant Team", description="Test")
+        test_db.add_all([emp_team, other_team])
         test_db.commit()
         
         # List teams as employee
@@ -801,11 +801,11 @@ class TestTeamIntegration:
         # Should only see own tenant teams
         tenant_ids = {t["tenant_id"] for t in teams}
         assert emp_tenant_id in tenant_ids
-        assert admin_tenant_id not in tenant_ids
+        assert other_tenant_id not in tenant_ids
         
-        # Try to get admin's team - should fail
+        # Try to get other tenant's team - should fail
         get_response = client.get(
-            f"/api/v1/teams/{admin_team.team_id}",
+            f"/api/v1/teams/{other_team.team_id}",
             headers={"Authorization": employee_token}
         )
         assert get_response.status_code == status.HTTP_404_NOT_FOUND

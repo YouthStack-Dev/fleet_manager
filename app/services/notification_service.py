@@ -234,8 +234,8 @@ class NotificationService:
             success = self.email_service.send_email(
                 to_emails=[to_email],
                 subject=subject,
-                html_body=html_body,
-                plain_body=message
+                html_content=html_body,
+                text_content=message
             )
             
             logger.info(f"[notification.email] Email sent to {to_email}: {success}")

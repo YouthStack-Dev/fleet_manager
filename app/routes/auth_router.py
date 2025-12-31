@@ -1176,6 +1176,37 @@ async def get_current_user_profile(
                 "permissions": permissions,
             }
 
+        elif user_type == "driver":
+            driver = db.query(Driver).filter(Driver.driver_id == int(user_id)).first()
+            if not driver:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message="Driver not found",
+                        error_code=status.HTTP_404_NOT_FOUND,
+                    ),
+                )
+
+            # Get driver roles and permissions
+            from app.crud.driver import driver_crud
+            _, roles, permissions = driver_crud.get_driver_roles_and_permissions(
+                db, driver_id=driver.driver_id, tenant_id=driver.tenant_id
+            )
+
+            response_data = {
+                "user_type": "driver",
+                "user": {
+                    "driver_id": driver.driver_id,
+                    "name": driver.name,
+                    "email": driver.email,
+                    "phone": driver.phone,
+                    "vendor_id": driver.vendor_id,
+                    "tenant_id": driver.tenant_id,
+                },
+                "roles": roles,
+                "permissions": permissions,
+            }
+
         else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

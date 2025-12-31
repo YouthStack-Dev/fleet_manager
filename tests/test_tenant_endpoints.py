@@ -208,7 +208,7 @@ class TestListTenants:
     """Test suite for GET /tenants/ endpoint."""
     
     def test_list_tenants_as_admin(
-        self, client, admin_token, admin_user, employee_user
+        self, client, admin_token, admin_user, second_tenant
     ):
         """Test admin can list all tenants."""
         response = client.get(
@@ -221,7 +221,7 @@ class TestListTenants:
         assert data["success"] is True
         assert "total" in data["data"]
         assert "items" in data["data"]
-        assert data["data"]["total"] >= 2  # At least SYSTEM and TEST001
+        assert data["data"]["total"] >= 2  # At least TEST001 and TEST002
     
     def test_list_tenants_as_employee_restricted(
         self, client, employee_token, employee_user

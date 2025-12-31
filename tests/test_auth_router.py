@@ -550,18 +550,35 @@ class TestGetCurrentUser:
     """Test cases for get current user profile endpoint"""
 
     def test_get_me_employee(
-        self, client: TestClient, employee_token
+        self, client: TestClient, employee_user
     ):
         """Get current employee profile"""
+        # Login to get a proper token with Redis session
+        login_response = client.post(
+            "/api/v1/auth/employee/login",
+            json={
+                "username": employee_user["employee"].email,
+                "password": "Employee@123",
+                "tenant_id": employee_user["tenant"].tenant_id
+            }
+        )
+        
+        assert login_response.status_code == 200
+        login_data = login_response.json()
+        access_token = login_data["data"]["access_token"]
+        
+        # Now use the token from login to get profile
         response = client.get(
             "/api/v1/auth/me",
-            headers={"Authorization": employee_token}
+            headers={"Authorization": f"Bearer {access_token}"}
         )
         
         assert response.status_code == 200
         data = response.json()
+        assert data["success"] is True
         assert "data" in data
-        assert "user" in data["data"] or "employee" in data["data"]
+        assert data["data"]["user_type"] == "employee"
+        assert "user" in data["data"]
 
     def test_get_me_admin(
         self, client: TestClient, test_admin_auth
@@ -587,20 +604,30 @@ class TestGetCurrentUser:
         self, client: TestClient, test_driver_auth, test_tenant
     ):
         """Get current driver profile"""
-        from common_utils.auth.utils import create_access_token
-        
-        token = create_access_token(
-            user_id=str(test_driver_auth.driver_id),
-            tenant_id=test_tenant.tenant_id,
-            user_type="driver"
+        # Login to get a proper token with Redis session
+        login_response = client.post(
+            "/api/v1/auth/driver/login",
+            json={
+                "username": test_driver_auth.email,
+                "password": "DriverPassword123!",
+                "tenant_id": test_tenant.tenant_id
+            }
         )
         
+        assert login_response.status_code == 200
+        login_data = login_response.json()
+        access_token = login_data["data"]["access_token"]
+        
+        # Now use the token from login to get profile
         response = client.get(
             "/api/v1/auth/me",
-            headers={"Authorization": f"Bearer {token}"}
+            headers={"Authorization": f"Bearer {access_token}"}
         )
         
         assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["data"]["user_type"] == "driver"
 
     def test_get_me_unauthorized(self, client: TestClient):
         """Cannot get profile without token"""

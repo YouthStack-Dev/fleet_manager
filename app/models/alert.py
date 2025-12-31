@@ -83,9 +83,6 @@ class Alert(Base):
     # Context information
     employee_id = Column(Integer, ForeignKey("employees.employee_id"), nullable=False)
     booking_id = Column(Integer, ForeignKey("bookings.booking_id"), nullable=True)
-    route_id = Column(Integer, ForeignKey("route_management.route_id"), nullable=True)
-    driver_id = Column(Integer, ForeignKey("drivers.driver_id"), nullable=True)
-    vehicle_id = Column(Integer, ForeignKey("vehicles.vehicle_id"), nullable=True)
     
     # Alert details
     alert_type = Column(SQLEnum(AlertTypeEnum, native_enum=False), default=AlertTypeEnum.SOS, nullable=False)
@@ -93,18 +90,19 @@ class Alert(Base):
     status = Column(SQLEnum(AlertStatusEnum, native_enum=False), default=AlertStatusEnum.TRIGGERED, nullable=False)
     
     # Location at trigger time
-    trigger_latitude = Column(Float, nullable=True)
-    trigger_longitude = Column(Float, nullable=True)
-    trigger_address = Column(String(500), nullable=True)
+    trigger_latitude = Column(Float, nullable=False)
+    trigger_longitude = Column(Float, nullable=False)
     
     # Timestamps
     triggered_at = Column(DateTime, default=func.now(), nullable=False)
     acknowledged_at = Column(DateTime, nullable=True)
-    acknowledged_by = Column(String(100), nullable=True)  # User who acknowledged
-    resolved_at = Column(DateTime, nullable=True)
-    resolved_by = Column(String(100), nullable=True)
+    acknowledged_by = Column(Integer, nullable=True)  # User ID who acknowledged
+    acknowledged_by_name = Column(String(255), nullable=True)  # Name of acknowledger
+    acknowledgment_notes = Column(Text, nullable=True)  # Notes when acknowledging
+    estimated_arrival_minutes = Column(Integer, nullable=True)  # ETA provided by responder
     closed_at = Column(DateTime, nullable=True)
-    closed_by = Column(String(100), nullable=True)
+    closed_by = Column(Integer, nullable=True)  # User ID who closed
+    closed_by_name = Column(String(255), nullable=True)  # Name of closer
     
     # Response details
     response_time_seconds = Column(Integer, nullable=True)  # Time to acknowledge
@@ -112,14 +110,13 @@ class Alert(Base):
     
     # Notes and evidence
     trigger_notes = Column(Text, nullable=True)  # Employee's note when triggering
-    resolution_notes = Column(Text, nullable=True)  # Responder's resolution notes
-    closure_notes = Column(Text, nullable=True)  # Final closure notes
+    resolution_notes = Column(Text, nullable=True)  # Final resolution notes
     evidence_urls = Column(JSON, nullable=True)  # Array of file URLs (photos, recordings)
     
     # Metadata
     is_false_alarm = Column(Boolean, default=False, nullable=False)
     auto_escalated = Column(Boolean, default=False, nullable=False)
-    alert_metadata = Column(JSON, nullable=True)  # Additional context data
+    alert_metadata = Column("metadata", JSON, nullable=True)  # Maps to 'metadata' column in DB
     
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
@@ -141,15 +138,12 @@ class AlertEscalation(Base):
 
     escalation_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     alert_id = Column(Integer, ForeignKey("alerts.alert_id", ondelete="CASCADE"), nullable=False)
-    tenant_id = Column(String(50), nullable=False)
     
     escalation_level = Column(Integer, default=1, nullable=False)  # 1, 2, 3...
-    escalated_to = Column(String(200), nullable=False)  # Email/phone of escalation recipient
+    escalated_to_recipients = Column(JSON, nullable=False)  # JSON array of recipients
     escalated_at = Column(DateTime, default=func.now(), nullable=False)
-    escalated_by = Column(String(100), nullable=True)  # System or user who escalated
-    
-    reason = Column(Text, nullable=True)  # Why escalated
-    is_auto_escalation = Column(Boolean, default=False, nullable=False)
+    escalation_reason = Column(Text, nullable=True)  # Why escalated
+    is_automatic = Column(Boolean, default=False, nullable=False)
     
     created_at = Column(DateTime, default=func.now(), nullable=False)
     
@@ -170,7 +164,6 @@ class AlertNotification(Base):
 
     notification_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     alert_id = Column(Integer, ForeignKey("alerts.alert_id", ondelete="CASCADE"), nullable=False)
-    tenant_id = Column(String(50), nullable=False)
     
     # Recipient details
     recipient_name = Column(String(200), nullable=True)
@@ -184,17 +177,12 @@ class AlertNotification(Base):
     
     # Content
     subject = Column(String(500), nullable=True)
-    message = Column(Text, nullable=True)
+    message = Column(Text, nullable=False)
     
     # Delivery tracking
     sent_at = Column(DateTime, nullable=True)
     delivered_at = Column(DateTime, nullable=True)
-    failed_at = Column(DateTime, nullable=True)
     failure_reason = Column(Text, nullable=True)
-    
-    # External tracking
-    external_id = Column(String(200), nullable=True)  # SMS provider message ID, etc.
-    retry_count = Column(Integer, default=0, nullable=False)
     
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)

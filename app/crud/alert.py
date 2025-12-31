@@ -151,7 +151,9 @@ def get_active_alerts(db: Session, tenant_id: str, employee_id: Optional[int] = 
 def acknowledge_alert(
     db: Session,
     alert: Alert,
-    request: AlertAcknowledgeRequest
+    responder_id: int,
+    responder_name: str,
+    notes: Optional[str] = None
 ) -> Alert:
     """Acknowledge an alert"""
     now = get_current_ist_time()
@@ -160,16 +162,25 @@ def acknowledge_alert(
         alert.status = AlertStatusEnum.ACKNOWLEDGED
     
     alert.acknowledged_at = now
-    alert.acknowledged_by = request.acknowledged_by
-    alert.response_time_seconds = int((now - alert.triggered_at).total_seconds())
+    alert.acknowledged_by = responder_id
+    alert.acknowledged_by_name = responder_name
     
-    if request.notes:
-        alert.resolution_notes = request.notes
+    # Make triggered_at timezone-aware if it's naive
+    triggered_at = alert.triggered_at
+    if triggered_at.tzinfo is None:
+        from datetime import timezone, timedelta
+        ist_offset = timedelta(hours=5, minutes=30)
+        triggered_at = triggered_at.replace(tzinfo=timezone(ist_offset))
+    
+    alert.response_time_seconds = int((now - triggered_at).total_seconds())
+    
+    if notes:
+        alert.resolution_notes = notes
     
     alert.updated_at = now
     
     db.add(alert)
-    logger.info(f"[alert.acknowledge] Alert {alert.alert_id} acknowledged by {request.acknowledged_by}")
+    logger.info(f"[alert.acknowledge] Alert {alert.alert_id} acknowledged by {responder_name} (ID: {responder_id})")
     
     return alert
 
@@ -187,10 +198,14 @@ def update_alert_status(
     alert.status = new_status
     alert.updated_at = now
     
-    if new_status == AlertStatusEnum.RESOLVED and not alert.resolved_at:
-        alert.resolved_at = now
-        alert.resolved_by = updated_by
-        alert.resolution_time_seconds = int((now - alert.triggered_at).total_seconds())
+    if new_status == AlertStatusEnum.RESOLVED:
+        # Make triggered_at timezone-aware if it's naive
+        triggered_at = alert.triggered_at
+        if triggered_at.tzinfo is None:
+            from datetime import timezone, timedelta
+            ist_offset = timedelta(hours=5, minutes=30)
+            triggered_at = triggered_at.replace(tzinfo=timezone(ist_offset))
+        alert.resolution_time_seconds = int((now - triggered_at).total_seconds())
     
     db.add(alert)
     logger.info(f"[alert.status] Alert {alert.alert_id} status changed: {old_status} → {new_status}")
@@ -201,29 +216,36 @@ def update_alert_status(
 def close_alert(
     db: Session,
     alert: Alert,
-    request: AlertCloseRequest
+    closed_by: int,
+    closed_by_name: str,
+    resolution_notes: str,
+    is_false_alarm: bool
 ) -> Alert:
     """Close an alert"""
     now = get_current_ist_time()
     
-    alert.status = AlertStatusEnum.FALSE_ALARM if request.is_false_alarm else AlertStatusEnum.CLOSED
+    alert.status = AlertStatusEnum.FALSE_ALARM if is_false_alarm else AlertStatusEnum.CLOSED
     alert.closed_at = now
-    alert.closed_by = request.closed_by
-    alert.closure_notes = request.closure_notes
-    alert.is_false_alarm = request.is_false_alarm
+    alert.closed_by = closed_by
+    alert.closed_by_name = closed_by_name
+    alert.is_false_alarm = is_false_alarm
     
-    if request.resolution_notes:
-        alert.resolution_notes = request.resolution_notes
+    if resolution_notes:
+        alert.resolution_notes = resolution_notes
     
-    if not alert.resolved_at:
-        alert.resolved_at = now
-        alert.resolved_by = request.closed_by
-        alert.resolution_time_seconds = int((now - alert.triggered_at).total_seconds())
+    # Make triggered_at timezone-aware if it's naive
+    triggered_at = alert.triggered_at
+    if triggered_at.tzinfo is None:
+        from datetime import timezone, timedelta
+        ist_offset = timedelta(hours=5, minutes=30)
+        triggered_at = triggered_at.replace(tzinfo=timezone(ist_offset))
+    
+    alert.resolution_time_seconds = int((now - triggered_at).total_seconds())
     
     alert.updated_at = now
     
     db.add(alert)
-    logger.info(f"[alert.close] Alert {alert.alert_id} closed by {request.closed_by}, false_alarm={request.is_false_alarm}")
+    logger.info(f"[alert.close] Alert {alert.alert_id} closed by {closed_by_name} (ID: {closed_by}), false_alarm={is_false_alarm}")
     
     return alert
 
@@ -280,21 +302,27 @@ def create_escalation(
     request: Optional[AlertEscalateRequest] = None,
     is_auto: bool = False,
     escalation_level: int = 1,
-    escalated_to: str = "",
+    escalated_to_recipients: list = None,
     reason: str = ""
 ) -> AlertEscalation:
     """Create escalation record"""
     now = get_current_ist_time()
     
+    # Build recipients list
+    if request:
+        recipients = [{"email": request.escalated_to}]
+    elif escalated_to_recipients:
+        recipients = escalated_to_recipients
+    else:
+        recipients = []
+    
     escalation = AlertEscalation(
         alert_id=alert.alert_id,
-        tenant_id=alert.tenant_id,
         escalation_level=request.escalation_level if request else escalation_level,
-        escalated_to=request.escalated_to if request else escalated_to,
+        escalated_to_recipients=recipients,
         escalated_at=now,
-        escalated_by=request.escalated_by if request else "SYSTEM",
-        reason=request.reason if request else reason,
-        is_auto_escalation=is_auto,
+        escalation_reason=request.reason if request else reason,
+        is_automatic=is_auto,
         created_at=now
     )
     
@@ -305,7 +333,11 @@ def create_escalation(
         alert.updated_at = now
         db.add(alert)
     
-    logger.info(f"[alert.escalation] Alert {alert.alert_id} escalated to level {escalation.escalation_level}, auto={is_auto}")
+    # Flush to get the auto-generated escalation_id
+    db.flush()
+    db.refresh(escalation)
+    
+    logger.info(f"[alert.escalation] Alert {alert.alert_id} escalated to level {escalation.escalation_level}, auto={is_auto}, escalation_id={escalation.escalation_id}")
     
     return escalation
 
@@ -337,7 +369,6 @@ def create_notification(
     
     notification = AlertNotification(
         alert_id=alert.alert_id,
-        tenant_id=alert.tenant_id,
         recipient_name=recipient_name,
         recipient_email=recipient_email,
         recipient_phone=recipient_phone,
@@ -359,7 +390,6 @@ def update_notification_status(
     db: Session,
     notification: AlertNotification,
     status: NotificationStatusEnum,
-    external_id: Optional[str] = None,
     failure_reason: Optional[str] = None
 ) -> AlertNotification:
     """Update notification delivery status"""
@@ -373,12 +403,7 @@ def update_notification_status(
     elif status == NotificationStatusEnum.DELIVERED:
         notification.delivered_at = now
     elif status in [NotificationStatusEnum.FAILED, NotificationStatusEnum.BOUNCED]:
-        notification.failed_at = now
         notification.failure_reason = failure_reason
-        notification.retry_count += 1
-    
-    if external_id:
-        notification.external_id = external_id
     
     db.add(notification)
     
