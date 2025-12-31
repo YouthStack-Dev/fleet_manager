@@ -352,13 +352,17 @@ def seed_employees(db: Session):
         ]
 
         for data in employees_data:
+            # Check by both employee_code AND email (email has unique constraint)
             existing = (
                 db.query(Employee)
-                .filter(Employee.tenant_id == data["tenant_id"], Employee.employee_code == data["employee_code"])
+                .filter(
+                    Employee.tenant_id == data["tenant_id"],
+                    (Employee.employee_code == data["employee_code"]) | (Employee.email == data["email"])
+                )
                 .first()
             )
             if existing:
-                logger.info(f"Employee {data['employee_code']} already exists for tenant {tenant.tenant_id}, skipping.")
+                logger.info(f"Employee {data['employee_code']} or {data['email']} already exists for tenant {tenant.tenant_id}, skipping.")
                 continue
 
             emp = Employee(**data)
