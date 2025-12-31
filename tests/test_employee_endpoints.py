@@ -23,7 +23,7 @@ class TestCreateEmployee:
         payload = {
             "name": "Test Employee",
             "email": "test.employee@example.com",
-            "phone": "+1234567890",
+            "phone": "+1234567899",  # Different from admin_user (+1234567890) and employee_user (+1234567891)
             "employee_code": "emp001",
             "team_id": test_team.team_id,
             "tenant_id": test_tenant.tenant_id,
@@ -246,7 +246,7 @@ class TestCreateEmployee:
         payload = {
             "name": "Special Needs Employee",
             "email": "special@example.com",
-            "phone": "+1234567890",
+            "phone": "+1234567898",  # Different from admin_user (+1234567890) and employee_user (+1234567891)
             "employee_code": "emp008",
             "team_id": test_team.team_id,
             "tenant_id": test_tenant.tenant_id,

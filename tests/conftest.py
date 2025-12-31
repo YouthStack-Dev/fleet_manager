@@ -92,17 +92,24 @@ def client(test_db, monkeypatch):
         try:
             payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
             
-            # Convert string permissions to the expected format
-            permissions_strings = payload.get("permissions", [])
+            # Get permissions - they can be either strings or dicts
+            permissions_raw = payload.get("permissions", [])
             permissions_formatted = []
-            for perm_str in permissions_strings:
-                parts = perm_str.rsplit(".", 1)
-                if len(parts) == 2:
-                    permissions_formatted.append({
-                        "module": parts[0],
-                        "action": [parts[1]]
-                    })
             
+            for perm in permissions_raw:
+                if isinstance(perm, dict):
+                    # Already in the correct format
+                    permissions_formatted.append(perm)
+                elif isinstance(perm, str):
+                    # Convert string format "module.action" to dict
+                    parts = perm.rsplit(".", 1)
+                    if len(parts) == 2:
+                        permissions_formatted.append({
+                            "module": parts[0],
+                            "action": [parts[1]]
+                        })
+            
+            # Merge all custom claims into user_data
             user_data = {
                 "user_id": payload.get("user_id"),
                 "user_type": payload.get("user_type"),
@@ -110,6 +117,8 @@ def client(test_db, monkeypatch):
                 "vendor_id": payload.get("vendor_id"),
                 "permissions": permissions_formatted,
                 "email": payload.get("email"),
+                # Include all additional custom claims (employee_id, team_id, etc.)
+                **{k: v for k, v in payload.items() if k not in ["user_id", "user_type", "tenant_id", "vendor_id", "permissions", "email", "exp", "iat"]}
             }
             
             # Check if user has required permissions
@@ -404,16 +413,19 @@ def admin_user(test_db, seed_permissions):
     """
     Create an admin user with full permissions.
     """
-    # Create a system tenant for admin
-    tenant = Tenant(
-        tenant_id="SYSTEM",
-        name="System Tenant",
-        address="System Address",
-        latitude=0.0,
-        longitude=0.0,
-        is_active=True
-    )
-    test_db.add(tenant)
+    # Check if TEST001 tenant already exists, create only if it doesn't
+    tenant = test_db.query(Tenant).filter(Tenant.tenant_id == "TEST001").first()
+    if not tenant:
+        tenant = Tenant(
+            tenant_id="TEST001",
+            name="Test Admin Tenant",
+            address="Test Address",
+            latitude=12.9716,
+            longitude=77.5946,
+            is_active=True
+        )
+        test_db.add(tenant)
+        test_db.flush()
     
     # Create admin role (system role should have tenant_id=None)
     admin_role = Role(
@@ -442,7 +454,7 @@ def admin_user(test_db, seed_permissions):
     # Create admin policy with all permissions
     policy = Policy(
         policy_id=1,
-        tenant_id="SYSTEM",  # Admin policy is for SYSTEM tenant
+        tenant_id="TEST001",  # Admin policy is for TEST001 tenant
         name="SystemAdminPolicy",
         description="System Admin Policy",
         is_active=True
@@ -456,21 +468,23 @@ def admin_user(test_db, seed_permissions):
     # Link role to policy
     admin_role.policies.append(policy)
     
-    # Create team
-    team = Team(
-        team_id=1,
-        tenant_id="SYSTEM",
-        name="System Team",
-        description="System Team",
-        is_active=True
-    )
-    test_db.add(team)
-    test_db.flush()
+    # Check if team already exists
+    team = test_db.query(Team).filter(Team.team_id == 1).first()
+    if not team:
+        team = Team(
+            team_id=1,
+            tenant_id="TEST001",
+            name="Test Admin Team",
+            description="Test Admin Team",
+            is_active=True
+        )
+        test_db.add(team)
+        test_db.flush()
     
-    # Create admin employee (employee is in SYSTEM tenant, uses system role)
+    # Create admin employee (employee is in TEST001 tenant, uses system role)
     admin = Employee(
         employee_id=1,
-        tenant_id="SYSTEM",
+        tenant_id="TEST001",
         role_id=admin_role.role_id,
         team_id=team.team_id,
         name="Admin User",
@@ -510,16 +524,19 @@ def employee_user(test_db, seed_permissions):
         test_db.add(employee_system_role)
         test_db.flush()
     
-    # Create tenant
-    tenant = Tenant(
-        tenant_id="TEST001",
-        name="Test Company",
-        address="Test Address",
-        latitude=10.0,
-        longitude=20.0,
-        is_active=True
-    )
-    test_db.add(tenant)
+    # Check if TEST001 tenant already exists
+    tenant = test_db.query(Tenant).filter(Tenant.tenant_id == "TEST001").first()
+    if not tenant:
+        tenant = Tenant(
+            tenant_id="TEST001",
+            name="Test Company",
+            address="Test Address",
+            latitude=10.0,
+            longitude=20.0,
+            is_active=True
+        )
+        test_db.add(tenant)
+        test_db.flush()
     
     # Create employee role
     role = Role(
@@ -562,16 +579,18 @@ def employee_user(test_db, seed_permissions):
     # Link role to policy
     role.policies.append(policy)
     
-    # Create team
-    team = Team(
-        team_id=2,
-        tenant_id="TEST001",
-        name="Test Team",
-        description="Test Team",
-        is_active=True
-    )
-    test_db.add(team)
-    test_db.flush()
+    # Check if team already exists
+    team = test_db.query(Team).filter(Team.team_id == 2).first()
+    if not team:
+        team = Team(
+            team_id=2,
+            tenant_id="TEST001",
+            name="Test Team",
+            description="Test Team",
+            is_active=True
+        )
+        test_db.add(team)
+        test_db.flush()
     
     # Create employee
     employee = Employee(
@@ -598,6 +617,28 @@ def employee_user(test_db, seed_permissions):
 
 
 @pytest.fixture(scope="function")
+def test_role(test_db):
+    """
+    Create a test Driver role for driver tests.
+    """
+    # Check if Driver role already exists
+    driver_role = test_db.query(Role).filter(Role.name == "Driver", Role.is_system_role == True).first()
+    if not driver_role:
+        driver_role = Role(
+            tenant_id=None,
+            name="Driver",
+            description="System Driver Role",
+            is_system_role=True,
+            is_active=True
+        )
+        test_db.add(driver_role)
+        test_db.commit()
+        test_db.refresh(driver_role)
+    
+    return driver_role
+
+
+@pytest.fixture(scope="function")
 def admin_token(admin_user):
     """
     Generate JWT token for admin user.
@@ -608,7 +649,9 @@ def admin_token(admin_user):
         user_type="admin",
         custom_claims={
             "email": admin_user["employee"].email,
+            "name": admin_user["employee"].name,
             "permissions": [
+                # String format permissions (for most endpoints)
                 "admin_tenant.create", "admin_tenant.read", "admin_tenant.update", "admin_tenant.delete",
                 "team.create", "team.read", "team.update", "team.delete",
                 "employee.create", "employee.read", "employee.update", "employee.delete",
@@ -619,7 +662,17 @@ def admin_token(admin_user):
                 "route.create", "route.read", "route.update", "route.delete",
                 "route_vendor_assignment.create", "route_vendor_assignment.read", "route_vendor_assignment.update", "route_vendor_assignment.delete",
                 "route_vehicle_assignment.create", "route_vehicle_assignment.read", "route_vehicle_assignment.update", "route_vehicle_assignment.delete",
-                "route_merge.create", "route_merge.read", "route_merge.update", "route_merge.delete"
+                "route_merge.create", "route_merge.read", "route_merge.update", "route_merge.delete",
+                "vehicle-type.create", "vehicle-type.read", "vehicle-type.update", "vehicle-type.delete",
+                "vehicle.create", "vehicle.read", "vehicle.update", "vehicle.delete",
+                "driver.create", "driver.read", "driver.update", "driver.delete",
+                "vendor.create", "vendor.read", "vendor.update", "vendor.delete",
+                "vendor-user.create", "vendor-user.read", "vendor-user.update", "vendor-user.delete",
+                "escort.create", "escort.read", "escort.update", "escort.delete",
+                "tenant_config.read", "tenant_config.update", "tenant_config.escort",
+                "report.read",
+                # Dict format permissions (for alert module)
+                {"module": "alert", "action": ["create", "read", "update", "delete", "respond", "close", "escalate"]}
             ]
         }
     )
@@ -637,8 +690,12 @@ def employee_token(employee_user):
         user_type="employee",
         custom_claims={
             "email": employee_user["employee"].email,
+            "name": employee_user["employee"].name,
+            "employee_id": employee_user["employee"].employee_id,
             "permissions": [
-                "admin_tenant.read", "employee.read", "employee.create", "employee.update",
+                # String format permissions (for most endpoints)
+                "admin_tenant.read", 
+                "employee.read", "employee.create", "employee.update",
                 "team.create", "team.read", "team.update",
                 "shift.create", "shift.read", "shift.update",
                 "cutoff.read", "cutoff.update",
@@ -647,7 +704,12 @@ def employee_token(employee_user):
                 "route.create", "route.read", "route.update", "route.delete",
                 "route_vendor_assignment.create", "route_vendor_assignment.read", "route_vendor_assignment.update", "route_vendor_assignment.delete",
                 "route_vehicle_assignment.create", "route_vehicle_assignment.read", "route_vehicle_assignment.update", "route_vehicle_assignment.delete",
-                "route_merge.create", "route_merge.read", "route_merge.update", "route_merge.delete"
+                "route_merge.create", "route_merge.read", "route_merge.update", "route_merge.delete",
+                "escort.create", "escort.read", "escort.update", "escort.delete",
+                "tenant_config.read", "tenant_config.update", "tenant_config.escort",
+                "app-employee.read", "app-employee.write",
+                # Dict format permissions (for alert module)
+                {"module": "alert", "action": ["create", "read", "respond", "close", "escalate"]}
             ]
         }
     )
@@ -666,6 +728,57 @@ def vendor_token():
         custom_claims={
             "email": "vendor@test.com",
             "permissions": ["route.read"]
+        }
+    )
+    return f"Bearer {token}"
+
+
+@pytest.fixture(scope="function")
+def get_employee_token(test_employee, test_tenant):
+    """
+    Factory fixture to generate JWT tokens with custom permissions for testing.
+    Allows tests to specify exactly what permissions a user should have.
+    """
+    def _get_token(
+        permissions=None,
+        role_name="Employee",
+        role=None,  # Alias for role_name
+        tenant_id=None,
+        team_id=None,  # Allow specifying team_id in token
+        user_id=None,
+        email=None
+    ):
+        # test_employee is a dict with "employee" key
+        employee = test_employee.get("employee", test_employee)
+        # role is an alias for role_name
+        actual_role_name = role or role_name
+        token = create_access_token(
+            user_id=str(user_id or employee.employee_id),
+            tenant_id=tenant_id or test_tenant.tenant_id,
+            user_type="employee",
+            custom_claims={
+                "role_name": actual_role_name,
+                "email": email or employee.email,
+                "team_id": team_id,
+                "permissions": permissions or []
+            }
+        )
+        return {"Authorization": f"Bearer {token}"}
+    return _get_token
+
+
+@pytest.fixture(scope="function")
+def driver_token(test_driver, test_tenant):
+    """
+    Generate JWT token for driver user (very limited access).
+    """
+    token = create_access_token(
+        user_id=str(test_driver.driver_id),
+        tenant_id=test_tenant.tenant_id,
+        user_type="driver",
+        custom_claims={
+            "email": test_driver.email,
+            "permissions": []
         }
     )
     return f"Bearer {token}"
@@ -908,6 +1021,65 @@ def second_vendor(test_db, second_tenant):
     test_db.commit()
     test_db.refresh(vendor)
     return vendor
+
+@pytest.fixture(scope="function")
+def test_escort(test_db, test_tenant, test_vendor):
+    """Create a test escort"""
+    from app.models.escort import Escort
+    escort = Escort(
+        tenant_id=test_tenant.tenant_id,
+        vendor_id=test_vendor.vendor_id,
+        name="Test Escort",
+        phone="9876543210",
+        email="escort@test.com",
+        gender="FEMALE",
+        is_active=True,
+        is_available=True
+    )
+    test_db.add(escort)
+    test_db.commit()
+    test_db.refresh(escort)
+    return escort
+
+
+@pytest.fixture(scope="function")
+def second_tenant_escort(test_db, second_tenant, second_tenant_vendor):
+    """Create escort in second tenant"""
+    from app.models.escort import Escort
+    escort = Escort(
+        tenant_id=second_tenant.tenant_id,
+        vendor_id=second_tenant_vendor.vendor_id,
+        name="Second Tenant Escort",
+        phone="8765432109",
+        email="escort2@test.com",
+        gender="MALE",
+        is_active=True,
+        is_available=True
+    )
+    test_db.add(escort)
+    test_db.commit()
+    test_db.refresh(escort)
+    return escort
+
+
+@pytest.fixture(scope="function")
+def second_tenant_vendor(test_db, second_tenant):
+    """Create vendor in second tenant"""
+    from app.models.vendor import Vendor
+    vendor = Vendor(
+        vendor_id=100,
+        tenant_id=second_tenant.tenant_id,
+        vendor_code="VEND100",
+        name="Second Tenant Vendor",
+        email="vendor_t2@test.com",
+        phone="1111111111",
+        is_active=True
+    )
+    test_db.add(vendor)
+    test_db.commit()
+    test_db.refresh(vendor)
+    return vendor
+
 
 @pytest.fixture(scope="function")
 def test_driver(test_db, test_tenant, test_vendor):
