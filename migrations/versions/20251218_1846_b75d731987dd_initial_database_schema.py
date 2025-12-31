@@ -121,7 +121,7 @@ def upgrade() -> None:
         sa.Column('name', sa.String(length=255), nullable=False),
         sa.Column('employee_code', sa.String(length=100), nullable=True),
         sa.Column('email', sa.String(length=255), nullable=False),
-        sa.Column('password', sa.String(length=255), nullable=False),
+        sa.Column('password_hash', sa.String(length=255), nullable=False),  # Stores bcrypt hashed passwords
         sa.Column('phone', sa.String(length=20), nullable=False),
         sa.Column('alternate_phone', sa.String(length=20), nullable=True),
         sa.Column('address', sa.Text(), nullable=True),
@@ -168,7 +168,7 @@ def upgrade() -> None:
         sa.Column('role_id', sa.Integer(), nullable=True),
         sa.Column('name', sa.String(length=255), nullable=False),
         sa.Column('email', sa.String(length=255), nullable=False),
-        sa.Column('password', sa.String(length=255), nullable=False),
+        sa.Column('password_hash', sa.String(length=255), nullable=False),  # Stores bcrypt hashed passwords
         sa.Column('phone', sa.String(length=20), nullable=False),
         sa.Column('license_number', sa.String(length=100), nullable=True),
         sa.Column('license_expiry', sa.Date(), nullable=True),
