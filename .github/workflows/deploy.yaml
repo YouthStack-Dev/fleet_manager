@@ -102,6 +102,13 @@ jobs:
             USE_REDIS=1
             TOKEN_EXPIRY_HOURS=${{ secrets.TOKEN_EXPIRY_HOURS || '1' }}
             
+            # Twilio SMS Configuration
+            TWILIO_ENABLED=${{ secrets.TWILIO_ENABLED || 'false' }}
+            TWILIO_ACCOUNT_SID=${{ secrets.TWILIO_ACCOUNT_SID }}
+            TWILIO_AUTH_TOKEN=${{ secrets.TWILIO_AUTH_TOKEN }}
+            TWILIO_PHONE_NUMBER=${{ secrets.TWILIO_PHONE_NUMBER }}
+            TWILIO_VERIFY_SERVICE_SID=${{ secrets.TWILIO_VERIFY_SERVICE_SID }}
+            
             # Storage configuration
             ENV=production
             STORAGE_TYPE=filesystem

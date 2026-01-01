@@ -61,6 +61,12 @@ services:
       - EMAIL_RETRY_DELAY=5
       - EMAIL_QUEUE_ENABLED=false
       - FRONTEND_URL=https://your-production-domain.com
+      # Twilio configuration (will be overridden by service.prod.env from GitHub secrets)
+      - TWILIO_ENABLED=false
+      - TWILIO_ACCOUNT_SID=
+      - TWILIO_AUTH_TOKEN=
+      - TWILIO_PHONE_NUMBER=
+      - TWILIO_VERIFY_SERVICE_SID=
       # Database and other settings
       - DATABASE_URL=postgresql://fleetadmin:fleetpass@fleet_postgres:5432/fleet_db
       - REDIS_HOST=redis_server
