@@ -118,11 +118,13 @@ jobs:
     - name: Check for sensitive data in migrations
       run: |
         echo "Checking for sensitive data patterns..."
-        if grep -r -i "password\|secret\|api_key\|token" migrations/versions/*.py; then
-          echo "⚠️ Warning: Potential sensitive data found in migrations"
+        # Check for hardcoded sensitive values (not column definitions)
+        # Exclude patterns like Column('password', ...) or sa.Column('password_hash', ...)
+        if grep -r -E "(password|secret|api_key|token)\s*=\s*['\"]" migrations/versions/*.py | grep -v "Column(" | grep -v "server_default"; then
+          echo "⚠️ Warning: Potential hardcoded sensitive data found in migrations"
           exit 1
         else
-          echo "✅ No sensitive data patterns found"
+          echo "✅ No hardcoded sensitive data patterns found"
         fi
     
     - name: Verify migration file naming

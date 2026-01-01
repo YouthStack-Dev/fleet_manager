@@ -9,6 +9,9 @@ class ActionEnum(str, Enum):
     UPDATE = "update"
     DELETE = "delete"
     ALL = "*"
+    CLOSE = "close"
+    RESPOND = "respond"
+    ESCALATE = "escalate"
 
 class PermissionBase(BaseModel):
     module: str = Field(..., min_length=1, max_length=100)
