@@ -33,6 +33,14 @@ from app.models.vendor_user import VendorUser
 from app.models.vendor import Vendor
 from app.models.weekoff_config import WeekoffConfig
 
+# Import Alert models
+from app.models.alert import (
+    Alert, 
+    AlertEscalation, 
+    AlertNotification, 
+    AlertConfiguration
+)
+
 # Import IAM models if they exist
 try:
     from app.models.iam.role import Role

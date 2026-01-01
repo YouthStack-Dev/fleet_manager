@@ -116,7 +116,7 @@ class Alert(Base):
     # Metadata
     is_false_alarm = Column(Boolean, default=False, nullable=False)
     auto_escalated = Column(Boolean, default=False, nullable=False)
-    alert_metadata = Column("metadata", JSON, nullable=True)  # Maps to 'metadata' column in DB
+    alert_metadata = Column(JSON, nullable=True)  # Additional metadata as JSON
     
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
