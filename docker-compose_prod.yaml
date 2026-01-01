@@ -46,6 +46,22 @@ services:
     env_file:
       - ./service.prod.env
     environment:
+      # SMTP Email Configuration
+      - EMAIL_ENABLED=true
+      - SMTP_SERVER=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USERNAME=dheerajkumarp777@gmail.com
+      - SMTP_PASSWORD=orls draa fbxo neox
+      - SMTP_USE_TLS=true
+      - SMTP_USE_SSL=false
+      - SENDER_EMAIL=dheerajkumarp777@gmail.com
+      - SENDER_NAME=Fleet Manager Admin
+      - SUPPORT_EMAIL=dheerajkumarp777@gmail.com
+      - EMAIL_RETRY_ATTEMPTS=3
+      - EMAIL_RETRY_DELAY=5
+      - EMAIL_QUEUE_ENABLED=false
+      - FRONTEND_URL=https://your-production-domain.com
+      # Database and other settings
       - DATABASE_URL=postgresql://fleetadmin:fleetpass@fleet_postgres:5432/fleet_db
       - REDIS_HOST=redis_server
       - REDIS_PORT=6379
