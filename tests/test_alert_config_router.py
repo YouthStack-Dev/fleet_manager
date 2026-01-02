@@ -161,10 +161,10 @@ class TestAlertConfigRouter:
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
     def test_create_alert_configuration_with_team(
-        self, client, test_db, employee_token, sample_config_data
+        self, client, test_db, employee_token, employee_user, sample_config_data
     ):
         """Test creating team-specific configuration"""
-        sample_config_data["team_id"] = 1
+        sample_config_data["team_id"] = 2  # Use team_id=2 which belongs to employee_user
         
         response = client.post(
             "/api/v1/alert-config",
@@ -175,7 +175,7 @@ class TestAlertConfigRouter:
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
         assert data["success"] is True
-        assert data["data"]["team_id"] == 1
+        assert data["data"]["team_id"] == 2
 
     # ========================================================================
     # GET ALERT CONFIGURATIONS TESTS
@@ -205,11 +205,11 @@ class TestAlertConfigRouter:
         assert len(data["data"]) > 0
 
     def test_get_alert_configurations_with_team_filter(
-        self, client, test_db, employee_token, sample_config_data
+        self, client, test_db, employee_token, employee_user, sample_config_data
     ):
         """Test retrieving configurations filtered by team"""
         # Create team-specific config
-        sample_config_data["team_id"] = 1
+        sample_config_data["team_id"] = 2  # Use team_id=2 which belongs to employee_user
         client.post(
             "/api/v1/alert-config",
             json=sample_config_data,
@@ -217,14 +217,14 @@ class TestAlertConfigRouter:
         )
         
         response = client.get(
-            "/api/v1/alert-config?team_id=1",
+            "/api/v1/alert-config?team_id=2",
             headers={"Authorization": employee_token}
         )
         
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
         assert data["success"] is True
-        assert all(config.get("team_id") == 1 for config in data["data"] if config.get("team_id"))
+        assert all(config.get("team_id") == 2 for config in data["data"] if config.get("team_id"))
 
     def test_get_alert_configurations_empty(
         self, client, employee_token
@@ -521,7 +521,7 @@ class TestAlertConfigRouter:
         assert "No configuration found" in data["message"]
 
     def test_get_applicable_configuration_team_priority(
-        self, client, test_db, get_employee_token, sample_config_data
+        self, client, test_db, get_employee_token, employee_user, sample_config_data
     ):
         """Test that team-specific config takes priority over tenant config"""
         # Create tenant-wide config
@@ -542,10 +542,10 @@ class TestAlertConfigRouter:
         team_headers = get_employee_token(
             permissions=["tenant_config.read", "tenant_config.write"],
             role="TRANSPORT_MANAGER",
-            team_id=1
+            team_id=2  # Use team_id=2 which belongs to employee_user
         )
         sample_config_data["config_name"] = "Team Config"
-        sample_config_data["team_id"] = 1
+        sample_config_data["team_id"] = 2  # Use team_id=2
         sample_config_data["priority"] = 2
         client.post(
             "/api/v1/alert-config",
