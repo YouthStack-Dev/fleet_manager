@@ -66,27 +66,27 @@ def create_alert(
 def get_alert_by_id(
     db: Session,
     alert_id: int,
-    tenant_id: str,
+    tenant_id: Optional[str],
     include_relations: bool = False
 ) -> Optional[Alert]:
-    """Get alert by ID"""
-    query = db.query(Alert).filter(
-        Alert.alert_id == alert_id,
-        Alert.tenant_id == tenant_id
-    )
-    
+    """Get alert by ID. If tenant_id is None, do not filter by tenant (admin use-case)."""
+    query = db.query(Alert).filter(Alert.alert_id == alert_id)
+
+    if tenant_id:
+        query = query.filter(Alert.tenant_id == tenant_id)
+
     if include_relations:
         query = query.options(
             joinedload(Alert.escalations),
             joinedload(Alert.notifications)
         )
-    
+
     return query.first()
 
 
 def get_alerts(
     db: Session,
-    tenant_id: str,
+    tenant_id: Optional[str],
     employee_id: Optional[int] = None,
     booking_id: Optional[int] = None,
     status: Optional[AlertStatusEnum] = None,
@@ -99,7 +99,9 @@ def get_alerts(
     offset: int = 0
 ) -> List[Alert]:
     """Get alerts with filters"""
-    query = db.query(Alert).filter(Alert.tenant_id == tenant_id)
+    query = db.query(Alert)
+    if tenant_id:
+        query = query.filter(Alert.tenant_id == tenant_id)
     
     if employee_id:
         query = query.filter(Alert.employee_id == employee_id)
@@ -130,10 +132,13 @@ def get_alerts(
     return query.limit(limit).offset(offset).all()
 
 
-def get_active_alerts(db: Session, tenant_id: str, employee_id: Optional[int] = None) -> List[Alert]:
+def get_active_alerts(db: Session, tenant_id: Optional[str], employee_id: Optional[int] = None) -> List[Alert]:
     """Get active (not closed) alerts"""
-    query = db.query(Alert).filter(
-        Alert.tenant_id == tenant_id,
+    query = db.query(Alert)
+    if tenant_id:
+        query = query.filter(Alert.tenant_id == tenant_id)
+
+    query = query.filter(
         Alert.status.in_([
             AlertStatusEnum.TRIGGERED,
             AlertStatusEnum.ACKNOWLEDGED,
@@ -682,16 +687,17 @@ def get_alert_metrics(
 def get_alert_timeline(
     db: Session,
     alert_id: int,
-    tenant_id: str
+    tenant_id: Optional[str]
 ) -> Optional[Dict[str, Any]]:
     """
     Get alert event timeline
     Returns all events related to an alert in chronological order
     """
-    alert = db.query(Alert).filter(
-        Alert.alert_id == alert_id,
-        Alert.tenant_id == tenant_id
-    ).first()
+    query = db.query(Alert).filter(Alert.alert_id == alert_id)
+    if tenant_id:
+        query = query.filter(Alert.tenant_id == tenant_id)
+
+    alert = query.first()
     
     if not alert:
         return None

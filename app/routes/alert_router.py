@@ -917,3 +917,74 @@ async def send_escalation_notification(
     except Exception as e:
         logger.error(f"[background.escalate_notify] Error: {str(e)}")
 
+
+
+@router.delete("/{alert_id}", response_model=dict)
+def delete_alert(
+    alert_id: int,
+    db: Session = Depends(get_db),
+    current_employee: dict = Depends(get_current_employee)
+):
+    """
+    Delete an alert
+
+    - Employees can only delete alerts belonging to their tenant
+    - Admins can delete any alert
+    """
+    try:
+        user_type = current_employee.get("user_type")
+        tenant_id = current_employee.get("tenant_id") if user_type != "admin" else None
+
+        logger.info(f"[alert.delete] User: {current_employee.get('user_id')}, user_type: {user_type}, tenant_filter: {tenant_id}")
+
+        # Fetch alert (respect tenant filter for non-admins)
+        if tenant_id:
+            alert = alert_crud.get_alert_by_id(db, alert_id, tenant_id)
+        else:
+            from app.models.alert import Alert
+            alert = db.query(Alert).filter(Alert.alert_id == alert_id).first()
+
+        if not alert:
+            logger.warning(f"[alert.delete] Alert {alert_id} not found for tenant filter: {tenant_id}")
+            raise HTTPException(
+                status_code=404,
+                detail=ResponseWrapper.error(
+                    message="Alert not found",
+                    error_code="ALERT_NOT_FOUND"
+                )
+            )
+
+        # Additional access control: if user is employee, ensure alert belongs to their tenant
+        if user_type != "admin" and alert.tenant_id != tenant_id:
+            logger.error(f"[alert.delete] Access denied - alert tenant {alert.tenant_id} != user tenant {tenant_id}")
+            raise HTTPException(
+                status_code=403,
+                detail=ResponseWrapper.error(
+                    message="Access denied to delete this alert",
+                    error_code="ACCESS_FORBIDDEN"
+                )
+            )
+
+        db.delete(alert)
+        db.commit()
+
+        logger.info(f"[alert.delete] Alert {alert_id} deleted by user {current_employee.get('user_id')}")
+
+        return ResponseWrapper.success(
+            message="Alert deleted successfully",
+            data={"deleted_alert_id": alert_id}
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[alert.delete] Error: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=ResponseWrapper.error(
+                message=f"Failed to delete alert: {str(e)}",
+                error_code="DELETE_FAILED"
+            )
+        )
+

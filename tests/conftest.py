@@ -65,6 +65,44 @@ def client(test_db, monkeypatch):
     
     app.dependency_overrides[get_db] = override_get_db
     
+    # Mock Redis for token storage in tests
+    from unittest.mock import MagicMock
+    import json
+    import time
+    
+    # Create an in-memory dict to simulate Redis
+    mock_redis_storage = {}
+    
+    class MockRedisClient:
+        def get(self, key):
+            value = mock_redis_storage.get(key)
+            return value
+        
+        def setex(self, key, ttl, value):
+            mock_redis_storage[key] = value
+            return True
+        
+        def delete(self, *keys):
+            for key in keys:
+                mock_redis_storage.pop(key, None)
+            return len(keys)
+        
+        def ping(self):
+            return True
+    
+    mock_redis_client = MockRedisClient()
+    
+    # Patch RedisTokenManager to use our mock
+    from common_utils.auth.token_validation import RedisTokenManager
+    original_redis_init = RedisTokenManager.__init__
+    
+    def mock_redis_init(self):
+        self.client = mock_redis_client
+        self.available = True
+        self._RedisTokenManager__initialized = True
+    
+    monkeypatch.setattr(RedisTokenManager, "__init__", mock_redis_init)
+    
     # Mock PermissionChecker to decode JWT directly without caching or introspection
     from common_utils.auth.permission_checker import PermissionChecker
     from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
