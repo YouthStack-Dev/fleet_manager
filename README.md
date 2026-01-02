@@ -33,6 +33,7 @@ A fleet management system with PostgreSQL database running in Docker.
   - `02_sample_data.sql` - Sample user data
 - `scripts/` - Utility scripts
   - `query_users.py` - Python script to query users
+- `docs/` - Documentation (see `SYSTEM_ARCHITECTURE.md` for a high-level architecture map)
 
 ### Environment Variables
 The PostgreSQL container uses the following environment variables:
