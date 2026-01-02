@@ -84,8 +84,22 @@ def create_alert_configuration(
         
         # Validate: team must belong to tenant if specified
         if request.team_id:
-            # TODO: Add team validation if needed
-            pass
+            from app.models.team import Team
+            team = db.query(Team).filter(
+                Team.team_id == request.team_id,
+                Team.tenant_id == tenant_id
+            ).first()
+            
+            if not team:
+                raise HTTPException(
+                    status_code=400,
+                    detail=ResponseWrapper.error(
+                        message=f"Team {request.team_id} does not belong to tenant {tenant_id}",
+                        error_code="INVALID_TEAM_TENANT"
+                    )
+                )
+            
+            logger.info(f"[alert_config.create] Validated team {request.team_id} belongs to tenant {tenant_id}")
         
         # Check for existing configuration
         existing = alert_crud.get_alert_configuration(
@@ -168,6 +182,25 @@ def get_alert_configurations(
                     )
                 )
             logger.info(f"[alert_config.list] Employee tenant_id: {tenant_id}")
+            
+            # Validate team_id if provided - must belong to employee's tenant
+            if team_id:
+                from app.models.team import Team
+                team = db.query(Team).filter(
+                    Team.team_id == team_id,
+                    Team.tenant_id == tenant_id
+                ).first()
+                
+                if not team:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=ResponseWrapper.error(
+                            message=f"Team {team_id} does not belong to your tenant or does not exist",
+                            error_code="INVALID_TEAM_ACCESS"
+                        )
+                    )
+                logger.info(f"[alert_config.list] Validated team {team_id} belongs to tenant {tenant_id}")
+            
             # Non-admin employees can only view their team's config
             if current_employee.get("role") not in ["ADMIN", "TRANSPORT_MANAGER"]:
                 team_id = current_employee.get("team_id")
@@ -218,6 +251,9 @@ def get_alert_configurations(
             data=[AlertConfigurationResponse.from_orm(config).dict() for config in configs]
         )
         
+    except HTTPException:
+        # Let explicit HTTPExceptions (403/404/400 etc.) propagate unchanged
+        raise
     except Exception as e:
         logger.error(f"[alert_config.list] Error: {str(e)}")
         raise HTTPException(
@@ -370,6 +406,26 @@ def update_alert_configuration(
             )
         
         logger.info(f"[alert_config.update] Found config: {config.config_name} (ID: {config.config_id})")
+        
+        # Validate team_id if being updated
+        team_id_to_validate = getattr(request, 'team_id', None)
+        if team_id_to_validate is not None:
+            from app.models.team import Team
+            team = db.query(Team).filter(
+                Team.team_id == team_id_to_validate,
+                Team.tenant_id == config.tenant_id
+            ).first()
+            
+            if not team:
+                raise HTTPException(
+                    status_code=400,
+                    detail=ResponseWrapper.error(
+                        message=f"Team {team_id_to_validate} does not belong to tenant {config.tenant_id}",
+                        error_code="INVALID_TEAM_TENANT"
+                    )
+                )
+            
+            logger.info(f"[alert_config.update] Validated team {team_id_to_validate} belongs to tenant {config.tenant_id}")
         
         # Update fields
         update_data = request.dict(exclude_unset=True)
