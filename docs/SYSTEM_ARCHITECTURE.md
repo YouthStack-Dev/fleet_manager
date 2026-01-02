@@ -14,7 +14,7 @@ flowchart LR
 
     Clients --> API[FastAPI service\n(main.py + routers)]
     API --> DB[(PostgreSQL\nSQLAlchemy/Alembic)]
-    API --> Redis[(Redis cache/locks)\noptional via USE_REDIS]
+    API --> Redis[(Redis cache & distributed locks)\n(enabled when USE_REDIS=1)]
     API --> Storage[(StorageService via fsspec\nlocal / S3 / GCS / Azure)]
     API --> Firebase[Firebase RTDB / FCM\nDriver location updates]
     API --> Email[SMTP provider\nemail_service]
@@ -27,10 +27,10 @@ flowchart LR
 - **API layer:** `main.py` bootstraps FastAPI, applies CORS, and wires domain routers for employees, drivers, bookings, tenants, vendors, vehicles, alerts (SOS), IAM, monitoring, and reports under `/api/v1`.
 - **Business/CRUD layer:** Domain logic is organized under `app/crud`, `app/services`, and `app/utils`, keeping routing thin.
 - **Data layer:** PostgreSQL via SQLAlchemy models (`app/models`) with Alembic migrations (`migrations/`). Seed helpers live in `app/seed`.
-- **Auth:** JWT/OAuth2 helpers in `app/routes/auth_router.py` and `app.core` with tokens configured through `SECRET_KEY`, `TOKEN_EXPIRY_HOURS`, and `OAUTH2_*` settings.
+- **Auth:** JWT/OAuth2 endpoints live in `app/routes/auth_router.py` with token/config settings drawn from `app/config.py` (`SECRET_KEY`, `TOKEN_EXPIRY_HOURS`, `OAUTH2_URL`, `OAUTH2_ENV`, `X_INTROSPECT_SECRET`).
 - **Storage:** `StorageService` (`app/services/storage_service.py`) abstracts file handling through fsspec. Environment variables choose filesystem or cloud backends.
 - **Caching / async primitives:** Optional Redis (`USE_REDIS=1`) for caching/locks; connection settings in `app/config.py`.
-- **Notifications:** SMTP email helper (`app/core/email_service.py`) for alerts and onboarding; SOS alert flows are under `app/routes/alert_router.py`.
+- **Notifications:** SMTP email helper (`app/core/email_service.py`) drives system notifications (onboarding, routine alerts, SOS); SOS alert flows are under `app/routes/alert_router.py`.
 - **Driver location:** Firebase integration (`app/firebase`) pushes driver coordinates; requires a mounted Firebase key in `app/firebase/firebase_key.json`.
 - **Observability:** Centralized structured logging (`app/core/logging_config.py`) and periodic DB monitoring (`app/utils/database_monitor.py`).
 
@@ -47,7 +47,7 @@ flowchart LR
 3. Database interactions go through SQLAlchemy sessions from `app/database/session.py`; migrations keep schema in sync.
 4. Side-effects are dispatched as needed:
    - Files saved through `StorageService`
-   - Emails via `email_service`
+   - Emails via `app/core/email_service.py`
    - Driver locations synced to Firebase
    - Optional Redis usage for caching/locks
 5. Logging and monitoring capture request/DB health for troubleshooting.
