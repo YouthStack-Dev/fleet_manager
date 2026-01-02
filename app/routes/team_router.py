@@ -211,7 +211,7 @@ def read_teams(
                 Employee.is_active == False
             ).count()
 
-            team_data = TeamResponse.model_validate(team, from_attributes=True).dict()
+            team_data = TeamResponse.model_validate(team, from_attributes=True).model_dump()
             team_data.update({
                 "active_employee_count": active_count,
                 "inactive_employee_count": inactive_count,
@@ -296,7 +296,7 @@ def read_team(
             Employee.is_active.is_(False),
         ).count()
 
-        team_data = TeamResponse.model_validate(db_team, from_attributes=True).dict()
+        team_data = TeamResponse.model_validate(db_team, from_attributes=True).model_dump()
         team_data.update(
             {
                 "active_employee_count": active_count,

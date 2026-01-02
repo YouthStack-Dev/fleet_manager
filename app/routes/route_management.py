@@ -32,9 +32,7 @@ from common_utils import datetime_to_minutes, get_current_ist_time
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
-from typing import List, Optional, Dict, Any
-from datetime import date
-from pydantic import BaseModel
+from typing import Any
 
 from app.utils.otp_utils import get_required_otp_count
 
@@ -217,7 +215,7 @@ async def create_routes(
     strict_grouping: bool = Query(False, description="Whether to enforce strict grouping by group size or not"),
     tenant_id: Optional[str] = Query(None, description="Tenant ID for multi-tenant setups"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["route.read"], check_tenant=True)),
+    user_data=Depends(PermissionChecker(["route.create"], check_tenant=True)),
 ):
 
     """
@@ -394,11 +392,16 @@ async def create_routes(
 
                     for idx, booking in enumerate(optimized_route[0]["pickup_order"]):
                         otp_code = random.randint(1000, 9999)
+                        # Convert datetime.time to string for SQLite
+                        est_pickup = booking["estimated_pickup_time_formatted"]
+                        if isinstance(est_pickup, time):
+                            est_pickup = est_pickup.strftime("%H:%M:%S")
+                        
                         route_booking = RouteManagementBooking(
                             route_id=route.route_id,
                             booking_id=booking["booking_id"],
                             order_id=idx + 1,
-                            estimated_pick_up_time=booking["estimated_pickup_time_formatted"],
+                            estimated_pick_up_time=est_pickup,
                             estimated_distance=booking["estimated_distance_km"],
                         )
                         db.add(route_booking)
@@ -414,8 +417,6 @@ async def create_routes(
                             },
                             synchronize_session=False
                         )
-
-                    db.commit()
 
                     db.commit()
                 except SQLAlchemyError as e:
@@ -790,16 +791,23 @@ async def assign_vendor_to_route(
         user_id = user_data.get("user_id")
         user_type = user_data.get("user_type")
         token_tenant_id = user_data.get("tenant_id")
+        
+        # Resolve tenant_id
         if user_type == "employee":
             tenant_id = token_tenant_id
-        elif user_type == "admin" and not tenant_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="tenant_id is required for admin users",
-                    error_code="TENANT_ID_REQUIRED",
-                ),
-            )
+        elif user_type == "admin":
+            # Use token tenant if no explicit tenant_id provided
+            if not tenant_id:
+                tenant_id = token_tenant_id
+            # Super admin must provide tenant_id if token has none
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="tenant_id is required for admin users",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
         else:
             tenant_id = token_tenant_id
 
@@ -893,7 +901,7 @@ async def assign_vendor_to_route(
     except Exception as e:
         db.rollback()
         logger.exception("[assign_vendor_to_route] Unexpected error")
-        raise handle_db_error(e)
+        return handle_db_error(e)
 
 @router.put("/assign-vehicle", status_code=status.HTTP_200_OK)
 async def assign_vehicle_to_route(
@@ -1271,6 +1279,7 @@ async def get_route_by_id(
         driver = None
         vehicle = None
         vendor = None
+        escort = None
 
         if route.assigned_driver_id:
             driver = db.query(Driver.driver_id, Driver.name, Driver.phone).filter(
@@ -1355,14 +1364,19 @@ async def merge_routes(
         # --- Tenant Resolution ---
         if user_type == "employee":
             tenant_id = token_tenant_id
-        elif user_type == "admin" and not tenant_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="tenant_id is required for admin users",
-                    error_code="TENANT_ID_REQUIRED",
-                ),
-            )
+        elif user_type == "admin":
+            if not tenant_id:
+                tenant_id = token_tenant_id  # Use token tenant for admin
+            if not tenant_id:  # Still none? Super admin needs explicit tenant
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="tenant_id is required for super admin users",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+        else:
+            tenant_id = tenant_id or token_tenant_id
 
         if not tenant_id:
             raise HTTPException(
@@ -1476,11 +1490,16 @@ async def merge_routes(
 
         # --- Insert stops ---
         for idx, b in enumerate(optimized["pickup_order"]):
+            # Convert datetime.time to string for SQLite
+            est_pickup = b["estimated_pickup_time_formatted"]
+            if isinstance(est_pickup, time):
+                est_pickup = est_pickup.strftime("%H:%M:%S")
+            
             db.add(RouteManagementBooking(
                 route_id=route.route_id,
                 booking_id=b["booking_id"],
                 order_id=idx + 1,
-                estimated_pick_up_time=b["estimated_pickup_time_formatted"],
+                estimated_pick_up_time=est_pickup,
                 estimated_distance=b["estimated_distance_km"]
             ))
 
@@ -1583,6 +1602,10 @@ async def update_route(
                 )
 
         elif user_type == "admin":
+            # Use token tenant if no explicit tenant_id provided
+            if not tenant_id:
+                tenant_id = token_tenant_id
+            # Super admin must provide tenant_id if token has none
             if not tenant_id:
                 raise HTTPException(
                     status_code=400,
@@ -1684,11 +1707,45 @@ async def update_route(
         logger.debug(f"Shift type for route {route_id} is {shift_type}")
 
         all_booking_ids = []
-        if request.operation == "add":
+        if update_request.operation == "add":
             all_booking_ids = list(current_booking_ids.union(request_booking_ids))
         else:
             all_booking_ids = list(current_booking_ids.difference(request_booking_ids))
-        logger.debug(f"All booking IDs after '{request.operation}': {all_booking_ids}")
+        logger.debug(f"All booking IDs after '{update_request.operation}': {all_booking_ids}")
+
+        # Handle empty route (all bookings removed)
+        if not all_booking_ids:
+            # Delete all route-booking mappings
+            db.query(RouteManagementBooking).filter(
+                RouteManagementBooking.route_id == route_id
+            ).delete(synchronize_session=False)
+            
+            # Revert removed bookings to REQUEST status
+            db.query(Booking).filter(
+                Booking.booking_id.in_(request_booking_ids),
+                Booking.status == BookingStatusEnum.SCHEDULED
+            ).update(
+                {
+                    Booking.status: BookingStatusEnum.REQUEST,
+                    Booking.updated_at: func.now(),
+                },
+                synchronize_session=False
+            )
+            
+            # Reset route estimations
+            route.estimated_total_time = 0.0
+            route.estimated_total_distance = 0.0
+            route.buffer_time = 0.0
+            
+            db.commit()
+            
+            return ResponseWrapper.success(
+                data={
+                    "route_id": route_id,
+                    "message": "All bookings removed from route"
+                },
+                message=f"Successfully removed all bookings from route {route.route_code}"
+            )
 
         all_bookings = []
         for booking_id in all_booking_ids:
@@ -1740,13 +1797,22 @@ async def update_route(
 
         # Add new route-booking mappings based on optimized pickup_order
         for idx, b in enumerate(optimized["pickup_order"]):
+            # Convert datetime.time objects to strings for SQLite compatibility
+            est_pickup = b.get("estimated_pickup_time_formatted")
+            if isinstance(est_pickup, time):
+                est_pickup = est_pickup.strftime("%H:%M:%S")
+            
+            est_drop = b.get("estimated_drop_time_formatted")
+            if isinstance(est_drop, time):
+                est_drop = est_drop.strftime("%H:%M:%S")
+            
             db.add(RouteManagementBooking(
                 route_id=route.route_id,
                 booking_id=b["booking_id"],
                 order_id=idx + 1,
-                estimated_pick_up_time=b.get("estimated_pickup_time_formatted"),
+                estimated_pick_up_time=est_pickup,
                 estimated_distance=b.get("estimated_distance_km"),
-                estimated_drop_time=b.get("estimated_drop_time_formatted"),
+                estimated_drop_time=est_drop,
             ))
 
         # Update booking statuses
@@ -1847,15 +1913,22 @@ async def update_booking_order(
         user_type = user_data.get("user_type")
         token_tenant_id = user_data.get("tenant_id")
 
-        if user_type == "admin" and not tenant_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="tenant_id is required for admin users",
-                    error_code="TENANT_ID_REQUIRED",
-                ),
-            )
-        elif user_type != "admin":
+        if user_type == "employee":
+            tenant_id = token_tenant_id
+        elif user_type == "admin":
+            # Use token tenant if no explicit tenant_id provided
+            if not tenant_id:
+                tenant_id = token_tenant_id
+            # Super admin must provide tenant_id if token has none
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="tenant_id is required for admin users",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+        else:
             tenant_id = token_tenant_id
 
         if not tenant_id:
@@ -1957,12 +2030,21 @@ async def update_booking_order(
         # Create new route-booking mappings with updated order and estimates
         new_mappings = []
         for idx, booking in enumerate(optimized["pickup_order"]):
+            # Convert datetime.time to string for SQLite
+            est_pickup = booking["estimated_pickup_time_formatted"]
+            if isinstance(est_pickup, time):
+                est_pickup = est_pickup.strftime("%H:%M:%S")
+            
+            est_drop = booking.get("estimated_drop_time_formatted")
+            if isinstance(est_drop, time):
+                est_drop = est_drop.strftime("%H:%M:%S")
+            
             new_mappings.append(RouteManagementBooking(
                 route_id=route_id,
                 booking_id=booking["booking_id"],
                 order_id=idx + 1,
-                estimated_pick_up_time=booking["estimated_pickup_time_formatted"],
-                estimated_drop_time=booking.get("estimated_drop_time_formatted"),
+                estimated_pick_up_time=est_pickup,
+                estimated_drop_time=est_drop,
                 estimated_distance=booking["estimated_distance_km"],
             ))
 
@@ -2060,14 +2142,17 @@ async def bulk_delete_routes(
         # --- Tenant Resolution ---
         if user_type == "employee":
             tenant_id = token_tenant_id
-        elif user_type == "admin" and not tenant_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="tenant_id is required for admin users",
-                    error_code="TENANT_ID_REQUIRED",
-                ),
-            )
+        elif user_type == "admin":
+            if not tenant_id:
+                tenant_id = token_tenant_id  # Use token tenant for admin
+            if not tenant_id:  # Still none? Super admin needs explicit tenant
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="tenant_id is required for super admin users",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
         else:
             tenant_id = tenant_id or token_tenant_id
 
@@ -2110,14 +2195,16 @@ async def bulk_delete_routes(
         logger.info(f"Found {len(route_ids)} routes for hard deletion")
 
         if not route_ids:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=ResponseWrapper.error(
-                    message=f"No routes found for shift {shift_id} on {route_date}",
-                    error_code="ROUTES_NOT_FOUND",
-                ),
+            logger.info(f"No routes found for shift {shift_id} on {route_date} - returning success with zero deletions")
+            return ResponseWrapper.success(
+                {
+                    "deleted_routes_count": 0,
+                    "reverted_bookings_count": 0,
+                    "shift_id": shift_id,
+                    "route_date": str(route_date)
+                },
+                f"No routes found for shift {shift_id} on {route_date}"
             )
-
 
         # --- Fetch affected booking IDs ---
         booking_ids = [
@@ -2237,14 +2324,17 @@ async def delete_route(
         # ---- Determine tenant context ----
         if user_type == "employee":
             tenant_id = token_tenant_id
-        elif user_type == "admin" and not tenant_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="tenant_id is required for admin users",
-                    error_code="TENANT_ID_REQUIRED",
-                ),
-            )
+        elif user_type == "admin":
+            if not tenant_id:
+                tenant_id = token_tenant_id  # Use token tenant for admin
+            if not tenant_id:  # Still none? Super admin needs explicit tenant
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="tenant_id is required for super admin users",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
         else:
             tenant_id = tenant_id or token_tenant_id
 

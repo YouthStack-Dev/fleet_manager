@@ -17,7 +17,7 @@ class CRUDBooking(CRUDBase[Booking, BookingCreate, BookingUpdate]):
         return db.query(Booking).filter(Booking.tenant_id == tenant_id).offset(skip).limit(limit).all()
 
     def create(self, db: Session, *, obj_in: BookingCreate) -> Booking:
-        db_obj = Booking(**obj_in.dict())
+        db_obj = Booking(**obj_in.model_dump())
         db.add(db_obj)
         db.commit()
         db.refresh(db_obj)
@@ -30,7 +30,7 @@ class CRUDBooking(CRUDBase[Booking, BookingCreate, BookingUpdate]):
         db_obj: Booking,
         obj_in: Union[BookingUpdate, Dict[str, Any]]
     ) -> Booking:
-        update_data = obj_in if isinstance(obj_in, dict) else obj_in.dict(exclude_unset=True)
+        update_data = obj_in if isinstance(obj_in, dict) else obj_in.model_dump(exclude_unset=True)
 
         for field, value in update_data.items():
             setattr(db_obj, field, value)

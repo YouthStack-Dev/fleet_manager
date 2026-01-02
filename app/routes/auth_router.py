@@ -10,7 +10,7 @@ from app.models.tenant import Tenant
 from fastapi import APIRouter, Depends, HTTPException, Header, status, Body, Query
 
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordRequestForm
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import Optional
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -85,118 +85,94 @@ def employee_to_schema(employee: Employee) -> EmployeeResponse:
 
 def introspect_token_direct(token: str) -> dict:
     """
-    Direct introspection function that can be called internally without HTTP overhead.
-    This function performs the same logic as the HTTP introspection endpoint.
+    Optimized introspection function that validates JWT and returns claims WITHOUT database calls.
+    All necessary user information (roles, permissions, user_type) is already embedded in the JWT.
+    This eliminates 2-4 database queries per request for significant performance improvement.
     """
-    db = next(get_db())  # Get actual database session
     try:
+        # Decode and validate JWT signature and expiration
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         logger.debug(f"Token decoded successfully for user: {payload.get('user_id')}, tenant: {payload.get('tenant_id')}")
+        
+        # Extract all data from JWT claims (no DB lookup needed)
+        user_id = payload.get("user_id")
+        tenant_id = payload.get("tenant_id")
+        user_type = payload.get("user_type", "employee")
+        roles = payload.get("roles", [])
+        permissions = payload.get("permissions", [])
+        opaque_token = payload.get("opaque_token")
+        
+        # Basic validation
+        if not user_id:
+            logger.warning("Token introspection failed - Missing user_id in JWT")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error("Invalid token: missing user_id", "INVALID_TOKEN")
+            )
+        
+        if user_type != "admin" and not tenant_id:
+            logger.warning(f"Token introspection failed - Missing tenant_id for non-admin user: {user_id}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error("Missing tenant_id for employee token", "MISSING_TENANT_ID")
+            )
+        
+        # Optional: Check if session is still valid (single-session enforcement)
+        # This uses Redis/cache, not database
+        if opaque_token:
+            oauth_accessor = Oauth2AsAccessor()
+            if oauth_accessor.use_redis:
+                try:
+                    session_key = f"{user_type}_session:{user_id}"
+                    active_token = oauth_accessor.redis_manager.client.get(session_key)
+                    if active_token:
+                        if isinstance(active_token, bytes):
+                            active_token = active_token.decode()
+                        if active_token != opaque_token:
+                            logger.warning(f"Session invalidated for user {user_id} - different active token")
+                            raise HTTPException(
+                                status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail=ResponseWrapper.error(
+                                    message="Session expired due to login on another device",
+                                    error_code="SESSION_EXPIRED"
+                                )
+                            )
+                except Exception as redis_err:
+                    # Redis errors shouldn't block authentication if JWT is valid
+                    logger.warning(f"Redis check failed during introspection for user {user_id}: {redis_err}")
+        
+        logger.info(f"Token introspection successful (JWT-only) for user: {user_id}, user_type: {user_type}, roles: {roles}, permissions: {len(permissions)} modules")
+        
+        # Return the claims from JWT directly
+        token_payload = {
+            "user_id": str(user_id),
+            "roles": roles,
+            "permissions": permissions,
+            "user_type": user_type,
+            "iat": payload.get("iat"),
+            "exp": payload.get("exp"),
+        }
+        
+        if opaque_token:
+            token_payload["opaque_token"] = opaque_token
+        
+        if tenant_id:
+            token_payload["tenant_id"] = str(tenant_id)
+        
+        return token_payload
+        
+    except jwt.ExpiredSignatureError:
+        logger.warning("Token introspection failed - Token expired")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ResponseWrapper.error("Token expired", "TOKEN_EXPIRED")
+        )
     except jwt.InvalidTokenError as e:
         logger.warning(f"Token introspection failed - Invalid JWT: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token"
+            detail=ResponseWrapper.error("Invalid token", "INVALID_TOKEN")
         )
-    finally:
-        db.close()  # Ensure session is closed
-    
-    db = next(get_db())  # Get new session for database operations
-    try:
-        user_id = payload.get("user_id")
-        tenant_id = payload.get("tenant_id")
-        user_type = payload.get("user_type")  # Get token user_type from JWT
-        
-        logger.debug(f"Fetching roles and permissions for introspection - user: {user_id}, tenant: {tenant_id}, user_type: {user_type}")
-        
-        if user_type == "admin":
-            admin = db.query(Admin).filter(Admin.admin_id == int(user_id)).first()
-            if not admin:
-                logger.warning(f"Introspection failed - Admin not found: {user_id}")
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="User not found"
-                )
-            
-            if not admin.is_active:
-                logger.warning(f"Introspection failed - Inactive admin: {user_id}")
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="User account is inactive"
-                )
-            
-            admin_with_roles, roles, all_permissions = admin_crud.get_admin_roles_and_permissions(
-                db, admin_id=admin.admin_id
-            )
-            
-            if not admin_with_roles:
-                logger.error(f"Failed to fetch admin roles for admin: {admin.admin_id}")
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to fetch user roles"
-                )
-        else:
-            if not tenant_id:
-                logger.warning(f"Introspection failed - Missing tenant_id for employee user_type: {user_id}")
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=ResponseWrapper.error("Missing tenant_id for employee token", "MISSING_TENANT_ID")
-                )
-            
-            employee = db.query(Employee).filter(
-                Employee.employee_id == int(user_id),
-                Employee.tenant_id == tenant_id
-            ).first()
-            
-            if not employee:
-                logger.warning(f"Introspection failed - Employee not found: {user_id} in tenant: {tenant_id}")
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="User not found"
-                )
-            
-            if not employee.is_active:
-                logger.warning(f"Introspection failed - Inactive employee: {user_id}")
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="User account is inactive"
-                )
-            
-            employee_with_roles, roles, all_permissions = employee_crud.get_employee_roles_and_permissions(
-                db, employee_id=employee.employee_id, tenant_id=tenant_id
-            )
-            
-            if not employee_with_roles:
-                logger.error(f"Failed to fetch employee roles for employee: {employee.employee_id}")
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to fetch user roles"
-                )
-        
-        logger.info(f"Token introspection successful for user: {user_id}, user_type: {user_type}, roles: {roles}, permissions: {len(all_permissions)} modules")
-        
-        current_time = int(time.time())
-        expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
-        
-        opaque_token = secrets.token_hex(16)
-        
-        token_payload = {
-            "user_id": str(user_id),
-            "opaque_token": opaque_token,
-            "roles": roles,
-            "permissions": all_permissions,
-            "iat": current_time,
-            "exp": expiry_time,
-        }
-        
-        if user_type != "admin" and tenant_id:
-            token_payload["tenant_id"] = str(tenant_id)
-        
-        if user_type:
-            token_payload["user_type"] = user_type
-
-        return token_payload
-        
     except HTTPException:
         raise
     except Exception as e:
@@ -205,8 +181,6 @@ def introspect_token_direct(token: str) -> dict:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=ResponseWrapper.error("Unexpected error", "UNEXPECTED_ERROR"),
         )
-    finally:
-        db.close()  # Ensure session is closed
 
 @router.post("/employee/login")
 async def employee_login(
@@ -220,9 +194,18 @@ async def employee_login(
     logger.info(f"Employee login attempt for user: {form_data.username} in tenant: {form_data.tenant_id}")
 
     try:
+        # Optimized single query with all necessary joins to prevent N+1 queries
+        from app.models.iam import Role, Policy, Permission
+        
         employee = (
             db.query(Employee)
-            .join(Tenant, Tenant.tenant_id == Employee.tenant_id)
+            .options(
+                joinedload(Employee.tenant),
+                joinedload(Employee.team),
+                joinedload(Employee.roles)
+                .joinedload(Role.policies)
+                .joinedload(Policy.permissions)
+            )
             .filter(
                 Employee.email == form_data.username,
                 Employee.tenant_id == form_data.tenant_id
@@ -262,8 +245,9 @@ async def employee_login(
                 ),
             )
 
-        # account active checks
-        if not employee.is_active or not tenant.is_active or employee_crud.is_employee_team_inactive(db, employee.employee_id):
+        # account active checks (using eager-loaded data)
+        team_inactive = employee.team and not employee.team.is_active
+        if not employee.is_active or not tenant.is_active or team_inactive:
             logger.warning(f"🚫 Login failed - Inactive account for employee: {employee.employee_id} ({form_data.username})")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -273,13 +257,43 @@ async def employee_login(
                 ),
             )
 
-        # roles & permissions
-        logger.debug(f"Fetching roles and permissions for employee: {employee.employee_id} in tenant: {tenant.tenant_id}")
-        employee_with_roles, roles, all_permissions = employee_crud.get_employee_roles_and_permissions(
-            db, employee_id=employee.employee_id, tenant_id=tenant.tenant_id
-        )
-        if not employee_with_roles:
-            logger.error(f"Failed to fetch employee roles for employee: {employee.employee_id}")
+        # Extract roles & permissions from eager-loaded data (no additional queries)
+        logger.debug(f"Processing roles and permissions for employee: {employee.employee_id} in tenant: {tenant.tenant_id}")
+        roles = []
+        all_permissions = []
+        
+        # Process roles that are already loaded
+        role_list = employee.roles if hasattr(employee, 'roles') and employee.roles else []
+        if not isinstance(role_list, list):
+            try:
+                role_list = list(role_list)
+            except (TypeError, AttributeError):
+                role_list = [role_list] if role_list else []
+        
+        for role in role_list:
+            if role and role.is_active and (role.tenant_id == tenant.tenant_id or role.is_system_role):
+                roles.append(role.name)
+                
+                # Get permissions from role policies (already eager-loaded)
+                for policy in role.policies:
+                    for permission in policy.permissions:
+                        module, action = permission.module, permission.action
+                        existing = next((p for p in all_permissions if p["module"] == module), None)
+                        if existing:
+                            if action == "*":
+                                existing["action"] = ["create", "read", "update", "delete", "*"]
+                            elif action not in existing["action"]:
+                                existing["action"].append(action)
+                        else:
+                            actions = (
+                                ["create", "read", "update", "delete", "*"]
+                                if action == "*"
+                                else [action]
+                            )
+                            all_permissions.append({"module": module, "action": actions})
+        
+        if not roles:
+            logger.error(f"No active roles found for employee: {employee.employee_id}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=ResponseWrapper.error(
@@ -1157,6 +1171,37 @@ async def get_current_user_profile(
                 "user": {
                     "admin_id": admin.admin_id,
                     "email": admin.email,
+                },
+                "roles": roles,
+                "permissions": permissions,
+            }
+
+        elif user_type == "driver":
+            driver = db.query(Driver).filter(Driver.driver_id == int(user_id)).first()
+            if not driver:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message="Driver not found",
+                        error_code=status.HTTP_404_NOT_FOUND,
+                    ),
+                )
+
+            # Get driver roles and permissions
+            from app.crud.driver import driver_crud
+            _, roles, permissions = driver_crud.get_driver_roles_and_permissions(
+                db, driver_id=driver.driver_id, tenant_id=driver.tenant_id
+            )
+
+            response_data = {
+                "user_type": "driver",
+                "user": {
+                    "driver_id": driver.driver_id,
+                    "name": driver.name,
+                    "email": driver.email,
+                    "phone": driver.phone,
+                    "vendor_id": driver.vendor_id,
+                    "tenant_id": driver.tenant_id,
                 },
                 "roles": roles,
                 "permissions": permissions,

@@ -52,6 +52,7 @@ MIGRATION_SETUP_COMPLETE.md
 .env
 .env.local
 .env.*.local
+service.prod.env
 
 # Database backups
 backups/

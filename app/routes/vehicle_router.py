@@ -663,7 +663,9 @@ def update_vehicle_status(
     try:
         user_id = user_data.get("user_id")
         user_type = user_data.get("user_type")
-        token_vendor_id = int(user_data.get("vendor_id", 0))
+        token_vendor_id = user_data.get("vendor_id")
+        if token_vendor_id is not None:
+            token_vendor_id = int(token_vendor_id)
 
         logger.info(f"[VehicleStatusUpdate] user_id={user_id}, vehicle_id={vehicle_id}, user_type={user_type}, set_active={is_active}")
 

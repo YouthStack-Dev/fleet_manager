@@ -2,6 +2,7 @@
 import sys
 import os
 import shutil
+from contextlib import asynccontextmanager
 
 from app.models.tenant import Tenant
 from app.seed.seed_data import seed_admins, seed_drivers, seed_employees, seed_iam, seed_shifts, seed_teams, seed_tenants, seed_vehicle_types, seed_vehicles, seed_vendor_users, seed_weekoffs , seed_vendors # Add this import to check for executable availability
@@ -44,6 +45,8 @@ from app.routes import (
     monitoring_router,  # Add monitoring router
     tenant_config_router  # Add tenant config router
 )
+from app.routes.alert_router import router as alert_router
+from app.routes.alert_config_router import router as alert_config_router
 from app.seed.seed_api import router as seed_router
 
 # Import the IAM routers
@@ -68,10 +71,23 @@ logger.info("ℹ️ This is an INFO message")
 logger.warning("⚠️ This is a WARNING message")
 logger.error("❌ This is an ERROR message (test only)")
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan context manager"""
+    # Startup
+    print("STARTUP EVENT: Called", file=sys.stdout, flush=True)
+    logger.info("🌟 Fleet Manager application starting up...")
+    # ...existing startup code...
+    yield
+    # Shutdown
+    logger.info("🛑 Fleet Manager application shutting down...")
+    # ...existing shutdown code...
+
 app = FastAPI(
     title="Fleet Manager API",
     description="API for Fleet Management System",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Set up CORS middleware
@@ -110,6 +126,10 @@ app.include_router(grouping.router, prefix="/api/v1")        # Add new grouping 
 app.include_router(route_management.router, prefix="/api/v1") # Add new route management router
 app.include_router(auth_router, prefix="/api/v1")  # Add the auth router
 app.include_router(monitoring_router, prefix="/api/v1")  # Add monitoring router
+
+# Include alert routers (SOS system)
+app.include_router(alert_router)  # Already has /api/v1/alerts prefix
+app.include_router(alert_config_router)  # Already has /api/v1/alert-config prefix
 
 # Include IAM routers
 app.include_router(permission_router, prefix="/api/v1/iam")

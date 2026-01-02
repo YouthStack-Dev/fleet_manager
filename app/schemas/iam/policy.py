@@ -6,6 +6,7 @@ from app.schemas.iam.permission import PermissionResponse
 class PolicyBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = Field(None, max_length=255)
+    tenant_id: Optional[str] = None
     is_active: bool = True
 
 class PolicyCreate(PolicyBase):

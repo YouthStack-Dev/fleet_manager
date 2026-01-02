@@ -1,4 +1,4 @@
-from pydantic import BaseModel, SerializationInfo, field_serializer, validator
+from pydantic import BaseModel, SerializationInfo, field_serializer, validator, field_validator, ConfigDict
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -49,8 +49,7 @@ class CutoffOut(BaseModel):
     allow_medical_emergency_booking: bool
     tenant_id: str
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
     @field_serializer("booking_login_cutoff", "cancel_login_cutoff", "booking_logout_cutoff", "cancel_logout_cutoff",
                      "medical_emergency_booking_cutoff", "adhoc_booking_cutoff")

@@ -149,7 +149,7 @@ def create_employee(
             f"employee_id={db_employee.employee_id}, name={db_employee.name}"
         )
 
-        employee_response = EmployeeResponse.model_validate(db_employee, from_attributes=True).dict()
+        employee_response = EmployeeResponse.model_validate(db_employee, from_attributes=True).model_dump()
         # Add tenant location details
         if db_employee.tenant:
             employee_response["tenant_latitude"] = float(db_employee.tenant.latitude) if db_employee.tenant.latitude else None
@@ -278,7 +278,7 @@ def read_employees(
 
         employees = []
         for emp in items:
-            emp_dict = EmployeeResponse.model_validate(emp, from_attributes=True).dict()
+            emp_dict = EmployeeResponse.model_validate(emp, from_attributes=True).model_dump()
             # Add tenant location details
             if emp.tenant:
                 emp_dict["tenant_latitude"] = float(emp.tenant.latitude) if emp.tenant.latitude else None
@@ -340,7 +340,7 @@ def read_employee(
                 ),
             )
 
-        employee_data = EmployeeResponse.model_validate(db_employee, from_attributes=True).dict()
+        employee_data = EmployeeResponse.model_validate(db_employee, from_attributes=True).model_dump()
         # Add tenant location details
         if db_employee.tenant:
             employee_data["tenant_latitude"] = float(db_employee.tenant.latitude) if db_employee.tenant.latitude else None
@@ -400,7 +400,7 @@ def update_employee(
 
         # 🔍 Capture old values before update
         old_values = {}
-        update_data = employee_update.dict(exclude_unset=True)
+        update_data = employee_update.model_dump(exclude_unset=True)
         for key in update_data.keys():
             if key != "password":  # Don't log password
                 old_val = getattr(db_employee, key, None)
@@ -514,7 +514,7 @@ def update_employee(
             f"Employee updated successfully: employee_id={employee_id}, tenant_id={db_employee.tenant_id}"
         )
 
-        employee_response = EmployeeResponse.model_validate(db_employee, from_attributes=True).dict()
+        employee_response = EmployeeResponse.model_validate(db_employee, from_attributes=True).model_dump()
         # Add tenant location details
         if db_employee.tenant:
             employee_response["tenant_latitude"] = float(db_employee.tenant.latitude) if db_employee.tenant.latitude else None

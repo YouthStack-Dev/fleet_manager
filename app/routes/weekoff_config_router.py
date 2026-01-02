@@ -125,7 +125,7 @@ def get_weekoffs_by_team(
                 continue
 
             configs_response.append(
-                WeekoffConfigResponse.model_validate(config, from_attributes=True).dict()
+                WeekoffConfigResponse.model_validate(config, from_attributes=True).model_dump()
             )
 
         db.commit()  # commit all default weekoff configs at once
@@ -234,7 +234,7 @@ def get_weekoffs_by_tenant(
                 continue
 
             configs_response.append(
-                WeekoffConfigResponse.model_validate(config, from_attributes=True).dict()
+                WeekoffConfigResponse.model_validate(config, from_attributes=True).model_dump()
             )
 
         db.commit()  # commit all default weekoff configs at once
@@ -271,7 +271,7 @@ def update_weekoff_by_employee(
     """
     try:
         logger.info(f"Starting weekoff update for employee_id={employee_id}")
-        logger.debug(f"Payload received: {update_in.dict(exclude_unset=True)}")
+        logger.debug(f"Payload received: {update_in.model_dump(exclude_unset=True)}")
 
         tenant_id = user_data.get("tenant_id")
         user_type = user_data.get("user_type")
@@ -332,7 +332,7 @@ def update_weekoff_by_employee(
 
         # Update via CRUD
         db_obj = weekoff_crud.update_by_employee(db, employee_id=employee_id, obj_in=update_in)
-        logger.info(f"Weekoff config updated for employee {employee_id}: {update_in.dict(exclude_unset=True)}")
+        logger.info(f"Weekoff config updated for employee {employee_id}: {update_in.model_dump(exclude_unset=True)}")
 
         db.commit()
         db.refresh(db_obj)
@@ -394,7 +394,7 @@ def update_weekoff_by_team(
     """
     try:
         logger.info(f"Starting bulk weekoff update for team_id={team_id}")
-        logger.debug(f"Payload received: {update_in.dict(exclude_unset=True)}")
+        logger.debug(f"Payload received: {update_in.model_dump(exclude_unset=True)}")
 
         tenant_id = user_data.get("tenant_id")
         user_type = user_data.get("user_type")
@@ -460,7 +460,7 @@ def update_weekoff_by_team(
                     "team_id": team_id,
                     "team_name": team.team_name,
                     "employees_updated": len(db_objs),
-                    "changes": update_in.dict(exclude_unset=True)
+                    "changes": update_in.model_dump(exclude_unset=True)
                 },
                 request=request
             )
@@ -504,7 +504,7 @@ def update_weekoff_by_tenant(
     """
     try:
         logger.info(f"Starting bulk weekoff update for tenant_id={tenant_id}")
-        logger.debug(f"Payload received: {update_in.dict(exclude_unset=True)}")
+        logger.debug(f"Payload received: {update_in.model_dump(exclude_unset=True)}")
 
         user_type = user_data.get("user_type")
         token_tenant_id = user_data.get("tenant_id")
@@ -563,7 +563,7 @@ def update_weekoff_by_tenant(
                     "tenant_id": tenant_id,
                     "company_name": tenant.company_name,
                     "employees_updated": len(db_objs),
-                    "changes": update_in.dict(exclude_unset=True)
+                    "changes": update_in.model_dump(exclude_unset=True)
                 },
                 request=request
             )
