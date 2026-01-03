@@ -16,6 +16,9 @@ from app.models.audit_log import AuditLog
 from app.models.tenant_config import TenantConfig
 from app.models.escort import Escort
 
+# Push notification models
+from app.models.user_session import UserSession
+
 # IAM models
 from app.models.iam.permission import Permission
 from app.models.iam.policy import Policy, policy_permission
