@@ -121,6 +121,13 @@ class Settings(BaseSettings):
     # Frontend URL for email links
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
     
+    # Twilio SMS settings
+    TWILIO_ENABLED: bool = os.getenv("TWILIO_ENABLED", "false").lower() == "true"
+    TWILIO_ACCOUNT_SID: str = os.getenv("TWILIO_ACCOUNT_SID", "")
+    TWILIO_AUTH_TOKEN: str = os.getenv("TWILIO_AUTH_TOKEN", "")
+    TWILIO_PHONE_NUMBER: str = os.getenv("TWILIO_PHONE_NUMBER", "")
+    TWILIO_VERIFY_SERVICE_SID: str = os.getenv("TWILIO_VERIFY_SERVICE_SID", "")
+    
     # API specific settings
     API_PREFIX: str = "/api/v1"
     APP_NAME: str = "Fleet Manager"
