@@ -21,3 +21,4 @@ from app.routes.reports_router import router as reports_router
 from app.routes.audit_log_router import router as audit_log_router
 from app.routes.monitoring_router import router as monitoring_router
 from app.routes.tenant_config_router import router as tenant_config_router
+from app.routes.push_notifications import router as push_notifications_router

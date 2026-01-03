@@ -43,7 +43,8 @@ from app.routes import (
     
     auth_router,  # Add the auth router
     monitoring_router,  # Add monitoring router
-    tenant_config_router  # Add tenant config router
+    tenant_config_router,  # Add tenant config router
+    push_notifications_router  # Add push notifications router
 )
 from app.routes.alert_router import router as alert_router
 from app.routes.alert_config_router import router as alert_config_router
@@ -130,6 +131,9 @@ app.include_router(monitoring_router, prefix="/api/v1")  # Add monitoring router
 # Include alert routers (SOS system)
 app.include_router(alert_router)  # Already has /api/v1/alerts prefix
 app.include_router(alert_config_router)  # Already has /api/v1/alert-config prefix
+
+# Include push notifications router
+app.include_router(push_notifications_router, prefix="/api/v1")
 
 # Include IAM routers
 app.include_router(permission_router, prefix="/api/v1/iam")
