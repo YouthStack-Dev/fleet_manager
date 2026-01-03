@@ -13,6 +13,8 @@ from app.crud.alert import create_notification, update_notification_status
 from app.core.email_service import EmailService
 from app.core.logging_config import get_logger
 from app.config import settings
+from app.services.unified_notification_service import UnifiedNotificationService
+from app.services.session_cache import SessionCache
 
 logger = get_logger(__name__)
 
@@ -26,6 +28,8 @@ class NotificationService:
     def __init__(self, db: Session):
         self.db = db
         self.email_service = EmailService()
+        # Initialize push notification service
+        self.push_service = UnifiedNotificationService(db, SessionCache())
     
     async def notify_alert_triggered(
         self,
@@ -290,34 +294,69 @@ class NotificationService:
         alert: Alert
     ) -> bool:
         """
-        Send push notification via Firebase
-        TODO: Integrate with Firebase Cloud Messaging
+        Send push notification via Firebase Cloud Messaging
+        Integrated with UnifiedNotificationService for high-performance delivery
         """
         try:
-            # TODO: Implement Firebase push notifications
-            # from firebase_admin import messaging
-            # message = messaging.Message(
-            #     notification=messaging.Notification(
-            #         title=subject,
-            #         body=message
-            #     ),
-            #     data={
-            #         "alert_id": str(alert.alert_id),
-            #         "alert_type": alert.alert_type.value,
-            #         "severity": alert.severity.value
-            #     },
-            #     token=recipient.get("fcm_token")  # Need to store FCM tokens
-            # )
-            # response = messaging.send(message)
+            if not settings.FCM_ENABLED:
+                logger.warning("[notification.push] FCM is disabled in settings")
+                return False
             
-            logger.info(f"[notification.push] Push notification would be sent to {recipient.get('name')}")
-            logger.info(f"[notification.push] Subject: {subject}")
+            # Extract user info from recipient
+            user_type = recipient.get("user_type")
+            user_id = recipient.get("user_id")
             
-            # Return True for testing
-            return True
+            if not user_type or not user_id:
+                logger.warning(f"[notification.push] Missing user_type or user_id in recipient: {recipient}")
+                return False
+            
+            logger.info(f"[notification.push] Sending push to {user_type}:{user_id}")
+            
+            # Build notification data
+            data = {
+                "alert_id": str(alert.alert_id),
+                "alert_type": alert.alert_type,
+                "severity": alert.severity,
+                "vehicle_id": str(alert.vehicle_id) if alert.vehicle_id else "",
+                "driver_id": str(alert.driver_id) if alert.driver_id else "",
+                "booking_id": str(alert.booking_id) if alert.booking_id else "",
+                "notification_id": str(notification.notification_id) if notification.notification_id else "",
+            }
+            
+            # Send via UnifiedNotificationService
+            result = self.push_service.send_to_user(
+                user_type=user_type,
+                user_id=user_id,
+                title=subject,
+                body=message,
+                data=data,
+                priority="high"
+            )
+            
+            if result["success"]:
+                logger.info(
+                    f"[notification.push] Push sent successfully to {user_type}:{user_id}, "
+                    f"message_id={result.get('message_id')}"
+                )
+                return True
+            else:
+                error = result.get("error", "UNKNOWN")
+                error_msg = result.get("message", "Unknown error")
+                logger.error(
+                    f"[notification.push] Failed to send push to {user_type}:{user_id}, "
+                    f"error={error}, message={error_msg}"
+                )
+                
+                # If no active session, that's expected (user not logged in)
+                if error == "NO_ACTIVE_SESSION":
+                    logger.info(f"[notification.push] User {user_type}:{user_id} has no active session (not logged in)")
+                    # Return True to not mark as failed (user just isn't logged in)
+                    return True
+                
+                return False
             
         except Exception as e:
-            logger.error(f"[notification.push] Error: {str(e)}")
+            logger.error(f"[notification.push] Unexpected error: {e}", exc_info=True)
             return False
     
     async def _send_voice_call(

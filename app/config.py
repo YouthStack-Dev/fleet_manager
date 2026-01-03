@@ -128,6 +128,17 @@ class Settings(BaseSettings):
     TWILIO_PHONE_NUMBER: str = os.getenv("TWILIO_PHONE_NUMBER", "")
     TWILIO_VERIFY_SERVICE_SID: str = os.getenv("TWILIO_VERIFY_SERVICE_SID", "")
     
+    # Firebase Cloud Messaging (FCM) Push Notification settings
+    FCM_ENABLED: bool = os.getenv("FCM_ENABLED", "true").lower() == "true"
+    FIREBASE_KEY_PATH: str = os.getenv("FIREBASE_KEY_PATH", "/app/firebase/firebase_key.json")
+    FIREBASE_DATABASE_URL: str = os.getenv("FIREBASE_DATABASE_URL", "")
+    
+    # Push notification settings
+    PUSH_NOTIFICATION_BATCH_SIZE: int = int(os.getenv("PUSH_NOTIFICATION_BATCH_SIZE", "500"))
+    PUSH_NOTIFICATION_DEFAULT_PRIORITY: str = os.getenv("PUSH_NOTIFICATION_DEFAULT_PRIORITY", "high")
+    SESSION_CACHE_TTL: int = int(os.getenv("SESSION_CACHE_TTL", "3600"))  # 1 hour
+    SESSION_EXPIRY_DAYS: int = int(os.getenv("SESSION_EXPIRY_DAYS", "30"))  # 30 days
+    
     # API specific settings
     API_PREFIX: str = "/api/v1"
     APP_NAME: str = "Fleet Manager"
