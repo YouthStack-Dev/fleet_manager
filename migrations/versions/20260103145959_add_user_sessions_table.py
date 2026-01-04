@@ -67,11 +67,15 @@ def upgrade() -> None:
         
         # Primary key constraint
         sa.PrimaryKeyConstraint('session_id', name='pk_user_sessions'),
-        
-        # Unique constraint: only one active session per user per platform
-        # This is critical for single active device enforcement
-        sa.UniqueConstraint('user_type', 'user_id', 'platform', 'is_active', name='uq_active_user_platform'),
     )
+    
+    # Create partial unique index - only enforces uniqueness when is_active=TRUE
+    # This allows multiple inactive sessions (history) but only ONE active session per user/platform
+    op.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_active_user_platform
+        ON user_sessions (user_type, user_id, platform)
+        WHERE is_active = TRUE;
+    """)
     
     # Create optimized indexes for query patterns
     
