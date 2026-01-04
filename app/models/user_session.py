@@ -45,8 +45,8 @@ class UserSession(Base):
     device_type = Column(String(20), comment="Device type: ios, android, chrome, firefox, safari")
     device_id = Column(String(100), comment="Unique device fingerprint for tracking")
     
-    # FCM token
-    fcm_token = Column(String(255), unique=True, nullable=False, index=True, comment="Firebase Cloud Messaging token")
+    # FCM token (nullable - cleared on logout/expiry, indexed for fast lookups)
+    fcm_token = Column(String(255), nullable=True, index=True, comment="Firebase Cloud Messaging token (cleared on logout/expiry)")
     
     # Session lifecycle
     is_active = Column(Boolean, default=True, nullable=False, index=True, comment="Active session flag")
