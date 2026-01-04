@@ -81,13 +81,10 @@ class UserSession(Base):
         # Matches: WHERE is_active = TRUE AND expires_at < NOW()
         Index('idx_expires_at', 'is_active', 'expires_at'),
         
-        # CRITICAL: Enforce single active session per user per platform
-        # Prevents same user from having multiple active sessions on same platform
-        # PostgreSQL will create a partial unique index: WHERE is_active = TRUE
-        UniqueConstraint(
-            'user_type', 'user_id', 'platform', 'is_active',
-            name='uq_active_user_platform',
-        ),
+        # NOTE: Partial unique index 'uq_active_user_platform' is created in migration
+        # It enforces: UNIQUE (user_type, user_id, platform) WHERE is_active = TRUE
+        # This allows multiple inactive sessions (history) but only ONE active session
+        # SQLAlchemy's UniqueConstraint doesn't support partial indexes, so we use raw SQL in migration
         
         {"extend_existing": True}
     )
