@@ -36,15 +36,32 @@ def upgrade() -> None:
     - Only ONE active session per user per platform
     """
     
-    # Step 1: Drop the existing unique constraint
-    op.drop_constraint('uq_active_user_platform', 'user_sessions', type_='unique')
+    # Step 1: Drop the existing unique constraint (if it exists)
+    # Check if constraint exists first to avoid errors
+    op.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM pg_constraint 
+                WHERE conname = 'uq_active_user_platform' 
+                AND conrelid = 'user_sessions'::regclass
+            ) THEN
+                ALTER TABLE user_sessions DROP CONSTRAINT uq_active_user_platform;
+            END IF;
+        END $$;
+    """)
     
-    # Step 2: Create a partial unique index (PostgreSQL specific)
+    # Step 2: Drop the existing index if it exists (might be regular or partial)
+    op.execute("""
+        DROP INDEX IF EXISTS uq_active_user_platform;
+    """)
+    
+    # Step 3: Create a partial unique index (PostgreSQL specific)
     # This only enforces uniqueness when is_active = TRUE
     op.execute("""
-        CREATE UNIQUE INDEX uq_active_user_platform
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_active_user_platform
         ON user_sessions (user_type, user_id, platform)
-        WHERE is_active = TRUE
+        WHERE is_active = TRUE;
     """)
 
 
