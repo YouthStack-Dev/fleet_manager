@@ -48,7 +48,7 @@ def upgrade() -> None:
         sa.Column('device_id', sa.String(length=100), nullable=True, comment='Unique device fingerprint for tracking'),
         
         # FCM token
-        sa.Column('fcm_token', sa.String(length=255), nullable=False, comment='Firebase Cloud Messaging token'),
+        sa.Column('fcm_token', sa.String(length=255), nullable=True, comment='Firebase Cloud Messaging token (cleared on logout/expiry)'),
         
         # Session lifecycle
         sa.Column('is_active', sa.Boolean(), nullable=False, server_default='true', comment='Active session flag'),
@@ -111,12 +111,14 @@ def upgrade() -> None:
         unique=False
     )
     
-    # Unique index on fcm_token (already handled by unique=True in column definition)
+    # Non-unique index on fcm_token for faster lookups
+    # Note: FCM tokens can appear in multiple sessions (active + historical inactive sessions)
+    # The real uniqueness we enforce is: one ACTIVE session per user per platform (uq_active_user_platform)
     op.create_index(
         'idx_fcm_token',
         'user_sessions',
         ['fcm_token'],
-        unique=True
+        unique=False
     )
     
     # Create trigger for automatic updated_at timestamp update

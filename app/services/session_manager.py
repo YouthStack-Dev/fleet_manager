@@ -103,11 +103,13 @@ class SessionManager:
             ).first()
             
             if old_session:
+                old_token = old_session.fcm_token[:20] if old_session.fcm_token else "None"
                 old_session.is_active = False
+                old_session.fcm_token = None  # Clear token on logout for cleanliness
                 old_session.updated_at = datetime.utcnow()
                 logger.info(
                     f"[session_manager] Deactivated old session: "
-                    f"session_id={old_session.session_id}, token={old_session.fcm_token[:20]}..."
+                    f"session_id={old_session.session_id}, token={old_token}..."
                 )
                 
                 # Invalidate old session cache
@@ -340,9 +342,10 @@ class SessionManager:
                 )
                 return False
             
-            # Deactivate sessions
+            # Deactivate sessions and clear tokens
             for session in sessions:
                 session.is_active = False
+                session.fcm_token = None  # Clear token on logout
                 session.updated_at = datetime.utcnow()
                 
                 logger.info(
@@ -398,6 +401,7 @@ class SessionManager:
             # Deactivate and invalidate cache
             for session in expired_sessions:
                 session.is_active = False
+                session.fcm_token = None  # Clear expired tokens
                 session.updated_at = now
                 
                 self.cache.invalidate_user(session.user_type, session.user_id)
