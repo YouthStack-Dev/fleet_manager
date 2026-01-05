@@ -31,6 +31,22 @@ class FCMService:
     def __init__(self):
         """Initialize FCM Service with Firebase Admin SDK"""
         self.batch_size = 500  # FCM limit for batch sending
+        
+        # Initialize Firebase Admin SDK if not already initialized
+        if not firebase_admin._apps:
+            try:
+                cred = firebase_admin.credentials.Certificate(settings.FIREBASE_KEY_PATH)
+                firebase_admin.initialize_app(
+                    credential=cred,
+                    options={
+                        'databaseURL': settings.FIREBASE_DATABASE_URL
+                    } if settings.FIREBASE_DATABASE_URL else None
+                )
+                logger.info("[fcm_service] Firebase Admin SDK initialized successfully")
+            except Exception as e:
+                logger.error(f"[fcm_service] Failed to initialize Firebase Admin SDK: {str(e)}")
+                raise
+        
         logger.info("[fcm_service] Initialized Firebase Cloud Messaging service")
     
     def send_notification(
