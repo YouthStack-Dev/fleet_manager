@@ -1098,7 +1098,7 @@ def send_duty_start_notifications(db: Session, route_id: int, driver_id: int):
         # Initialize services
         email_service = EmailService()
         sms_service = SMSService()
-        push_service = UnifiedNotificationService()
+        push_service = UnifiedNotificationService(db)
         
         success_count = 0
         
@@ -1197,7 +1197,7 @@ def send_onboard_notification(db: Session, booking_id: int, route_id: int):
         # Initialize services
         email_service = EmailService()
         sms_service = SMSService()
-        push_service = UnifiedNotificationService()
+        push_service = UnifiedNotificationService(db)
         
         # Email notification (commented out)
         # try:
@@ -1281,7 +1281,7 @@ def send_no_show_notification(db: Session, booking_id: int, reason: str):
         # Initialize services
         email_service = EmailService()
         sms_service = SMSService()
-        push_service = UnifiedNotificationService()
+        push_service = UnifiedNotificationService(db)
         
         # Email notification (commented out)
         # try:
@@ -1375,7 +1375,7 @@ def send_drop_completion_notification(db: Session, booking_id: int, route_id: in
         # Initialize services
         email_service = EmailService()
         sms_service = SMSService()
-        push_service = UnifiedNotificationService()
+        push_service = UnifiedNotificationService(db)
         
         # Email notification (commented out)
         # try:
