@@ -110,13 +110,13 @@ class FCMService:
                 "should_retry": True
             }
             
-        except messaging.UnavailableError:
-            # FCM service temporarily unavailable
-            logger.error("[fcm_service] FCM service temporarily unavailable")
+        except Exception as e:
+            # Handle any other Firebase or network errors
+            logger.error(f"[fcm_service] Error sending notification: {str(e)}")
             return {
                 "success": False,
-                "error": "SERVICE_UNAVAILABLE",
-                "error_message": "FCM service temporarily unavailable",
+                "error": "SEND_ERROR",
+                "error_message": str(e),
                 "token": token,
                 "should_retry": True
             }
@@ -283,7 +283,6 @@ class FCMService:
                 priority="high" if priority == "high" else "normal",
                 notification=messaging.AndroidNotification(
                     sound="default",
-                    notification_priority="PRIORITY_HIGH" if priority == "high" else "PRIORITY_DEFAULT",
                     default_sound=True,
                     default_vibrate_timings=True,
                     default_light_settings=True
