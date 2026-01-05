@@ -15,6 +15,7 @@ from app.core.logging_config import get_logger
 from app.config import settings
 from app.services.unified_notification_service import UnifiedNotificationService
 from app.services.session_cache import SessionCache
+from app.services.sms_service import SMSService
 
 logger = get_logger(__name__)
 
@@ -28,6 +29,7 @@ class NotificationService:
     def __init__(self, db: Session):
         self.db = db
         self.email_service = EmailService()
+        self.sms_service = SMSService()
         # Initialize push notification service
         self.push_service = UnifiedNotificationService(db, SessionCache())
     
@@ -256,30 +258,25 @@ class NotificationService:
         message: str
     ) -> bool:
         """
-        Send SMS notification
-        TODO: Integrate with SMS provider (Twilio, AWS SNS, etc.)
+        Send SMS notification via Twilio
         """
         try:
             if not to_phone:
                 logger.warning("[notification.sms] No phone provided")
                 return False
             
-            # TODO: Implement SMS sending
-            # Example with Twilio:
-            # from twilio.rest import Client
-            # client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-            # message = client.messages.create(
-            #     body=message,
-            #     from_=settings.TWILIO_PHONE_NUMBER,
-            #     to=to_phone
-            # )
+            # Use the SMSService
+            success = self.sms_service.send_sms(
+                to_phone=to_phone,
+                message=message
+            )
             
-            logger.info(f"[notification.sms] SMS would be sent to {to_phone}")
-            # For now, log only
-            logger.info(f"[notification.sms] Message: {message[:100]}...")
+            if success:
+                logger.info(f"[notification.sms] SMS sent successfully to {to_phone[:8]}...")
+            else:
+                logger.warning(f"[notification.sms] Failed to send SMS to {to_phone[:8]}...")
             
-            # Return True for testing, implement actual SMS sending
-            return True
+            return success
             
         except Exception as e:
             logger.error(f"[notification.sms] Error: {str(e)}")

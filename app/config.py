@@ -146,7 +146,8 @@ class Settings(BaseSettings):
     
     model_config = ConfigDict(
         case_sensitive=True,
-        env_file=None
+        env_file=".env",
+        extra="ignore"
     )
 
 settings = Settings()
