@@ -19,6 +19,7 @@ cachetools
 redis
 requests
 firebase_admin
+twilio
 fsspec[s3,gcs,azure]>=2023.12.0
 numpy
 geopy
