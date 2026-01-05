@@ -28,7 +28,7 @@ PERFORMANCE OPTIMIZATIONS APPLIED:
 ✅ Query Combining: Single queries instead of multiple round-trips
 ✅ Proper Indexing: Comments added for recommended indexes
 """
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, BackgroundTasks
 from sqlalchemy import func, exists
 from sqlalchemy.orm import Session, joinedload, selectinload
 from typing import Optional, List
@@ -47,6 +47,11 @@ from app.models.tenant import Tenant
 from app.models.vehicle import Vehicle
 from app.models.driver import Driver
 from geopy.distance import geodesic
+
+# Notification services
+from app.core.email_service import EmailService
+from app.services.sms_service import SMSService
+from app.services.unified_notification_service import UnifiedNotificationService
 
 
 logger = get_logger(__name__)
@@ -320,6 +325,7 @@ from sqlalchemy import func, and_
 @router.post("/duty/start", status_code=status.HTTP_200_OK)
 async def start_duty(
     route_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     ctx=Depends(DriverAuth),
 ):
@@ -394,6 +400,14 @@ async def start_duty(
         db.refresh(route)
 
         logger.info(f"[driver.start_duty] Duty started for route {route_id} by driver {driver_id}")
+
+        # Send notifications to all employees on this route
+        background_tasks.add_task(
+            send_duty_start_notifications,
+            db=db,
+            route_id=route_id,
+            driver_id=driver_id
+        )
 
         return ResponseWrapper.success(
             message="Duty started successfully",
@@ -642,9 +656,10 @@ async def get_driver_trips(
 async def start_trip(
     route_id: int,
     booking_id: int,
-    otp: Optional[str] = None,
     current_latitude: float = Query(..., description="Driver's current latitude"),
     current_longitude: float = Query(..., description="Driver's current longitude"),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    otp: Optional[str] = None,
     db: Session = Depends(get_db),
     ctx=Depends(DriverAuth),
 ):
@@ -727,6 +742,14 @@ async def start_trip(
             f"actual_pick_up_time={rb.actual_pick_up_time}"
         )
 
+        # Send onboard notification to employee
+        background_tasks.add_task(
+            send_onboard_notification,
+            db=db,
+            booking_id=booking_id,
+            route_id=route_id
+        )
+
         # --- Fetch next stop ---
         next_stop = get_next_stop(db, route_id, rb.order_id)
 
@@ -755,6 +778,7 @@ async def start_trip(
 async def mark_no_show(
     route_id: int,
     booking_id: int,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     reason: Optional[str] = Query(None, description="Reason for marking as no-show"),
     db: Session = Depends(get_db),
     ctx=Depends(DriverAuth),
@@ -817,6 +841,14 @@ async def mark_no_show(
             f"[driver.no_show] Booking {booking_id} marked NO_SHOW; route={route_id}, driver={driver_id}"
         )
 
+        # Send no-show notification to employee
+        background_tasks.add_task(
+            send_no_show_notification,
+            db=db,
+            booking_id=booking_id,
+            reason=reason or "Employee did not board"
+        )
+
         # --- Get next stop ---
         next_stop = get_next_stop(db, route_id, rb.order_id)
 
@@ -844,9 +876,10 @@ async def mark_no_show(
 async def verify_drop_and_complete_route(
     route_id: int,
     booking_id: int,
-    otp: Optional[str] = None,
     current_latitude: float = Query(..., description="Driver's current latitude"),
     current_longitude: float = Query(..., description="Driver's current longitude"),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    otp: Optional[str] = None,
     db: Session = Depends(get_db),
     ctx=Depends(DriverAuth),
 ):
@@ -902,6 +935,14 @@ async def verify_drop_and_complete_route(
         db.commit()
 
         logger.info(f"[driver.drop] Booking {booking_id} marked as completed by driver {driver_id}")
+
+        # Send drop completion notification to employee
+        background_tasks.add_task(
+            send_drop_completion_notification,
+            db=db,
+            booking_id=booking_id,
+            route_id=route_id
+        )
 
         return ResponseWrapper.success(
             message="Drop verified successfully",
@@ -1018,3 +1059,382 @@ async def end_duty(
         db.rollback()
         logger.exception("[driver.end_duty] Unexpected error")
         return handle_db_error(e)
+
+
+# ---------------------------
+# Background Notification Tasks
+# ---------------------------
+
+def send_duty_start_notifications(db: Session, route_id: int, driver_id: int):
+    """
+    Send notifications to all employees on the route when driver starts duty.
+    """
+    try:
+        logger.info(f"[notify.duty_start] Sending notifications for route {route_id}")
+        
+        # Get driver details
+        driver = db.query(Driver).filter(Driver.driver_id == driver_id).first()
+        driver_name = driver.name if driver else f"Driver {driver_id}"
+        
+        # Get route details
+        route = db.query(RouteManagement).filter(RouteManagement.route_id == route_id).first()
+        if not route:
+            logger.warning(f"[notify.duty_start] Route {route_id} not found")
+            return
+        
+        # Get all bookings for this route with employee details
+        bookings_data = (
+            db.query(RouteManagementBooking, Booking, Employee)
+            .join(Booking, RouteManagementBooking.booking_id == Booking.booking_id)
+            .outerjoin(Employee, Booking.employee_id == Employee.employee_id)
+            .filter(RouteManagementBooking.route_id == route_id)
+            .all()
+        )
+        
+        if not bookings_data:
+            logger.warning(f"[notify.duty_start] No bookings found for route {route_id}")
+            return
+        
+        # Initialize services
+        email_service = EmailService()
+        sms_service = SMSService()
+        push_service = UnifiedNotificationService()
+        
+        success_count = 0
+        
+        for rb, booking, employee in bookings_data:
+            if not employee:
+                logger.warning(f"[notify.duty_start] Employee not found for booking {booking.booking_id}")
+                continue
+            
+            employee_name = employee.name or "Employee"
+            
+            # Email notification (commented out)
+            # try:
+            #     email_service.send_email(
+            #         to_email=employee.email,
+            #         subject=f"Driver Started - Route {route.route_code}",
+            #         body_text=f"Hi {employee_name},\\n\\n"
+            #                   f"Your driver {driver_name} has started duty and is on the way for pickup.\\n"
+            #                   f"Route: {route.route_code}\\n"
+            #                   f"Estimated pickup time: {rb.estimated_pick_up_time}\\n\\n"
+            #                   f"Please be ready at your pickup location.\\n\\n"
+            #                   f"Thank you,\\nFleet Manager",
+            #         body_html=f"<p>Hi {employee_name},</p>"
+            #                  f"<p>Your driver <strong>{driver_name}</strong> has started duty and is on the way for pickup.</p>"
+            #                  f"<p><strong>Route:</strong> {route.route_code}<br>"
+            #                  f"<strong>Estimated pickup time:</strong> {rb.estimated_pick_up_time}</p>"
+            #                  f"<p>Please be ready at your pickup location.</p>"
+            #                  f"<p>Thank you,<br>Fleet Manager</p>"
+            #     )
+            #     logger.info(f"[notify.duty_start] Email sent to {employee.email}")
+            # except Exception as e:
+            #     logger.error(f"[notify.duty_start] Email failed for {employee.email}: {str(e)}")
+            
+            # SMS notification (commented out)
+            # if employee.phone and sms_service.enabled:
+            #     try:
+            #         sms_service.send_sms(
+            #             to_phone=employee.phone,
+            #             message=f"Hi {employee_name}, your driver {driver_name} has started duty. "
+            #                    f"Route: {route.route_code}. Est. pickup: {rb.estimated_pick_up_time}. Be ready!"
+            #         )
+            #         logger.info(f"[notify.duty_start] SMS sent to {employee.phone}")
+            #     except Exception as e:
+            #         logger.error(f"[notify.duty_start] SMS failed for {employee.phone}: {str(e)}")
+            
+            # Push notification
+            try:
+                push_service.send_to_user(
+                    user_type="employee",
+                    user_id=employee.employee_id,
+                    title="Driver Started",
+                    body=f"Your driver {driver_name} is on the way. Est. pickup: {rb.estimated_pick_up_time}",
+                    data={
+                        "type": "duty_started",
+                        "route_id": str(route_id),
+                        "route_code": route.route_code,
+                        "driver_name": driver_name,
+                        "estimated_pickup": rb.estimated_pick_up_time or ""
+                    },
+                    priority="high"
+                )
+                logger.info(f"[notify.duty_start] Push sent to employee {employee.employee_id}")
+            except Exception as e:
+                logger.error(f"[notify.duty_start] Push failed for employee {employee.employee_id}: {str(e)}")
+            
+            success_count += 1
+        
+        logger.info(f"[notify.duty_start] Sent notifications to {success_count} employees for route {route_id}")
+        
+    except Exception as e:
+        logger.exception(f"[notify.duty_start] Error sending notifications: {str(e)}")
+
+
+def send_onboard_notification(db: Session, booking_id: int, route_id: int):
+    """
+    Send notification to employee when they board the vehicle.
+    """
+    try:
+        logger.info(f"[notify.onboard] Sending notification for booking {booking_id}")
+        
+        # Get booking and employee details
+        booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+        if not booking:
+            logger.warning(f"[notify.onboard] Booking {booking_id} not found")
+            return
+        
+        employee = db.query(Employee).filter(Employee.employee_id == booking.employee_id).first()
+        if not employee:
+            logger.warning(f"[notify.onboard] Employee not found for booking {booking_id}")
+            return
+        
+        route = db.query(RouteManagement).filter(RouteManagement.route_id == route_id).first()
+        route_code = route.route_code if route else f"Route {route_id}"
+        
+        employee_name = employee.name or "Employee"
+        
+        # Initialize services
+        email_service = EmailService()
+        sms_service = SMSService()
+        push_service = UnifiedNotificationService()
+        
+        # Email notification (commented out)
+        # try:
+        #     email_service.send_email(
+        #         to_email=employee.email,
+        #         subject=f"Onboard Confirmed - {route_code}",
+        #         body_text=f"Hi {employee_name},\\n\\n"
+        #                   f"You have successfully boarded the vehicle.\\n"
+        #                   f"Route: {route_code}\\n"
+        #                   f"Drop location: {booking.drop_location}\\n\\n"
+        #                   f"Have a safe journey!\\n\\n"
+        #                   f"Thank you,\\nFleet Manager",
+        #         body_html=f"<p>Hi {employee_name},</p>"
+        #                  f"<p>You have successfully boarded the vehicle.</p>"
+        #                  f"<p><strong>Route:</strong> {route_code}<br>"
+        #                  f"<strong>Drop location:</strong> {booking.drop_location}</p>"
+        #                  f"<p>Have a safe journey!</p>"
+        #                  f"<p>Thank you,<br>Fleet Manager</p>"
+        #     )
+        #     logger.info(f"[notify.onboard] Email sent to {employee.email}")
+        # except Exception as e:
+        #     logger.error(f"[notify.onboard] Email failed: {str(e)}")
+        
+        # SMS notification (commented out)
+        # if employee.phone and sms_service.enabled:
+        #     try:
+        #         sms_service.send_sms(
+        #             to_phone=employee.phone,
+        #             message=f"Hi {employee_name}, you're now onboard! Route: {route_code}. "
+        #                    f"Drop: {booking.drop_location}. Safe journey!"
+        #         )
+        #         logger.info(f"[notify.onboard] SMS sent to {employee.phone}")
+        #     except Exception as e:
+        #         logger.error(f"[notify.onboard] SMS failed: {str(e)}")
+        
+        # Push notification
+        try:
+            push_service.send_to_user(
+                user_type="employee",
+                user_id=employee.employee_id,
+                title="Onboard Confirmed",
+                body=f"You're now onboard! Drop: {booking.drop_location}",
+                data={
+                    "type": "onboard",
+                    "route_id": str(route_id),
+                    "booking_id": str(booking_id),
+                    "drop_location": booking.drop_location or ""
+                },
+                priority="high"
+            )
+            logger.info(f"[notify.onboard] Push sent to employee {employee.employee_id}")
+        except Exception as e:
+            logger.error(f"[notify.onboard] Push failed: {str(e)}")
+        
+        logger.info(f"[notify.onboard] Notifications sent for booking {booking_id}")
+        
+    except Exception as e:
+        logger.exception(f"[notify.onboard] Error: {str(e)}")
+
+
+def send_no_show_notification(db: Session, booking_id: int, reason: str):
+    """
+    Send notification to employee when marked as no-show.
+    """
+    try:
+        logger.info(f"[notify.no_show] Sending notification for booking {booking_id}")
+        
+        # Get booking and employee details
+        booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+        if not booking:
+            logger.warning(f"[notify.no_show] Booking {booking_id} not found")
+            return
+        
+        employee = db.query(Employee).filter(Employee.employee_id == booking.employee_id).first()
+        if not employee:
+            logger.warning(f"[notify.no_show] Employee not found for booking {booking_id}")
+            return
+        
+        employee_name = employee.name or "Employee"
+        
+        # Initialize services
+        email_service = EmailService()
+        sms_service = SMSService()
+        push_service = UnifiedNotificationService()
+        
+        # Email notification (commented out)
+        # try:
+        #     email_service.send_email(
+        #         to_email=employee.email,
+        #         subject="No-Show Alert - Booking Cancelled",
+        #         body_text=f"Hi {employee_name},\\n\\n"
+        #                   f"You were marked as NO-SHOW for your booking on {booking.booking_date}.\\n"
+        #                   f"Reason: {reason}\\n"
+        #                   f"Pickup location: {booking.pickup_location}\\n\\n"
+        #                   f"If this was a mistake, please contact support.\\n\\n"
+        #                   f"Thank you,\\nFleet Manager",
+        #         body_html=f"<p>Hi {employee_name},</p>"
+        #                  f"<p>You were marked as <strong>NO-SHOW</strong> for your booking on {booking.booking_date}.</p>"
+        #                  f"<p><strong>Reason:</strong> {reason}<br>"
+        #                  f"<strong>Pickup location:</strong> {booking.pickup_location}</p>"
+        #                  f"<p>If this was a mistake, please contact support.</p>"
+        #                  f"<p>Thank you,<br>Fleet Manager</p>"
+        #     )
+        #     logger.info(f"[notify.no_show] Email sent to {employee.email}")
+        # except Exception as e:
+        #     logger.error(f"[notify.no_show] Email failed: {str(e)}")
+        
+        # SMS notification (commented out)
+        # if employee.phone and sms_service.enabled:
+        #     try:
+        #         sms_service.send_sms(
+        #             to_phone=employee.phone,
+        #             message=f"Hi {employee_name}, you were marked NO-SHOW for {booking.booking_date}. "
+        #                    f"Reason: {reason}. Contact support if this was a mistake."
+        #         )
+        #         logger.info(f"[notify.no_show] SMS sent to {employee.phone}")
+        #     except Exception as e:
+        #         logger.error(f"[notify.no_show] SMS failed: {str(e)}")
+        
+        # Push notification
+        try:
+            push_service.send_to_user(
+                user_type="employee",
+                user_id=employee.employee_id,
+                title="No-Show Alert",
+                body=f"You were marked NO-SHOW. Reason: {reason}",
+                data={
+                    "type": "no_show",
+                    "booking_id": str(booking_id),
+                    "reason": reason,
+                    "booking_date": str(booking.booking_date)
+                },
+                priority="high"
+            )
+            logger.info(f"[notify.no_show] Push sent to employee {employee.employee_id}")
+        except Exception as e:
+            logger.error(f"[notify.no_show] Push failed: {str(e)}")
+        
+        logger.info(f"[notify.no_show] Notifications sent for booking {booking_id}")
+        
+    except Exception as e:
+        logger.exception(f"[notify.no_show] Error: {str(e)}")
+
+
+def send_drop_completion_notification(db: Session, booking_id: int, route_id: int):
+    """
+    Send notification to employee when successfully dropped off.
+    """
+    try:
+        logger.info(f"[notify.drop] Sending notification for booking {booking_id}")
+        
+        # Get booking and employee details
+        booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+        if not booking:
+            logger.warning(f"[notify.drop] Booking {booking_id} not found")
+            return
+        
+        employee = db.query(Employee).filter(Employee.employee_id == booking.employee_id).first()
+        if not employee:
+            logger.warning(f"[notify.drop] Employee not found for booking {booking_id}")
+            return
+        
+        route = db.query(RouteManagement).filter(RouteManagement.route_id == route_id).first()
+        route_code = route.route_code if route else f"Route {route_id}"
+        
+        # Get actual drop time
+        rb = db.query(RouteManagementBooking).filter(
+            RouteManagementBooking.route_id == route_id,
+            RouteManagementBooking.booking_id == booking_id
+        ).first()
+        actual_drop_time = rb.actual_drop_time if rb else "now"
+        
+        employee_name = employee.name or "Employee"
+        
+        # Initialize services
+        email_service = EmailService()
+        sms_service = SMSService()
+        push_service = UnifiedNotificationService()
+        
+        # Email notification (commented out)
+        # try:
+        #     email_service.send_email(
+        #         to_email=employee.email,
+        #         subject=f"Drop Completed - {route_code}",
+        #         body_text=f"Hi {employee_name},\\n\\n"
+        #                   f"You have been successfully dropped off.\\n"
+        #                   f"Route: {route_code}\\n"
+        #                   f"Drop location: {booking.drop_location}\\n"
+        #                   f"Drop time: {actual_drop_time}\\n\\n"
+        #                   f"Thank you for using our service!\\n\\n"
+        #                   f"Best regards,\\nFleet Manager",
+        #         body_html=f"<p>Hi {employee_name},</p>"
+        #                  f"<p>You have been successfully dropped off.</p>"
+        #                  f"<p><strong>Route:</strong> {route_code}<br>"
+        #                  f"<strong>Drop location:</strong> {booking.drop_location}<br>"
+        #                  f"<strong>Drop time:</strong> {actual_drop_time}</p>"
+        #                  f"<p>Thank you for using our service!</p>"
+        #                  f"<p>Best regards,<br>Fleet Manager</p>"
+        #     )
+        #     logger.info(f"[notify.drop] Email sent to {employee.email}")
+        # except Exception as e:
+        #     logger.error(f"[notify.drop] Email failed: {str(e)}")
+        
+        # SMS notification (commented out)
+        # if employee.phone and sms_service.enabled:
+        #     try:
+        #         sms_service.send_sms(
+        #             to_phone=employee.phone,
+        #             message=f"Hi {employee_name}, you've been dropped off successfully at {booking.drop_location}. "
+        #                    f"Time: {actual_drop_time}. Thank you!"
+        #         )
+        #         logger.info(f"[notify.drop] SMS sent to {employee.phone}")
+        #     except Exception as e:
+        #         logger.error(f"[notify.drop] SMS failed: {str(e)}")
+        
+        # Push notification
+        try:
+            push_service.send_to_user(
+                user_type="employee",
+                user_id=employee.employee_id,
+                title="Drop Completed",
+                body=f"Successfully dropped at {booking.drop_location}. Time: {actual_drop_time}",
+                data={
+                    "type": "drop_completed",
+                    "route_id": str(route_id),
+                    "booking_id": str(booking_id),
+                    "drop_location": booking.drop_location or "",
+                    "drop_time": actual_drop_time or ""
+                },
+                priority="normal"
+            )
+            logger.info(f"[notify.drop] Push sent to employee {employee.employee_id}")
+        except Exception as e:
+            logger.error(f"[notify.drop] Push failed: {str(e)}")
+        
+        logger.info(f"[notify.drop] Notifications sent for booking {booking_id}")
+        
+    except Exception as e:
+        logger.exception(f"[notify.drop] Error: {str(e)}")
+
