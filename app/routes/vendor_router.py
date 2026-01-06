@@ -1,5 +1,5 @@
 import json
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from typing import Optional
@@ -12,6 +12,7 @@ from app.utils.pagination import paginate_query
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
+from app.core.email_service import get_email_service, get_sms_service
 from app.crud.tenant import tenant_crud
 from app.crud.vendor import vendor_crud
 from common_utils.auth.utils import hash_password
@@ -22,6 +23,7 @@ router = APIRouter(prefix="/vendors", tags=["vendors"])
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def create_vendor(
     vendor: VendorCreate,
+    background_tasks: BackgroundTasks,
     request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor.create"], check_tenant=False)),
@@ -163,6 +165,21 @@ def create_vendor(
         except Exception as audit_error:
             logger.error(f"Failed to create audit log for vendor creation: {str(audit_error)}")
 
+        # 🔥 Add background email and SMS task
+        background_tasks.add_task(
+            send_vendor_created_notifications,
+            vendor_data={
+                "vendor_id": db_vendor.vendor_id,
+                "name": db_vendor.name,
+                "vendor_code": db_vendor.vendor_code,
+                "admin_email": vendor.admin_email,
+                "admin_phone": vendor.admin_phone,
+                "admin_name": vendor.admin_name or f"Admin_{db_vendor.vendor_id}",
+                "password": default_password,
+                "tenant_id": db_vendor.tenant_id,
+            },
+        )
+
         logger.info(f"Vendor creation completed: {db_vendor.vendor_id}")
 
         return ResponseWrapper.success(
@@ -198,6 +215,46 @@ def create_vendor(
         )
 
        
+
+def send_vendor_created_notifications(vendor_data: dict):
+    """Background task to send vendor creation email and SMS."""
+    try:
+        email_service = get_email_service()
+        sms_service = get_sms_service()
+
+        # Send Email
+        email_success = email_service.send_vendor_created_email(
+            admin_email=vendor_data["admin_email"],
+            vendor_data=vendor_data,
+        )
+
+        if email_success:
+            logger.info(f"Vendor creation email sent: {vendor_data['vendor_id']}")
+        else:
+            logger.error(f"Vendor creation email FAILED: {vendor_data['vendor_id']}")
+
+        # Send SMS
+        sms_message = (
+            f"Welcome to {email_service.app_name}! "
+            f"Your vendor account '{vendor_data['name']}' has been created. "
+            f"Vendor ID: {vendor_data['vendor_id']}. "
+            f"Login: {vendor_data['admin_email']}. "
+            f"Check your email for complete details."
+        )
+        
+        sms_success = sms_service.send_sms(
+            to_phone=vendor_data["admin_phone"],
+            message=sms_message
+        )
+
+        if sms_success:
+            logger.info(f"Vendor creation SMS sent: {vendor_data['vendor_id']}")
+        else:
+            logger.error(f"Vendor creation SMS FAILED: {vendor_data['vendor_id']}")
+
+    except Exception as e:
+        logger.error(f"Error sending vendor creation notifications: {str(e)}")
+
 
 @router.get("/", status_code=status.HTTP_200_OK)
 def read_vendors(

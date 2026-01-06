@@ -20,7 +20,7 @@ from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_db
 from common_utils.auth.permission_checker import PermissionChecker
 from app.utils import cache_manager
 from app.core.logging_config import get_logger
-from app.core.email_service import get_email_service
+from app.core.email_service import get_email_service, get_sms_service
 
 from app.crud.employee import employee_crud
 from app.crud.cutoff import cutoff_crud
@@ -265,6 +265,7 @@ def create_tenant(
                 'name': new_tenant.name,
                 'tenant_id': new_tenant.tenant_id,
                 'admin_name': employee_name,
+                'admin_phone': tenant.employee_phone,
             },
             admin_email=employee_email,
             admin_name=employee_name,
@@ -309,9 +310,10 @@ def send_tenant_welcome_emails(
     admin_name: str, 
     login_credentials: dict
 ):
-    """Background task to send both welcome and tenant created emails using the simplified email service"""
+    """Background task to send both welcome and tenant created emails and SMS using the simplified email service"""
     try:
         email_service = get_email_service()
+        sms_service = get_sms_service()
         
         # Send welcome email with login credentials
         welcome_success = email_service.send_welcome_email(
@@ -326,6 +328,23 @@ def send_tenant_welcome_emails(
             tenant_data=tenant_data
         )
         
+        # Send SMS notification
+        sms_message = (
+            f"Welcome to {email_service.app_name}! "
+            f"Your tenant '{tenant_data['name']}' has been created successfully. "
+            f"Tenant ID: {tenant_data['tenant_id']}. "
+            f"Check your email for login details."
+        )
+        
+        # Get admin phone from tenant_data if available
+        admin_phone = tenant_data.get('admin_phone')
+        sms_success = False
+        if admin_phone:
+            sms_success = sms_service.send_sms(
+                to_phone=admin_phone,
+                message=sms_message
+            )
+        
         # Log results
         if welcome_success and tenant_success:
             logger.info(f"Both welcome emails sent successfully for tenant creation: {tenant_data['tenant_id']}")
@@ -335,6 +354,11 @@ def send_tenant_welcome_emails(
             logger.warning(f"Tenant notification sent but welcome email failed for tenant {tenant_data['tenant_id']}")
         else:
             logger.error(f"Both welcome emails failed for tenant {tenant_data['tenant_id']}")
+            
+        if sms_success:
+            logger.info(f"Tenant creation SMS sent for tenant {tenant_data['tenant_id']}")
+        elif admin_phone:
+            logger.error(f"Tenant creation SMS FAILED for tenant {tenant_data['tenant_id']}")
         
     except Exception as e:
         logger.error(f"Failed to send tenant welcome emails: {str(e)}")

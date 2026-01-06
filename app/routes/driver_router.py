@@ -2,7 +2,7 @@ from datetime import date
 from app.models.vendor import Vendor
 from app.utils.validition import validate_future_dates
 from common_utils.auth.utils import hash_password
-from fastapi import APIRouter, Depends, UploadFile, Form, HTTPException, status , Query, Request
+from fastapi import APIRouter, Depends, UploadFile, Form, HTTPException, status, Query, Request, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import Optional
 import io
@@ -21,6 +21,7 @@ from app.services.storage_service import storage_service
 from app.firebase.driver_location import push_driver_location_to_firebase
 from fastapi.encoders import jsonable_encoder
 from app.utils.audit_helper import log_audit
+from app.core.email_service import get_email_service, get_sms_service
 logger = get_logger(__name__)
 router = APIRouter(prefix="/drivers", tags=["drivers"])
 
@@ -116,6 +117,7 @@ def validate_vendor_and_tenant(db: Session, vendor_id: int, user_data: dict):
 @router.post("/create", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_driver(
     request: Request,
+    background_tasks: BackgroundTasks,
     vendor_id: Optional[int] = Form(None),
     name: str = Form(...),
     code: str = Form(...),
@@ -328,6 +330,20 @@ async def create_driver(
         except Exception as audit_error:
             logger.error(f"Failed to create audit log for driver creation: {str(audit_error)}")
 
+        # 🔥 Add background email and SMS task
+        background_tasks.add_task(
+            send_driver_created_notifications,
+            driver_data={
+                "driver_id": db_obj.driver_id,
+                "name": name,
+                "email": email,
+                "phone": phone,
+                "license_number": license_number,
+                "badge_number": badge_number,
+                "vendor_id": vendor_id,
+            },
+        )
+
         logger.info(f"✅ Driver '{driver_code}' created successfully (ID={db_obj.driver_id})")
         return ResponseWrapper.success(
             data={"driver": DriverResponse.model_validate(db_obj, from_attributes=True)},
@@ -355,6 +371,46 @@ async def create_driver(
         )
         raise handle_http_error(e)
 
+
+def send_driver_created_notifications(driver_data: dict):
+    """Background task to send driver creation email and SMS."""
+    try:
+        email_service = get_email_service()
+        sms_service = get_sms_service()
+
+        # Send Email
+        email_success = email_service.send_driver_created_email(
+            user_email=driver_data["email"],
+            user_name=driver_data["name"],
+            details=driver_data,
+        )
+
+        if email_success:
+            logger.info(f"Driver creation email sent: {driver_data['driver_id']}")
+        else:
+            logger.error(f"Driver creation email FAILED: {driver_data['driver_id']}")
+
+        # Send SMS
+        sms_message = (
+            f"Welcome to {email_service.app_name}! "
+            f"Your driver account has been created. "
+            f"Driver ID: {driver_data['driver_id']}. "
+            f"License: {driver_data['license_number']}. "
+            f"Check your email for details."
+        )
+        
+        sms_success = sms_service.send_sms(
+            to_phone=driver_data["phone"],
+            message=sms_message
+        )
+
+        if sms_success:
+            logger.info(f"Driver creation SMS sent: {driver_data['driver_id']}")
+        else:
+            logger.error(f"Driver creation SMS FAILED: {driver_data['driver_id']}")
+
+    except Exception as e:
+        logger.error(f"Error sending driver creation notifications: {str(e)}")
 
 
 # --------------------------
