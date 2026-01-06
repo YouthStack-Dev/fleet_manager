@@ -1,5 +1,5 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query, Request
-from app.core.email_service import get_email_service
+from app.core.email_service import get_email_service, get_sms_service
 from sqlalchemy.orm import Session
 from typing import Optional
 from app.database.session import get_db
@@ -170,23 +170,43 @@ def create_employee(
         raise handle_http_error(e)
 
 def send_employee_created_email(employee_data: dict):
-    """Background task to send employee creation email."""
+    """Background task to send employee creation email and SMS."""
     try:
         email_service = get_email_service()
+        sms_service = get_sms_service()
 
-        success = email_service.send_employee_created_email(
+        # Send Email
+        email_success = email_service.send_employee_created_email(
             user_email=employee_data["email"],
             user_name=employee_data["name"],
             details=employee_data,
         )
 
-        if success:
+        if email_success:
             logger.info(f"Employee creation email sent: {employee_data['employee_id']}")
         else:
             logger.error(f"Employee creation email FAILED: {employee_data['employee_id']}")
 
+        # Send SMS
+        sms_message = (
+            f"Welcome to {email_service.app_name}! "
+            f"Your employee account has been created. "
+            f"Employee ID: {employee_data['employee_id']}. "
+            f"Login with your email: {employee_data['email']}"
+        )
+        
+        sms_success = sms_service.send_sms(
+            to_phone=employee_data["phone"],
+            message=sms_message
+        )
+
+        if sms_success:
+            logger.info(f"Employee creation SMS sent: {employee_data['employee_id']}")
+        else:
+            logger.error(f"Employee creation SMS FAILED: {employee_data['employee_id']}")
+
     except Exception as e:
-        logger.error(f"Error sending employee creation email: {str(e)}")
+        logger.error(f"Error sending employee creation notifications: {str(e)}")
 
 @router.get("/", status_code=status.HTTP_200_OK)
 def read_employees(

@@ -609,6 +609,157 @@ class EmailService:
             html_content=html_content
         )
 
+    def send_driver_created_email(self, user_email: str, user_name: str, details: Dict[str, Any]) -> bool:
+        """Send email when a new driver is created"""
+        subject = f"Driver Account Created - {self.app_name}"
+
+        html_content = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background-color: #FF9800; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
+                <h1>🚗 Welcome to Our Driver Network!</h1>
+            </div>
+
+            <div style="background-color: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px;">
+                <h2>Hello {user_name},</h2>
+                <p>Your driver account has been successfully created in <strong>{self.app_name}</strong>.</p>
+
+                <div style="background-color: #fff3e0; padding: 18px; border-radius: 5px; margin: 20px 0;">
+                    <h3>Driver Details:</h3>
+                    <p><strong>Driver ID:</strong> {details.get('driver_id')}</p>
+                    <p><strong>Name:</strong> {details.get('name')}</p>
+                    <p><strong>Email:</strong> {details.get('email')}</p>
+                    <p><strong>Phone:</strong> {details.get('phone')}</p>
+                    <p><strong>License Number:</strong> {details.get('license_number')}</p>
+                    <p><strong>Badge Number:</strong> {details.get('badge_number')}</p>
+                </div>
+
+                <p><strong>What's Next?</strong></p>
+                <ul>
+                    <li>Download the driver mobile app</li>
+                    <li>Log in with your credentials</li>
+                    <li>Complete your profile verification</li>
+                    <li>Start accepting trip assignments</li>
+                </ul>
+
+                <p>For support or queries, contact us at <a href="mailto:{self.support_email}">{self.support_email}</a></p>
+
+                <p>Safe driving!<br>The {self.app_name} Team</p>
+            </div>
+
+            <div style="text-align: center; color: #666; font-size: 12px; margin-top: 20px;">
+                <p>&copy; 2024 {self.app_name}. All rights reserved.</p>
+            </div>
+        </div>
+        """
+
+        return self.send_email(
+            to_emails=user_email,
+            subject=subject,
+            html_content=html_content
+        )
+
+    def send_vendor_created_email(self, admin_email: str, vendor_data: Dict[str, Any]) -> bool:
+        """Send email when a new vendor is created"""
+        subject = f"Vendor Account Created - {self.app_name}"
+
+        html_content = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background-color: #9C27B0; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
+                <h1>🏢 Welcome to Our Vendor Network!</h1>
+            </div>
+
+            <div style="background-color: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px;">
+                <h2>Hello {vendor_data.get('admin_name')},</h2>
+                <p>Your vendor organization has been successfully onboarded to <strong>{self.app_name}</strong>.</p>
+
+                <div style="background-color: #f3e5f5; padding: 18px; border-radius: 5px; margin: 20px 0;">
+                    <h3>Vendor Details:</h3>
+                    <p><strong>Vendor ID:</strong> {vendor_data.get('vendor_id')}</p>
+                    <p><strong>Company Name:</strong> {vendor_data.get('name')}</p>
+                    <p><strong>Vendor Code:</strong> {vendor_data.get('vendor_code')}</p>
+                    <p><strong>Admin Email:</strong> {vendor_data.get('admin_email')}</p>
+                    <p><strong>Admin Phone:</strong> {vendor_data.get('admin_phone')}</p>
+                </div>
+
+                <p><strong>As a Vendor Partner, You Can:</strong></p>
+                <ul>
+                    <li>Manage your fleet of vehicles</li>
+                    <li>Add and manage drivers</li>
+                    <li>Track trip assignments and completion</li>
+                    <li>View performance analytics and reports</li>
+                    <li>Manage vendor user accounts</li>
+                </ul>
+
+                <p><strong>Login Details:</strong></p>
+                <p>Username: {vendor_data.get('admin_email')}<br>
+                Password: {vendor_data.get('password', 'Contact admin for password')}</p>
+
+                <p>For assistance, reach us at <a href="mailto:{self.support_email}">{self.support_email}</a></p>
+
+                <p>Welcome to our partner network!<br>The {self.app_name} Team</p>
+            </div>
+
+            <div style="text-align: center; color: #666; font-size: 12px; margin-top: 20px;">
+                <p>&copy; 2024 {self.app_name}. All rights reserved.</p>
+            </div>
+        </div>
+        """
+
+        return self.send_email(
+            to_emails=admin_email,
+            subject=subject,
+            html_content=html_content
+        )
+
+    def send_vendor_user_created_email(self, user_email: str, user_name: str, details: Dict[str, Any]) -> bool:
+        """Send email when a new vendor user is created"""
+        subject = f"Vendor User Account Created - {self.app_name}"
+
+        html_content = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background-color: #673AB7; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
+                <h1>👤 Your Vendor User Account is Ready!</h1>
+            </div>
+
+            <div style="background-color: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px;">
+                <h2>Hello {user_name},</h2>
+                <p>Your vendor user account has been created successfully in <strong>{self.app_name}</strong>.</p>
+
+                <div style="background-color: #ede7f6; padding: 18px; border-radius: 5px; margin: 20px 0;">
+                    <h3>User Details:</h3>
+                    <p><strong>User ID:</strong> {details.get('vendor_user_id')}</p>
+                    <p><strong>Name:</strong> {details.get('name')}</p>
+                    <p><strong>Email:</strong> {details.get('email')}</p>
+                    <p><strong>Phone:</strong> {details.get('phone')}</p>
+                    <p><strong>Vendor:</strong> {details.get('vendor_name', 'N/A')}</p>
+                    <p><strong>Role:</strong> {details.get('role_name', 'N/A')}</p>
+                </div>
+
+                <p><strong>What's Next?</strong></p>
+                <ul>
+                    <li>Log in using your email address</li>
+                    <li>Contact your vendor admin for your password</li>
+                    <li>Familiarize yourself with the dashboard</li>
+                    <li>Start managing your assigned tasks</li>
+                </ul>
+
+                <p>For support, contact us at <a href="mailto:{self.support_email}">{self.support_email}</a></p>
+
+                <p>Welcome to the team!<br>The {self.app_name} Team</p>
+            </div>
+
+            <div style="text-align: center; color: #666; font-size: 12px; margin-top: 20px;">
+                <p>&copy; 2024 {self.app_name}. All rights reserved.</p>
+            </div>
+        </div>
+        """
+
+        return self.send_email(
+            to_emails=user_email,
+            subject=subject,
+            html_content=html_content
+        )
+
 # Singleton instance
 email_service = EmailService()
 
@@ -616,3 +767,9 @@ email_service = EmailService()
 def get_email_service() -> EmailService:
     """Get the email service instance"""
     return email_service
+
+# SMS Service Helper
+def get_sms_service():
+    """Get SMS service instance"""
+    from app.services.sms_service import SMSService
+    return SMSService()
