@@ -47,6 +47,9 @@ services:
     ports:
       - "8000:8000"
     environment:
+      # Timezone - Set to IST for India
+      - TZ=Asia/Kolkata
+      
       # Database settings
       - POSTGRES_HOST=fleet_postgres
       - POSTGRES_USER=fleetadmin
