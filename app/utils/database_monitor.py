@@ -6,7 +6,11 @@ import time
 import asyncio
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from sqlalchemy import event, text
+
+# India Standard Time
+IST = ZoneInfo("Asia/Kolkata")
 from sqlalchemy.engine import Engine
 from app.database.session import get_db
 from app.utils.cache_manager import cache
@@ -41,7 +45,7 @@ class DatabaseMonitor:
             # Log slow queries
             if total_time > self.slow_query_threshold:
                 query_info = {
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(IST).isoformat(),
                     "query": statement[:500],  # Truncate long queries
                     "duration": total_time,
                     "parameters": str(parameters)[:200] if parameters else None
@@ -81,7 +85,7 @@ class DatabaseMonitor:
         conn_stats = self.get_connection_stats()
 
         # Get slow query count in last hour
-        one_hour_ago = datetime.utcnow() - timedelta(hours=1)
+        one_hour_ago = datetime.now(IST) - timedelta(hours=1)
         recent_slow_queries = [
             q for q in self.query_log
             if datetime.fromisoformat(q["timestamp"]) > one_hour_ago
@@ -98,7 +102,7 @@ class DatabaseMonitor:
             "slow_queries_last_hour": len(recent_slow_queries),
             "average_slow_query_time": avg_slow_time,
             "total_slow_queries_logged": len(self.query_log),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(IST).isoformat()
         }
 
     def log_performance_metrics(self):
@@ -135,14 +139,14 @@ def get_connection_health() -> Dict:
 
         return {
             "status": "healthy",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(IST).isoformat(),
             "message": "Database connection successful"
         }
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
         return {
             "status": "unhealthy",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(IST).isoformat(),
             "error": str(e)
         }
 

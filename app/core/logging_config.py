@@ -2,9 +2,14 @@
 import sys
 import os
 from typing import Optional
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+# India Standard Time for logging
+IST = ZoneInfo("Asia/Kolkata")
 
 class ColoredFormatter(logging.Formatter):
-    """Custom formatter to add colors to log levels"""
+    """Custom formatter to add colors to log levels and use IST timestamps"""
     
     # ANSI color codes
     COLORS = {
@@ -27,7 +32,7 @@ class ColoredFormatter(logging.Formatter):
             print(f"\033[32mCOLORS ENABLED\033[0m - Testing: \033[31mRED\033[0m \033[33mYELLOW\033[0m \033[36mCYAN\033[0m", flush=True)
         else:
             print("COLORS DISABLED", flush=True)
-        
+    
     def _should_use_colors(self, use_colors: bool) -> bool:
         """Simplified color detection - more aggressive for terminals"""
         
@@ -82,9 +87,12 @@ class ColoredFormatter(logging.Formatter):
                 f'{message_color}%(message)s{reset_color}'
             )
             
+            # Create a new formatter instance with the IST converter
             formatter = logging.Formatter(colored_format)
+            formatter.converter = lambda *args: datetime.now(IST).timetuple()
         else:
             formatter = logging.Formatter(self.format_string)
+            formatter.converter = lambda *args: datetime.now(IST).timetuple()
         
         formatted_message = formatter.format(record)
         
