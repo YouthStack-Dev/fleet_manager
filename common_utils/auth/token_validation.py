@@ -13,7 +13,7 @@ import jwt
 from jwt.exceptions import PyJWTError
 from functools import lru_cache
 
-from app.database.session import SessionLocal
+from app.database.session import SessionLocal, get_db
 from app.models.iam import Permission, Policy, Role
 from sqlalchemy.orm import Session, joinedload
 from app.config import settings
@@ -411,7 +411,7 @@ class Oauth2AsAccessor:
                 del self.cache[cache_key]
         return None
 
-    def validate_oauth2_token(self, oauth_token, opaque_token=None, use_cache=True):
+    def validate_oauth2_token(self, oauth_token, opaque_token=None, use_cache=True, db: Session = None):
 
         # ------------------------
         # Extract payload
@@ -484,7 +484,7 @@ class Oauth2AsAccessor:
         try:
             from app.routes.auth_router import introspect_token_direct
 
-            response_data = introspect_token_direct(oauth_token)
+            response_data = introspect_token_direct(oauth_token, db=db)
 
             # Store if valid
             if response_data:
@@ -646,14 +646,14 @@ class Oauth2AsAccessor:
         return results
 
 
-def access_token_validator(token, opaque_token, verbosity, use_cache: bool = True):
+def access_token_validator(token, opaque_token, verbosity, use_cache: bool = True, db: Session = None):
     Oauth2AsAccessor.set_verbosity(verbosity)
     accessor = Oauth2AsAccessor()
-    return accessor.validate_oauth2_token(token, opaque_token, use_cache=use_cache)
+    return accessor.validate_oauth2_token(token, opaque_token, use_cache=use_cache, db=db)
 
 
 def validate_bearer_token(use_cache: bool = True):
-    async def get_token_data(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict:
+    async def get_token_data(credentials: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)) -> Dict:
         token = credentials.credentials
         
         try:
@@ -661,7 +661,7 @@ def validate_bearer_token(use_cache: bool = True):
             payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
             
             logger.debug(f"Token payload: {payload}")
-            validation_result = access_token_validator(token, payload.get("opaque_token"), 40, use_cache)
+            validation_result = access_token_validator(token, payload.get("opaque_token"), 40, use_cache, db=db)
 
             logger.debug(f"Validation result from cache: {validation_result}")
 

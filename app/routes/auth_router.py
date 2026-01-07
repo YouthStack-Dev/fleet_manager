@@ -83,20 +83,157 @@ def employee_to_schema(employee: Employee) -> EmployeeResponse:
     }
     return EmployeeResponse(**employee_dict)
 
-def introspect_token_direct(token: str) -> dict:
+def refresh_permissions_from_db(db: Session, user_id: str, user_type: str, tenant_id: str = None, vendor_id: str = None) -> dict:
     """
-    Optimized introspection function that validates JWT and returns claims WITHOUT database calls.
-    All necessary user information (roles, permissions, user_type) is already embedded in the JWT.
-    This eliminates 2-4 database queries per request for significant performance improvement.
+    Fetch fresh roles and permissions from database when Redis cache expires.
+    Called automatically when Redis TTL expires but JWT is still valid.
+    
+    Returns:
+        dict with 'roles' and 'permissions' keys, or raises HTTPException if user not found
+    """
+    logger.info(f"🔄 Refreshing permissions from DB for {user_type} user_id={user_id}")
+    
+    try:
+        if user_type == "employee":
+            from app.models.iam import Role, Policy, Permission
+            
+            employee = (
+                db.query(Employee)
+                .options(
+                    joinedload(Employee.roles)
+                    .joinedload(Role.policies)
+                    .joinedload(Policy.permissions)
+                )
+                .filter(Employee.employee_id == int(user_id))
+                .first()
+            )
+            
+            if not employee or not employee.is_active:
+                logger.warning(f"Employee {user_id} not found or inactive during permission refresh")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=ResponseWrapper.error("User not found or inactive", "USER_INACTIVE")
+                )
+            
+            roles = []
+            all_permissions = []
+            
+            for role in employee.roles if hasattr(employee, 'roles') else []:
+                if role and role.is_active and (role.tenant_id == employee.tenant_id or role.is_system_role):
+                    roles.append(role.name)
+                    for policy in role.policies:
+                        for permission in policy.permissions:
+                            module = permission.module
+                            action = permission.action
+                            
+                            existing = next((p for p in all_permissions if p["module"] == module), None)
+                            if existing:
+                                if action == "*":
+                                    existing["action"] = ["create", "read", "update", "delete", "*"]
+                                elif action not in existing["action"]:
+                                    existing["action"].append(action)
+                            else:
+                                all_permissions.append({
+                                    "module": module,
+                                    "action": ["create", "read", "update", "delete", "*"] if action == "*" else [action]
+                                })
+            
+            logger.info(f"✅ Refreshed employee {user_id}: {len(roles)} roles, {len(all_permissions)} permissions")
+            return {"roles": roles, "permissions": all_permissions}
+        
+        elif user_type == "vendor":
+            vendor_user = db.query(VendorUser).filter(
+                VendorUser.vendor_user_id == int(user_id)
+            ).first()
+            
+            if not vendor_user or not vendor_user.is_active:
+                logger.warning(f"Vendor user {user_id} not found or inactive during permission refresh")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=ResponseWrapper.error("User not found or inactive", "USER_INACTIVE")
+                )
+            
+            _, roles, all_permissions = vendor_user_crud.get_roles_and_permissions(
+                db, vendor_user_id=vendor_user.vendor_user_id, vendor_id=vendor_user.vendor_id
+            )
+            
+            logger.info(f"✅ Refreshed vendor user {user_id}: {len(roles)} roles, {len(all_permissions)} permissions")
+            return {"roles": roles, "permissions": all_permissions}
+        
+        elif user_type == "admin":
+            admin = db.query(Admin).filter(Admin.admin_id == int(user_id)).first()
+            
+            if not admin or not admin.is_active:
+                logger.warning(f"Admin {user_id} not found or inactive during permission refresh")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=ResponseWrapper.error("User not found or inactive", "USER_INACTIVE")
+                )
+            
+            _, roles, all_permissions = admin_crud.get_admin_roles_and_permissions(
+                db, admin_id=admin.admin_id
+            )
+            
+            logger.info(f"✅ Refreshed admin {user_id}: {len(roles)} roles, {len(all_permissions)} permissions")
+            return {"roles": roles, "permissions": all_permissions}
+        
+        elif user_type == "driver":
+            driver = db.query(Driver).filter(Driver.driver_id == int(user_id)).first()
+            
+            if not driver or not driver.is_active:
+                logger.warning(f"Driver {user_id} not found or inactive during permission refresh")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=ResponseWrapper.error("User not found or inactive", "USER_INACTIVE")
+                )
+            
+            _, roles, all_permissions = driver_crud.get_driver_roles_and_permissions(
+                db, driver_id=driver.driver_id, tenant_id=driver.tenant_id
+            )
+            
+            logger.info(f"✅ Refreshed driver {user_id}: {len(roles)} roles, {len(all_permissions)} permissions")
+            return {"roles": roles, "permissions": all_permissions}
+        
+        else:
+            logger.error(f"Unknown user_type during permission refresh: {user_type}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(f"Invalid user type: {user_type}", "INVALID_USER_TYPE")
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to refresh permissions from DB for {user_type} {user_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error("Failed to refresh permissions", "DB_REFRESH_ERROR")
+        )
+
+def introspect_token_direct(token: str, db: Session = None) -> dict:
+    """
+    Optimized introspection function that validates JWT and returns claims.
+    
+    Smart caching strategy:
+    1. JWT is decoded and validated first (fast, no external calls)
+    2. If opaque_token exists, checks Redis cache for session validity
+    3. If Redis cache expired but JWT still valid:
+       - Fetches fresh permissions from DB
+       - Re-caches in Redis with new TTL (15 min)
+       - Returns updated permissions
+    
+    This ensures permissions stay fresh even when Redis cache expires,
+    while maintaining performance through caching.
     """
     try:
         # Decode and validate JWT signature and expiration
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         logger.debug(f"Token decoded successfully for user: {payload.get('user_id')}, tenant: {payload.get('tenant_id')}")
         
-        # Extract all data from JWT claims (no DB lookup needed)
+        # Extract all data from JWT claims
         user_id = payload.get("user_id")
         tenant_id = payload.get("tenant_id")
+        vendor_id = payload.get("vendor_id")
         user_type = payload.get("user_type", "employee")
         roles = payload.get("roles", [])
         permissions = payload.get("permissions", [])
@@ -117,12 +254,67 @@ def introspect_token_direct(token: str) -> dict:
                 detail=ResponseWrapper.error("Missing tenant_id for employee token", "MISSING_TENANT_ID")
             )
         
-        # Optional: Check if session is still valid (single-session enforcement)
-        # This uses Redis/cache, not database
+        # Check Redis cache and refresh permissions if expired
+        permissions_refreshed = False
         if opaque_token:
             oauth_accessor = Oauth2AsAccessor()
             if oauth_accessor.use_redis:
                 try:
+                    # Check if opaque token exists in Redis
+                    token_data = oauth_accessor.get_cached_oauth2_token(opaque_token, metadata=True)
+                    
+                    if not token_data:
+                        # Redis cache expired but JWT is still valid
+                        logger.info(f"🔄 Redis cache expired for user {user_id} ({user_type}), refreshing from DB")
+                        
+                        if db is None:
+                            # If DB session not provided, we can't refresh
+                            logger.warning(f"Cannot refresh permissions - no DB session provided for user {user_id}")
+                        else:
+                            # Fetch fresh permissions from database
+                            fresh_data = refresh_permissions_from_db(db, user_id, user_type, tenant_id, vendor_id)
+                            roles = fresh_data["roles"]
+                            permissions = fresh_data["permissions"]
+                            permissions_refreshed = True
+                            
+                            # Re-cache in Redis with new TTL (15 minutes = 900 seconds)
+                            current_time = int(time.time())
+                            cache_ttl = 900  # 15 minutes
+                            
+                            refreshed_payload = {
+                                "user_id": str(user_id),
+                                "roles": roles,
+                                "permissions": permissions,
+                                "user_type": user_type,
+                                "iat": current_time,
+                                "exp": current_time + cache_ttl,
+                            }
+                            
+                            if tenant_id:
+                                refreshed_payload["tenant_id"] = str(tenant_id)
+                            if vendor_id:
+                                refreshed_payload["vendor_id"] = str(vendor_id)
+                            if opaque_token:
+                                refreshed_payload["opaque_token"] = opaque_token
+                            
+                            # Store refreshed data in Redis
+                            oauth_accessor.store_opaque_token(opaque_token, refreshed_payload, cache_ttl)
+                            
+                            # Also update session key TTL
+                            session_key = f"{user_type}_session:{user_id}"
+                            oauth_accessor.redis_manager.client.expire(session_key, cache_ttl)
+                            
+                            logger.info(f"✅ Permissions refreshed and re-cached for user {user_id} ({user_type})")
+                    else:
+                        # Cache hit - use cached permissions
+                        logger.debug(f"📦 Serving permissions from Redis cache for user {user_id}")
+                        # Update with cached data if present
+                        if "roles" in token_data:
+                            roles = token_data["roles"]
+                        if "permissions" in token_data:
+                            permissions = token_data["permissions"]
+                    
+                    # Check single-session enforcement
                     session_key = f"{user_type}_session:{user_id}"
                     active_token = oauth_accessor.redis_manager.client.get(session_key)
                     if active_token:
@@ -137,13 +329,20 @@ def introspect_token_direct(token: str) -> dict:
                                     error_code="SESSION_EXPIRED"
                                 )
                             )
+                except HTTPException:
+                    raise
                 except Exception as redis_err:
                     # Redis errors shouldn't block authentication if JWT is valid
                     logger.warning(f"Redis check failed during introspection for user {user_id}: {redis_err}")
         
-        logger.info(f"Token introspection successful (JWT-only) for user: {user_id}, user_type: {user_type}, roles: {roles}, permissions: {len(permissions)} modules")
+        log_msg = f"Token introspection successful for user: {user_id}, user_type: {user_type}, roles: {roles}, permissions: {len(permissions)} modules"
+        if permissions_refreshed:
+            log_msg += " (refreshed from DB)"
+        else:
+            log_msg += " (from cache/JWT)"
+        logger.info(log_msg)
         
-        # Return the claims from JWT directly
+        # Return the token payload
         token_payload = {
             "user_id": str(user_id),
             "roles": roles,
@@ -158,6 +357,9 @@ def introspect_token_direct(token: str) -> dict:
         
         if tenant_id:
             token_payload["tenant_id"] = str(tenant_id)
+        
+        if vendor_id:
+            token_payload["vendor_id"] = str(vendor_id)
         
         return token_payload
         
@@ -943,6 +1145,7 @@ async def driver_login(
 async def introspect(x_introspect_secret: str = Header(...,alias="X_Introspect_Secret"), authorization: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)):
     """
     Validate and introspect a token, returning its associated data if valid.
+    Now supports automatic permission refresh from DB when Redis cache expires.
     """
     logger.debug("Token introspection request received")
     
@@ -953,7 +1156,7 @@ async def introspect(x_introspect_secret: str = Header(...,alias="X_Introspect_S
             detail="You are not authorized"
         )
     
-    return introspect_token_direct(authorization.credentials)
+    return introspect_token_direct(authorization.credentials, db=db)
 
 # @router.post("/refresh-token", response_model=TokenResponse)
 # async def refresh_token(
