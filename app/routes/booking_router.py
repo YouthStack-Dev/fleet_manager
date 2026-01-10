@@ -507,7 +507,7 @@ def get_bookings(
         if route_obj_dict:
             shift_ids = [r.shift_id for r in route_obj_dict.values() if r.shift_id]
             for shift_id in shift_ids:
-                shift_data = get_shift_cached(shift_id, tenant_id or effective_tenant_id)
+                shift_data = get_shift_cached(db, shift_id, tenant_id or effective_tenant_id)
                 if not shift_data:
                     shift_obj = db.query(Shift).filter(Shift.shift_id == shift_id).first()
                     if shift_obj:
@@ -582,7 +582,7 @@ def get_bookings(
 
                 shift_details = None
                 if route.shift_id:
-                    shift_data = get_shift_cached(route.shift_id, tenant_id)
+                    shift_data = get_shift_cached(db, route.shift_id, tenant_id)
                     if shift_data:
                         shift_details = shift_data
                     elif route.shift_id in shifts_dict:
@@ -751,7 +751,7 @@ def get_bookings_by_employee(
         if route_obj_dict:
             shift_ids = [r.shift_id for r in route_obj_dict.values() if r.shift_id]
             for shift_id in shift_ids:
-                shift_data = get_shift_cached(shift_id, tenant_id)
+                shift_data = get_shift_cached(db, shift_id, tenant_id)
                 if not shift_data:
                     shift_obj = db.query(Shift).filter(Shift.shift_id == shift_id).first()
                     if shift_obj:
@@ -832,7 +832,7 @@ def get_bookings_by_employee(
 
                 shift_details = None
                 if route.shift_id:
-                    shift_data = get_shift_cached(route.shift_id, tenant_id)
+                    shift_data = get_shift_cached(db, route.shift_id, tenant_id)
                     if shift_data:
                         shift_details = shift_data
                     elif route.shift_id in shifts_dict:
