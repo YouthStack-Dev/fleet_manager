@@ -44,19 +44,25 @@ def get_tenant_cached(db: Session, tenant_id: str) -> Tenant:
         cache_manager.cache_tenant(tenant_id, tenant_dict)
     return tenant
 
-def get_shift_cached(db: Session, shift_id: int, tenant_id: str) -> Shift:
+def get_shift_cached(db: Session, shift_id: int, tenant_id: str):
     """Get shift with caching (1 hour TTL)"""
     cached_data = cache_manager.get_cached_shift(shift_id, tenant_id)
     if cached_data:
-        shift = Shift(**cached_data)
-        return shift
+        # Return cached dict directly (contains string-formatted time)
+        return cached_data
     
     # Cache miss - query database
     shift = db.query(Shift).filter(Shift.shift_id == shift_id, Shift.tenant_id == tenant_id).first()
     if shift:
-        shift_dict = {c.name: getattr(shift, c.name) for c in shift.__table__.columns}
+        shift_dict = {
+            "shift_id": shift.shift_id,
+            "shift_time": shift.shift_time.strftime("%H:%M:%S") if shift.shift_time else None,
+            "log_type": shift.log_type.value if shift.log_type else None,
+            "tenant_id": shift.tenant_id
+        }
         cache_manager.cache_shift(shift_id, tenant_id, shift_dict)
-    return shift
+        return shift_dict
+    return None
 
 def get_cutoff_cached(db: Session, tenant_id: str) -> Cutoff:
     """Get cutoff config with caching (1 hour TTL)"""
@@ -508,15 +514,8 @@ def get_bookings(
             shift_ids = [r.shift_id for r in route_obj_dict.values() if r.shift_id]
             for shift_id in shift_ids:
                 shift_data = get_shift_cached(db, shift_id, tenant_id or effective_tenant_id)
-                if not shift_data:
-                    shift_obj = db.query(Shift).filter(Shift.shift_id == shift_id).first()
-                    if shift_obj:
-                        cache_manager.cache_shift(shift_id, tenant_id or effective_tenant_id, {
-                            "shift_id": shift_obj.shift_id,
-                            "shift_time": shift_obj.shift_time.strftime("%H:%M:%S") if shift_obj.shift_time else None,
-                            "log_type": shift_obj.log_type.value if shift_obj.log_type else None
-                        })
-                        shifts_dict[shift_id] = shift_obj
+                if shift_data:
+                    shifts_dict[shift_id] = shift_data
 
         # Fetch all route bookings for passengers with eager loading
         all_route_bookings = db.query(RouteManagementBooking).options(
@@ -586,12 +585,7 @@ def get_bookings(
                     if shift_data:
                         shift_details = shift_data
                     elif route.shift_id in shifts_dict:
-                        shift_route = shifts_dict[route.shift_id]
-                        shift_details = {
-                        "shift_id": shift_route.shift_id,
-                        "shift_time": shift_route.shift_time.strftime("%H:%M:%S") if shift_route.shift_time else None,
-                        "log_type": shift_route.log_type.value if shift_route.log_type else None,
-                    }
+                        shift_details = shifts_dict[route.shift_id]
 
                 route_info = {
                     "route_id": route.route_id,
@@ -752,15 +746,8 @@ def get_bookings_by_employee(
             shift_ids = [r.shift_id for r in route_obj_dict.values() if r.shift_id]
             for shift_id in shift_ids:
                 shift_data = get_shift_cached(db, shift_id, tenant_id)
-                if not shift_data:
-                    shift_obj = db.query(Shift).filter(Shift.shift_id == shift_id).first()
-                    if shift_obj:
-                        cache_manager.cache_shift(shift_id, tenant_id, {
-                            "shift_id": shift_obj.shift_id,
-                            "shift_time": shift_obj.shift_time.strftime("%H:%M:%S") if shift_obj.shift_time else None,
-                            "log_type": shift_obj.log_type.value if shift_obj.log_type else None
-                        })
-                        shifts_dict[shift_id] = shift_obj
+                if shift_data:
+                    shifts_dict[shift_id] = shift_data
 
         # Fetch all route bookings for passengers with eager loading
         
@@ -836,12 +823,7 @@ def get_bookings_by_employee(
                     if shift_data:
                         shift_details = shift_data
                     elif route.shift_id in shifts_dict:
-                        shift_route = shifts_dict[route.shift_id]
-                        shift_details = {
-                        "shift_id": shift_route.shift_id,
-                        "shift_time": shift_route.shift_time.strftime("%H:%M:%S") if shift_route.shift_time else None,
-                        "log_type": shift_route.log_type.value if shift_route.log_type else None,
-                    }
+                        shift_details = shifts_dict[route.shift_id]
 
                 route_info = {
                     "route_id": route.route_id,
