@@ -405,7 +405,7 @@ async def employee_login(
             .options(
                 joinedload(Employee.tenant),
                 joinedload(Employee.team),
-                joinedload(Employee.roles)
+                joinedload(Employee.role)
                 .joinedload(Role.policies)
                 .joinedload(Policy.permissions)
             )
@@ -465,15 +465,10 @@ async def employee_login(
         roles = []
         all_permissions = []
         
-        # Process roles that are already loaded
-        role_list = employee.roles if hasattr(employee, 'roles') and employee.roles else []
-        if not isinstance(role_list, list):
-            try:
-                role_list = list(role_list)
-            except (TypeError, AttributeError):
-                role_list = [role_list] if role_list else []
+        # Process role that is already loaded (single role relationship)
+        role = employee.role
         
-        for role in role_list:
+        if role:
             if role and role.is_active and (role.tenant_id == tenant.tenant_id or role.is_system_role):
                 roles.append(role.name)
                 
