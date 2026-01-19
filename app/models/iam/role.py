@@ -28,7 +28,7 @@ class Role(Base):
     tenant = relationship("Tenant", back_populates="roles")
     admins = relationship("Admin", back_populates="roles")
     vendor_users = relationship("VendorUser", back_populates="roles")
-    employees = relationship("Employee", back_populates="roles")
+    employees = relationship("Employee", back_populates="role")
     drivers = relationship("Driver", back_populates="role")
 
     __table_args__ = (
