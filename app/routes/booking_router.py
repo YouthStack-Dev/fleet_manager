@@ -64,6 +64,23 @@ def get_shift_cached(db: Session, shift_id: int, tenant_id: str):
         return shift_dict
     return None
 
+def get_shift_time(shift):
+    """Extract shift_time from either a dict (cached) or Shift object"""
+    if isinstance(shift, dict):
+        time_str = shift.get("shift_time")
+        if time_str:
+            from datetime import time as dt_time
+            h, m, s = map(int, time_str.split(":"))
+            return dt_time(h, m, s)
+        return None
+    return shift.shift_time if hasattr(shift, "shift_time") else None
+
+def get_shift_log_type(shift):
+    """Extract log_type from either a dict (cached) or Shift object"""
+    if isinstance(shift, dict):
+        return shift.get("log_type")
+    return shift.log_type.value if hasattr(shift, "log_type") and shift.log_type else None
+
 def get_cutoff_cached(db: Session, tenant_id: str) -> Cutoff:
     """Get cutoff config with caching (1 hour TTL)"""
     cached_data = cache_manager.get_cached_cutoff(tenant_id)
@@ -238,9 +255,10 @@ def create_booking(
             else:
                 # Regular booking - use shift-type specific cutoffs
                 if cutoff:
-                    if shift.log_type == "IN":  # Login shift (home → office)
+                    shift_log_type = get_shift_log_type(shift)
+                    if shift_log_type == "IN":  # Login shift (home → office)
                         cutoff_interval = cutoff.booking_login_cutoff
-                    elif shift.log_type == "OUT":  # Logout shift (office → home)  
+                    elif shift_log_type == "OUT":  # Logout shift (office → home)  
                         cutoff_interval = cutoff.booking_logout_cutoff
                 else:
                     # No cutoff configuration for this tenant - skip cutoff validation
@@ -248,11 +266,13 @@ def create_booking(
                     logger.info(f"No cutoff configuration found for tenant {tenant_id} - skipping cutoff validation")
             
             if cutoff and shift and cutoff_interval and cutoff_interval.total_seconds() > 0:
-                shift_datetime = datetime.combine(booking_date, shift.shift_time).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
+                shift_time = get_shift_time(shift)
+                shift_datetime = datetime.combine(booking_date, shift_time).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
                 now = get_current_ist_time()
                 time_until_shift = shift_datetime - now
+                shift_log_type = get_shift_log_type(shift)
                 logger.info(
-                    f"Cutoff check: shift_type={shift.log_type}, booking_type={booking.booking_type}, now={now}, shift_datetime={shift_datetime}, "
+                    f"Cutoff check: shift_type={shift_log_type}, booking_type={booking.booking_type}, now={now}, shift_datetime={shift_datetime}, "
                     f"time_until_shift={time_until_shift}, cutoff={cutoff_interval}"
                 )
                 if time_until_shift < cutoff_interval:
@@ -261,7 +281,8 @@ def create_booking(
                     elif booking.booking_type == "medical_emergency":
                         booking_type_name = "medical emergency"
                     else:
-                        booking_type_name = "login" if shift.log_type == "IN" else "logout"
+                        shift_log_type = get_shift_log_type(shift)
+                        booking_type_name = "login" if shift_log_type == "IN" else "logout"
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=ResponseWrapper.error(
@@ -271,14 +292,15 @@ def create_booking(
                     )
 
             # 3️⃣ Prevent booking if shift time has already passed today
-            shift_datetime = datetime.combine(booking_date, shift.shift_time).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
+            shift_time = get_shift_time(shift)
+            shift_datetime = datetime.combine(booking_date, shift_time).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
             now = get_current_ist_time()
 
             if booking_date == date.today() and now >= shift_datetime:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ResponseWrapper.error(
-                        message=f"Cannot create booking for a shift that has already started or passed (Shift time: {shift.shift_time})",
+                        message=f"Cannot create booking for a shift that has already started or passed (Shift time: {shift_time})",
                         error_code="PAST_SHIFT_TIME",
                     ),
                 )
@@ -293,8 +315,9 @@ def create_booking(
                 )
                 .first()
             )
+            shift_id = shift.get("shift_id") if isinstance(shift, dict) else shift.shift_id
             logger.info(
-                    f"Existing booking check: employee_id={employee.employee_id}, booking_date={booking_date}, shift_id={shift.shift_id}"
+                    f"Existing booking check: employee_id={employee.employee_id}, booking_date={booking_date}, shift_id={shift_id}"
                 )
 
             if existing_booking:
@@ -310,7 +333,8 @@ def create_booking(
                     logger.info(f"Previous booking was cancelled, proceeding to create a new one for booking_date={booking_date}")
 
             # 4️⃣ Compute pickup/drop based on shift
-            if shift.log_type == "IN":  # home → office
+            shift_log_type = get_shift_log_type(shift)
+            if shift_log_type == "IN":  # home → office
                 pickup_lat, pickup_lng = employee.latitude, employee.longitude
                 pickup_addr = employee.address
                 drop_lat, drop_lng = tenant.latitude, tenant.longitude
@@ -369,7 +393,8 @@ def create_booking(
         for booking_item in created_bookings:
             booking_dict = BookingResponse.model_validate(booking_item).dict()
             if shift:
-                booking_dict["shift_time"] = shift.shift_time
+                shift_time = get_shift_time(shift)
+                booking_dict["shift_time"] = shift_time
             bookings_with_shift.append(booking_dict)
 
         return ResponseWrapper.created(
