@@ -100,7 +100,7 @@ def refresh_permissions_from_db(db: Session, user_id: str, user_type: str, tenan
             employee = (
                 db.query(Employee)
                 .options(
-                    joinedload(Employee.roles)
+                    joinedload(Employee.role)
                     .joinedload(Role.policies)
                     .joinedload(Policy.permissions)
                 )
@@ -118,10 +118,11 @@ def refresh_permissions_from_db(db: Session, user_id: str, user_type: str, tenan
             roles = []
             all_permissions = []
             
-            for role in employee.roles if hasattr(employee, 'roles') else []:
-                if role and role.is_active and (role.tenant_id == employee.tenant_id or role.is_system_role):
-                    roles.append(role.name)
-                    for policy in role.policies:
+            # Employee has a single role (many-to-one relationship)
+            role = employee.role if hasattr(employee, 'role') else None
+            if role and role.is_active and (role.tenant_id == employee.tenant_id or role.is_system_role):
+                roles.append(role.name)
+                for policy in role.policies:
                         for permission in policy.permissions:
                             module = permission.module
                             action = permission.action
