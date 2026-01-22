@@ -542,26 +542,50 @@ def get_bookings(
                 if shift_data:
                     shifts_dict[shift_id] = shift_data
 
-        # Fetch all route bookings for passengers with eager loading
-        all_route_bookings = db.query(RouteManagementBooking).options(
-            joinedload(RouteManagementBooking.booking)
-            .joinedload(Booking.employee)
-        ).filter(RouteManagementBooking.route_id.in_(route_ids)).all() if route_ids else []
+        # Fetch all route bookings for passengers
+        # Note: RouteManagementBooking doesn't have a direct 'booking' relationship
+        logger.info(f"Fetching route bookings for {len(route_ids)} routes in get_bookings endpoint")
+        all_route_bookings = db.query(RouteManagementBooking).filter(
+            RouteManagementBooking.route_id.in_(route_ids)
+        ).all() if route_ids else []
+        
+        logger.info(f"Found {len(all_route_bookings)} route bookings")
+        
+        # Fetch all bookings associated with these route bookings
+        route_booking_ids = [rb.booking_id for rb in all_route_bookings]
+        logger.info(f"Fetching {len(route_booking_ids)} bookings for route passengers")
+        
+        passenger_bookings = db.query(Booking).options(
+            joinedload(Booking.employee)
+        ).filter(Booking.booking_id.in_(route_booking_ids)).all() if route_booking_ids else []
+        
+        # Create a mapping of booking_id to booking object
+        booking_map = {b.booking_id: b for b in passenger_bookings}
+        logger.info(f"Created booking map with {len(booking_map)} entries")
+        
+        # Create a mapping of booking_id to booking object
+        booking_map = {b.booking_id: b for b in passenger_bookings}
+        logger.info(f"Created booking map with {len(booking_map)} entries")
         
         # Build passengers per route
         route_passengers = {}
         for route_id in route_ids:
             passengers = []
             for rb in all_route_bookings:
-                if rb.route_id == route_id and rb.booking and rb.booking.employee:
-                    passengers.append({
-                        "employee_name": rb.booking.employee.name,
-                        "headcount": 1,
-                        "position": rb.order_id,
-                        "booking_status": rb.booking.status.value
-                    })
+                if rb.route_id == route_id:
+                    booking_obj = booking_map.get(rb.booking_id)
+                    if booking_obj and booking_obj.employee:
+                        passengers.append({
+                            "employee_name": booking_obj.employee.employee_name if hasattr(booking_obj.employee, 'employee_name') else booking_obj.employee.name if hasattr(booking_obj.employee, 'name') else 'Unknown',
+                            "headcount": 1,
+                            "position": rb.order_id,
+                            "booking_status": booking_obj.status.value if booking_obj.status else 'Unknown'
+                        })
+                    else:
+                        logger.warning(f"Missing booking or employee data for booking_id={rb.booking_id} in route_id={route_id}")
             passengers.sort(key=lambda x: x['position'])
             route_passengers[route_id] = passengers
+            logger.info(f"Route {route_id} has {len(passengers)} passengers")
 
         # Add shift_time and route_details to each booking
         bookings_with_shift = []
@@ -708,11 +732,13 @@ def get_bookings_by_employee(
             logger.info(f"Fetching employee bookings for employee_id={employee_id}, employee_code={employee_code}, date={booking_date}")
             query = query.filter(Booking.booking_date == booking_date)
         if status_filter:        
+            logger.info(f"Applying status filter: {status_filter}")
             query = query.filter(Booking.status == status_filter)
 
         # Tenant enforcement for non-admin employees
         if user_type != "admin":
             query = query.filter(Booking.tenant_id == tenant_id)
+            logger.info(f"Applied tenant filter: {tenant_id}")
         
         # Add eager loading to prevent N+1 queries
         query = query.options(
@@ -721,9 +747,11 @@ def get_bookings_by_employee(
         )
 
         total, items = paginate_query(query, skip, limit)
+        logger.info(f"Found {total} total bookings, returning {len(items)} items")
 
         # Fetch route data with eager loading for efficiency (single optimized query)
         booking_ids = [b.booking_id for b in items]
+        logger.info(f"Fetching route data for {len(booking_ids)} bookings")
         
         # Get route bookings
         route_bookings = db.query(RouteManagementBooking).options(
@@ -774,32 +802,47 @@ def get_bookings_by_employee(
                 if shift_data:
                     shifts_dict[shift_id] = shift_data
 
-        # Fetch all route bookings for passengers with eager loading
+        # Fetch all route bookings for passengers
+        # Note: RouteManagementBooking doesn't have a direct 'booking' relationship,
+        # so we need to fetch bookings separately using booking_ids
+        logger.info(f"Fetching route bookings for {len(route_ids)} routes")
+        all_route_bookings = db.query(RouteManagementBooking).filter(
+            RouteManagementBooking.route_id.in_(route_ids)
+        ).all() if route_ids else []
         
-        route_ids = list(set(rb.route_id for rb in route_bookings))
-        route_dict = {rb.booking_id: rb for rb in route_bookings}
-        route_obj_dict = {rb.route_management.route_id: rb.route_management for rb in route_bookings if rb.route_management}
-
-        # Fetch all route bookings for passengers with eager loading
-        all_route_bookings = db.query(RouteManagementBooking).options(
-            joinedload(RouteManagementBooking.booking)
-            .joinedload(Booking.employee)
-        ).filter(RouteManagementBooking.route_id.in_(route_ids)).all() if route_ids else []
+        logger.info(f"Found {len(all_route_bookings)} route bookings")
+        
+        # Fetch all bookings associated with these route bookings
+        route_booking_ids = [rb.booking_id for rb in all_route_bookings]
+        logger.info(f"Fetching {len(route_booking_ids)} bookings for route passengers")
+        
+        passenger_bookings = db.query(Booking).options(
+            joinedload(Booking.employee)
+        ).filter(Booking.booking_id.in_(route_booking_ids)).all() if route_booking_ids else []
+        
+        # Create a mapping of booking_id to booking object
+        booking_map = {b.booking_id: b for b in passenger_bookings}
+        logger.info(f"Created booking map with {len(booking_map)} entries")
         
         # Build passengers per route
         route_passengers = {}
         for route_id in route_ids:
             passengers = []
             for rb in all_route_bookings:
-                if rb.route_id == route_id and rb.booking and rb.booking.employee:
-                    passengers.append({
-                        "employee_name": rb.booking.employee.name,
-                        "headcount": 1,
-                        "position": rb.order_id,
-                        "booking_status": rb.booking.status.value
-                    })
+                if rb.route_id == route_id:
+                    booking_obj = booking_map.get(rb.booking_id)
+                    if booking_obj and booking_obj.employee:
+                        passengers.append({
+                            "employee_name": booking_obj.employee.employee_name if hasattr(booking_obj.employee, 'employee_name') else booking_obj.employee.name if hasattr(booking_obj.employee, 'name') else 'Unknown',
+                            "headcount": 1,
+                            "position": rb.order_id,
+                            "booking_status": booking_obj.status.value if booking_obj.status else 'Unknown'
+                        })
+                    else:
+                        logger.warning(f"Missing booking or employee data for booking_id={rb.booking_id} in route_id={route_id}")
             passengers.sort(key=lambda x: x['position'])
             route_passengers[route_id] = passengers
+            logger.info(f"Route {route_id} has {len(passengers)} passengers")
 
         # Add shift_time and route_details to each booking
         bookings_with_shift = []

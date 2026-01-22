@@ -435,8 +435,9 @@ class TestListEmployees:
 
     def test_list_employees_with_name_filter(self, client: TestClient, admin_token: str, test_tenant, test_employee):
         """Filter employees by name"""
+        employee = test_employee["employee"]
         response = client.get(
-            f"/api/v1/employees/?tenant_id={test_tenant.tenant_id}&name={test_employee["employee"].name[:5]}",
+            f"/api/v1/employees/?tenant_id={test_tenant.tenant_id}&name={employee.name[:5]}",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
 

@@ -448,8 +448,9 @@ class TestGetBookingsByEmployee:
             headers={"Authorization": f"Bearer {employee_token}"}
         )
         
+        employee = test_employee["employee"]
         response = client.get(
-            f"/api/v1/bookings/employee?employee_id={test_employee["employee"].employee_id}",
+            f"/api/v1/bookings/employee?employee_id={employee.employee_id}",
             headers={"Authorization": f"Bearer {employee_token}"}
         )
         
@@ -473,8 +474,9 @@ class TestGetBookingsByEmployee:
             headers={"Authorization": f"Bearer {employee_token}"}
         )
         
+        employee = test_employee["employee"]
         response = client.get(
-            f"/api/v1/bookings/employee?employee_code={test_employee["employee"].employee_code}",
+            f"/api/v1/bookings/employee?employee_code={employee.employee_code}",
             headers={"Authorization": f"Bearer {employee_token}"}
         )
         
@@ -486,8 +488,9 @@ class TestGetBookingsByEmployee:
         """Can filter by booking_date"""
         tomorrow = date.today() + timedelta(days=1)
         
+        employee = test_employee["employee"]
         response = client.get(
-            f"/api/v1/bookings/employee?employee_id={test_employee["employee"].employee_id}&booking_date={tomorrow}",
+            f"/api/v1/bookings/employee?employee_id={employee.employee_id}&booking_date={tomorrow}",
             headers={"Authorization": f"Bearer {employee_token}"}
         )
         
@@ -497,8 +500,9 @@ class TestGetBookingsByEmployee:
 
     def test_get_bookings_by_employee_with_status_filter(self, client: TestClient, employee_token: str, test_employee):
         """Can filter by status"""
+        employee = test_employee["employee"]
         response = client.get(
-            f"/api/v1/bookings/employee?employee_id={test_employee["employee"].employee_id}&status_filter=Request",
+            f"/api/v1/bookings/employee?employee_id={employee.employee_id}&status_filter=Request",
             headers={"Authorization": f"Bearer {employee_token}"}
         )
         
@@ -518,8 +522,9 @@ class TestGetBookingsByEmployee:
 
     def test_get_bookings_employee_cross_tenant_isolation(self, client: TestClient, employee_token: str, second_employee):
         """Employee cannot see bookings from other tenants"""
+        emp = second_employee["employee"]
         response = client.get(
-            f"/api/v1/bookings/employee?employee_id={second_employee["employee"].employee_id}",
+            f"/api/v1/bookings/employee?employee_id={emp.employee_id}",
             headers={"Authorization": f"Bearer {employee_token}"}
         )
         
@@ -530,8 +535,9 @@ class TestGetBookingsByEmployee:
 
     def test_get_bookings_vendor_forbidden(self, client: TestClient, vendor_token: str, test_employee):
         """Vendor cannot access employee bookings"""
+        employee = test_employee["employee"]
         response = client.get(
-            f"/api/v1/bookings/employee?employee_id={test_employee["employee"].employee_id}",
+            f"/api/v1/bookings/employee?employee_id={employee.employee_id}",
             headers={"Authorization": f"Bearer {vendor_token}"}
         )
         
@@ -914,8 +920,9 @@ class TestBookingIntegration:
         assert create2.status_code == status.HTTP_201_CREATED
         
         # Tenant1 employee should not see tenant2 bookings
+        emp = second_employee["employee"]
         response = client.get(
-            f"/api/v1/bookings/employee?employee_id={second_employee["employee"].employee_id}",
+            f"/api/v1/bookings/employee?employee_id={emp.employee_id}",
             headers={"Authorization": f"Bearer {employee_token}"}
         )
         assert response.status_code == status.HTTP_200_OK
