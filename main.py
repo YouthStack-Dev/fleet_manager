@@ -100,6 +100,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add monitoring middleware
+from app.middleware import ErrorTrackingMiddleware, RequestTrackingMiddleware
+
+# Request tracking should be first to capture all requests
+app.add_middleware(RequestTrackingMiddleware)
+
+# Error tracking should be second to catch all errors
+app.add_middleware(ErrorTrackingMiddleware)
+
+logger.info("✅ Monitoring middleware enabled (request tracking + error tracking)")
+
 # Include routers
 app.include_router(audit_log_router, prefix="/api/v1")
 app.include_router(reports_router, prefix="/api/v1")
