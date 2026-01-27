@@ -1,7 +1,7 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query, Request, UploadFile, File
 from app.core.email_service import get_email_service, get_sms_service
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from app.database.session import get_db
 from app.models.employee import Employee
 from app.schemas.employee import EmployeeCreate, EmployeeUpdate, EmployeeResponse, EmployeePaginationResponse
@@ -12,9 +12,14 @@ from common_utils.auth.utils import hash_password
 from app.crud.employee import employee_crud
 from app.crud.team import team_crud
 from app.crud.tenant import tenant_crud
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from app.core.logging_config import get_logger
 from app.utils.audit_helper import log_audit
+import openpyxl
+from io import BytesIO
+import re
+from datetime import datetime
+
 logger = get_logger(__name__)
 router = APIRouter(prefix="/employees", tags=["employees"])
 
@@ -207,6 +212,578 @@ def send_employee_created_email(employee_data: dict):
 
     except Exception as e:
         logger.error(f"Error sending employee creation notifications: {str(e)}")
+
+
+@router.get("/bulk-upload/template", status_code=status.HTTP_200_OK)
+async def download_bulk_upload_template(
+    user_data=Depends(PermissionChecker(["employee.create"], check_tenant=True)),
+):
+    """
+    Download Excel template for bulk employee upload.
+    
+    Returns a pre-formatted Excel file with:
+    - All required and optional column headers
+    - Data type explanations in row 2
+    - Sample data rows for reference
+    
+    This template can be filled and uploaded to /bulk-upload endpoint.
+    """
+    from fastapi.responses import StreamingResponse
+    from openpyxl.styles import Font, PatternFill, Alignment
+    
+    try:
+        # Create workbook
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Employees"
+        
+        # Headers
+        headers = ['name', 'email', 'phone', 'employee_code', 'team_id', 
+                   'address', 'latitude', 'longitude', 'gender', 'password']
+        
+        # Style headers
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF")
+        
+        for col_num, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_num)
+            cell.value = header
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        
+        # Add instructions row (row 2)
+        instructions = [
+            'Required',
+            'Required (unique)',
+            'Required (unique, 10+ digits)',
+            'Optional (unique)',
+            'Required (must exist)',
+            'Optional',
+            'Optional (-90 to 90)',
+            'Optional (-180 to 180)',
+            'Optional (Male/Female/Other)',
+            'Optional (min 6 chars)'
+        ]
+        
+        instruction_fill = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
+        instruction_font = Font(italic=True, size=9)
+        
+        for col_num, instruction in enumerate(instructions, 1):
+            cell = ws.cell(row=2, column=col_num)
+            cell.value = instruction
+            cell.fill = instruction_fill
+            cell.font = instruction_font
+            cell.alignment = Alignment(horizontal="left", vertical="center")
+        
+        # Add sample data (rows 3-5)
+        sample_data = [
+            ['John Doe', 'john.doe@company.com', '+1-234-567-8901', 'EMP001', '1', 
+             '123 Main St, City, State', '37.7749', '-122.4194', 'Male', 'Welcome@123'],
+            ['Jane Smith', 'jane.smith@company.com', '+1-234-567-8902', 'EMP002', '1',
+             '456 Oak Ave, City, State', '34.0522', '-118.2437', 'Female', 'Secure@456'],
+            ['Bob Johnson', 'bob.johnson@company.com', '+1-234-567-8903', 'EMP003', '2',
+             '789 Pine Rd, City, State', '40.7128', '-74.0060', 'Other', 'Strong#789'],
+        ]
+        
+        for row_num, row_data in enumerate(sample_data, 3):
+            for col_num, value in enumerate(row_data, 1):
+                cell = ws.cell(row=row_num, column=col_num)
+                cell.value = value
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+        
+        # Adjust column widths
+        column_widths = [20, 30, 20, 15, 10, 30, 12, 12, 15]
+        for col_num, width in enumerate(column_widths, 1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(col_num)].width = width
+        
+        # Save to BytesIO
+        excel_buffer = BytesIO()
+        wb.save(excel_buffer)
+        excel_buffer.seek(0)
+        
+        # Return as downloadable file
+        filename = f"employee_bulk_upload_template_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        
+        return StreamingResponse(
+            excel_buffer,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Error generating template: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate template: {str(e)}"
+        )
+
+
+@router.post("/bulk-upload", status_code=status.HTTP_200_OK)
+async def bulk_create_employees(
+    file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["employee.create"], check_tenant=True)),
+):
+    """
+    Bulk create employees from Excel file.
+    
+    Expected Excel columns:
+    - name (required)
+    - email (required)
+    - phone (required)
+    - employee_code (optional)
+    - team_id (required)
+    - address (optional)
+    - latitude (optional)
+    - longitude (optional)
+    - gender (optional: Male/Female/Other)
+    - password (optional, default: 'Welcome@123')
+    
+    Rules:
+    - File must be .xlsx or .xls format
+    - Maximum 500 rows per upload
+    - Validates all data before creating any employee
+    - Returns detailed success/failure report
+    """
+    try:
+        user_type = user_data.get("user_type")
+        tenant_id = None
+
+        # 🚫 Vendors/Drivers cannot create employees
+        if user_type in {"vendor", "driver"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to create employees",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # 🔒 Tenant enforcement
+        if user_type == "employee":
+            tenant_id = user_data.get("tenant_id")
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token for employee",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+        elif user_type == "admin":
+            # Admin must provide tenant_id in first data row or we'll validate later
+            pass
+
+        # Validate file type
+        if not file.filename.endswith(('.xlsx', '.xls')):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Invalid file format. Only .xlsx or .xls files are allowed",
+                    error_code="INVALID_FILE_FORMAT",
+                ),
+            )
+
+        # Read file content
+        try:
+            content = await file.read()
+            workbook = openpyxl.load_workbook(BytesIO(content))
+            sheet = workbook.active
+        except Exception as e:
+            logger.error(f"Failed to read Excel file: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message=f"Failed to read Excel file: {str(e)}",
+                    error_code="FILE_READ_ERROR",
+                ),
+            )
+
+        # Parse header row
+        headers = []
+        for cell in sheet[1]:
+            if cell.value:
+                headers.append(str(cell.value).strip().lower())
+            else:
+                headers.append(None)
+
+        # Validate required columns
+        required_columns = ['name', 'email', 'phone', 'team_id']
+        missing_columns = [col for col in required_columns if col not in headers]
+        if missing_columns:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message=f"Missing required columns: {', '.join(missing_columns)}",
+                    error_code="MISSING_COLUMNS",
+                ),
+            )
+
+        # Parse data rows
+        employees_data = []
+        errors = []
+        row_number = 1  # Excel row number (1-indexed, header is row 1)
+        
+        for row in sheet.iter_rows(min_row=2, values_only=False):
+            row_number += 1
+            
+            # Skip empty rows
+            if all(cell.value is None or str(cell.value).strip() == '' for cell in row):
+                continue
+            
+            # Build employee data dict
+            employee_dict = {}
+            row_errors = []
+            
+            for idx, header in enumerate(headers):
+                if header and idx < len(row):
+                    cell_value = row[idx].value
+                    if cell_value is not None:
+                        employee_dict[header] = str(cell_value).strip()
+            
+            # Validate this row
+            row_validation = validate_employee_row(
+                employee_dict, 
+                row_number, 
+                db, 
+                tenant_id,
+                user_type
+            )
+            
+            if row_validation['valid']:
+                employees_data.append({
+                    'row': row_number,
+                    'data': row_validation['data']
+                })
+            else:
+                errors.append({
+                    'row': row_number,
+                    'errors': row_validation['errors']
+                })
+        
+        # Check if we have any data
+        if not employees_data and not errors:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="No valid data found in Excel file",
+                    error_code="NO_DATA",
+                ),
+            )
+        
+        # Check row limit
+        if len(employees_data) > 500:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message=f"Too many rows. Maximum 500 employees per upload (found {len(employees_data)})",
+                    error_code="TOO_MANY_ROWS",
+                ),
+            )
+
+        # If there are validation errors, return them without creating anything
+        if errors:
+            return ResponseWrapper.error(
+                message=f"Validation failed for {len(errors)} row(s). No employees were created.",
+                error_code="VALIDATION_FAILED",
+                data={
+                    "total_rows": len(employees_data) + len(errors),
+                    "valid_rows": len(employees_data),
+                    "invalid_rows": len(errors),
+                    "errors": errors
+                }
+            )
+
+        # All validation passed - now create employees
+        created_employees = []
+        failed_employees = []
+        
+        for item in employees_data:
+            row_num = item['row']
+            emp_data = item['data']
+            
+            try:
+                # Determine tenant_id for this employee
+                if user_type == "employee":
+                    emp_tenant_id = tenant_id
+                else:  # admin
+                    emp_tenant_id = emp_data.get('tenant_id', tenant_id)
+                
+                # Create employee object
+                employee_create = EmployeeCreate(
+                    name=emp_data['name'],
+                    email=emp_data['email'],
+                    phone=emp_data['phone'],
+                    employee_code=emp_data.get('employee_code'),
+                    team_id=emp_data['team_id'],
+                    address=emp_data.get('address'),
+                    latitude=emp_data.get('latitude'),
+                    longitude=emp_data.get('longitude'),
+                    gender=emp_data.get('gender'),
+                    password=emp_data.get('password', 'Welcome@123'),
+                    tenant_id=emp_tenant_id
+                )
+                
+                # Create in database
+                db_employee = employee_crud.create_with_tenant(
+                    db=db, 
+                    obj_in=employee_create, 
+                    tenant_id=emp_tenant_id
+                )
+                
+                db.flush()  # Get the ID without committing yet
+                
+                # Add to background email tasks
+                background_tasks.add_task(
+                    send_employee_created_email,
+                    employee_data={
+                        "name": db_employee.name,
+                        "email": db_employee.email,
+                        "phone": db_employee.phone,
+                        "employee_id": db_employee.employee_id,
+                        "tenant_id": emp_tenant_id,
+                        "team_id": db_employee.team_id,
+                    },
+                )
+                
+                created_employees.append({
+                    'row': row_num,
+                    'employee_id': db_employee.employee_id,
+                    'name': db_employee.name,
+                    'email': db_employee.email
+                })
+                
+            except IntegrityError as ie:
+                db.rollback()
+                error_msg = str(ie.orig) if hasattr(ie, 'orig') else str(ie)
+                if 'unique constraint' in error_msg.lower() or 'duplicate' in error_msg.lower():
+                    if 'email' in error_msg.lower():
+                        error_msg = f"Email '{emp_data['email']}' already exists"
+                    elif 'phone' in error_msg.lower():
+                        error_msg = f"Phone '{emp_data['phone']}' already exists"
+                    elif 'employee_code' in error_msg.lower():
+                        error_msg = f"Employee code '{emp_data.get('employee_code')}' already exists"
+                    else:
+                        error_msg = "Duplicate entry found"
+                
+                failed_employees.append({
+                    'row': row_num,
+                    'name': emp_data.get('name', 'Unknown'),
+                    'email': emp_data.get('email', 'Unknown'),
+                    'error': error_msg
+                })
+                logger.error(f"Row {row_num}: Database integrity error - {error_msg}")
+                
+            except Exception as e:
+                db.rollback()
+                failed_employees.append({
+                    'row': row_num,
+                    'name': emp_data.get('name', 'Unknown'),
+                    'email': emp_data.get('email', 'Unknown'),
+                    'error': str(e)
+                })
+                logger.error(f"Row {row_num}: Unexpected error - {str(e)}")
+        
+        # Commit all successful creations
+        if created_employees:
+            try:
+                db.commit()
+                
+                # Create audit log for bulk creation
+                log_audit(
+                    db=db,
+                    tenant_id=tenant_id or emp_tenant_id,
+                    module="employee",
+                    action="BULK_CREATE",
+                    user_data=user_data,
+                    description=f"Bulk created {len(created_employees)} employees from Excel file",
+                    new_values={
+                        "total_created": len(created_employees),
+                        "total_failed": len(failed_employees),
+                        "file_name": file.filename
+                    },
+                    request=request
+                )
+                logger.info(f"Bulk creation completed: {len(created_employees)} created, {len(failed_employees)} failed")
+                
+            except Exception as commit_error:
+                db.rollback()
+                logger.error(f"Failed to commit bulk creation: {str(commit_error)}")
+                raise
+        
+        # Prepare response
+        response_data = {
+            "total_rows_processed": len(employees_data),
+            "successful": len(created_employees),
+            "failed": len(failed_employees),
+            "created_employees": created_employees,
+            "failed_employees": failed_employees
+        }
+        
+        if failed_employees:
+            message = f"Partially completed: {len(created_employees)} employees created, {len(failed_employees)} failed"
+        else:
+            message = f"Successfully created {len(created_employees)} employees"
+        
+        return ResponseWrapper.success(
+            data=response_data,
+            message=message
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error during bulk employee creation: {str(e)}")
+        db.rollback()
+        raise handle_http_error(e)
+
+
+def validate_employee_row(
+    row_data: Dict[str, Any], 
+    row_number: int, 
+    db: Session,
+    token_tenant_id: Optional[str],
+    user_type: str
+) -> Dict[str, Any]:
+    """
+    Validate a single employee row from Excel.
+    
+    Returns:
+        {
+            'valid': bool,
+            'data': dict (if valid),
+            'errors': list (if invalid)
+        }
+    """
+    errors = []
+    validated_data = {}
+    
+    # 1. Validate required fields
+    if not row_data.get('name') or not row_data['name'].strip():
+        errors.append("Name is required")
+    else:
+        validated_data['name'] = row_data['name'].strip()
+    
+    # 2. Validate email
+    email = row_data.get('email', '').strip()
+    if not email:
+        errors.append("Email is required")
+    else:
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_pattern, email):
+            errors.append(f"Invalid email format: {email}")
+        else:
+            # Check if email already exists
+            existing = db.query(Employee).filter(Employee.email == email).first()
+            if existing:
+                errors.append(f"Email '{email}' already exists in database")
+            else:
+                validated_data['email'] = email
+    
+    # 3. Validate phone
+    phone = row_data.get('phone', '').strip()
+    if not phone:
+        errors.append("Phone is required")
+    else:
+        # Remove common separators
+        phone_clean = re.sub(r'[\s\-\(\)\+]', '', phone)
+        if not phone_clean.isdigit() or len(phone_clean) < 10:
+            errors.append(f"Invalid phone format: {phone}")
+        else:
+            # Check if phone already exists
+            existing = db.query(Employee).filter(Employee.phone == phone).first()
+            if existing:
+                errors.append(f"Phone '{phone}' already exists in database")
+            else:
+                validated_data['phone'] = phone
+    
+    # 4. Validate team_id
+    team_id_str = row_data.get('team_id', '').strip()
+    if not team_id_str:
+        errors.append("Team ID is required")
+    else:
+        try:
+            team_id = int(team_id_str)
+            team = team_crud.get_by_id(db, team_id=team_id)
+            if not team:
+                errors.append(f"Team ID {team_id} does not exist")
+            else:
+                # Validate team belongs to tenant
+                if token_tenant_id and team.tenant_id != token_tenant_id:
+                    errors.append(f"Team ID {team_id} does not belong to your tenant")
+                else:
+                    validated_data['team_id'] = team_id
+                    # Store tenant_id for admin users
+                    if user_type == "admin" and not token_tenant_id:
+                        validated_data['tenant_id'] = team.tenant_id
+        except ValueError:
+            errors.append(f"Team ID must be a number, got: {team_id_str}")
+    
+    # 5. Validate employee_code (optional but must be unique if provided)
+    employee_code = row_data.get('employee_code', '').strip()
+    if employee_code:
+        existing = db.query(Employee).filter(Employee.employee_code == employee_code).first()
+        if existing:
+            errors.append(f"Employee code '{employee_code}' already exists")
+        else:
+            validated_data['employee_code'] = employee_code
+    
+    # 6. Validate optional fields
+    if 'address' in row_data and row_data['address']:
+        validated_data['address'] = row_data['address'].strip()
+    
+    # 7. Validate latitude/longitude
+    if 'latitude' in row_data and row_data['latitude']:
+        try:
+            lat = float(row_data['latitude'])
+            if -90 <= lat <= 90:
+                validated_data['latitude'] = lat
+            else:
+                errors.append(f"Latitude must be between -90 and 90, got: {lat}")
+        except ValueError:
+            errors.append(f"Invalid latitude format: {row_data['latitude']}")
+    
+    if 'longitude' in row_data and row_data['longitude']:
+        try:
+            lon = float(row_data['longitude'])
+            if -180 <= lon <= 180:
+                validated_data['longitude'] = lon
+            else:
+                errors.append(f"Longitude must be between -180 and 180, got: {lon}")
+        except ValueError:
+            errors.append(f"Invalid longitude format: {row_data['longitude']}")
+    
+    # 8. Validate gender (optional)
+    gender = row_data.get('gender', '').strip()
+    if gender:
+        valid_genders = ['Male', 'Female', 'Other', 'male', 'female', 'other']
+        if gender in valid_genders:
+            # Capitalize first letter to match enum
+            validated_data['gender'] = gender.capitalize()
+        else:
+            errors.append(f"Invalid gender. Must be one of: Male, Female, Other. Got: {gender}")
+    
+    # 9. Validate password (optional)
+    password = row_data.get('password', '').strip()
+    if password:
+        if len(password) < 6:
+            errors.append("Password must be at least 6 characters long")
+        else:
+            validated_data['password'] = password
+    else:
+        validated_data['password'] = 'Welcome@123'  # Default password
+    
+    return {
+        'valid': len(errors) == 0,
+        'data': validated_data if len(errors) == 0 else None,
+        'errors': errors
+    }
+
 
 @router.get("/", status_code=status.HTTP_200_OK)
 def read_employees(

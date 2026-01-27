@@ -99,9 +99,10 @@ services:
       - PYTHONUNBUFFERED=1
       - PYTHONIOENCODING=utf-8
       - FORCE_COLOR=1
+      - FIREBASE_KEY_PATH=/app/app/firebase/firebase_key.json
       
     volumes:
-      # - ./firebase_key.json:/app/secrets/firebase_key.json
+      - ./app/firebase/firebase_key.json:/app/app/firebase/firebase_key.json:ro
       - /var/lib/fleet/uploads:/app/uploaded_files
       - redis_data:/app/redis_data
       - .:/app
