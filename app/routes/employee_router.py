@@ -392,14 +392,44 @@ async def bulk_create_employees(
         # Read file content
         try:
             content = await file.read()
+            
+            # Check if file is empty
+            if len(content) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Uploaded file is empty",
+                        error_code="EMPTY_FILE",
+                    ),
+                )
+            
+            # Log file details for debugging
+            logger.info(f"Reading Excel file: {file.filename}, size: {len(content)} bytes")
+            
+            # Try to load the workbook
             workbook = openpyxl.load_workbook(BytesIO(content))
             sheet = workbook.active
+            
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.error(f"Failed to read Excel file: {str(e)}")
+            error_msg = str(e)
+            logger.error(f"Failed to read Excel file '{file.filename}': {error_msg}")
+            
+            # Provide more specific error messages
+            if "is not a zip file" in error_msg.lower() or "content_types" in error_msg.lower():
+                message = "The uploaded file is not a valid Excel file. Please ensure you're uploading a .xlsx file created by Excel, Google Sheets, or similar spreadsheet software."
+            elif "password" in error_msg.lower() or "encrypted" in error_msg.lower():
+                message = "The Excel file is password-protected or encrypted. Please upload an unprotected file."
+            elif "corrupted" in error_msg.lower() or "damaged" in error_msg.lower():
+                message = "The Excel file appears to be corrupted. Please try re-downloading the template and filling it again."
+            else:
+                message = f"Failed to read Excel file: {error_msg}"
+            
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ResponseWrapper.error(
-                    message=f"Failed to read Excel file: {str(e)}",
+                    message=message,
                     error_code="FILE_READ_ERROR",
                 ),
             )
@@ -427,13 +457,15 @@ async def bulk_create_employees(
         # Parse data rows
         employees_data = []
         errors = []
-        row_number = 1  # Excel row number (1-indexed, header is row 1)
+        row_number = 2  # Excel row number (1-indexed, header is row 1, instructions row 2)
         
-        for row in sheet.iter_rows(min_row=2, values_only=False):
+        # Start from row 3 to skip header (row 1) and instructions (row 2)
+        for row in sheet.iter_rows(min_row=3, values_only=False):
             row_number += 1
             
             # Skip empty rows
             if all(cell.value is None or str(cell.value).strip() == '' for cell in row):
+                logger.debug(f"Skipping empty row {row_number}")
                 continue
             
             # Build employee data dict
@@ -446,6 +478,9 @@ async def bulk_create_employees(
                     if cell_value is not None:
                         employee_dict[header] = str(cell_value).strip()
             
+            # Log the parsed row data for debugging
+            logger.debug(f"Row {row_number} parsed data: {employee_dict}")
+            
             # Validate this row
             row_validation = validate_employee_row(
                 employee_dict, 
@@ -456,11 +491,13 @@ async def bulk_create_employees(
             )
             
             if row_validation['valid']:
+                logger.debug(f"Row {row_number} validation passed")
                 employees_data.append({
                     'row': row_number,
                     'data': row_validation['data']
                 })
             else:
+                logger.warning(f"Row {row_number} validation failed: {row_validation['errors']}")
                 errors.append({
                     'row': row_number,
                     'errors': row_validation['errors']
@@ -491,7 +528,7 @@ async def bulk_create_employees(
             return ResponseWrapper.error(
                 message=f"Validation failed for {len(errors)} row(s). No employees were created.",
                 error_code="VALIDATION_FAILED",
-                data={
+                details={
                     "total_rows": len(employees_data) + len(errors),
                     "valid_rows": len(employees_data),
                     "invalid_rows": len(errors),
