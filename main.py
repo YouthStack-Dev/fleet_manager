@@ -55,6 +55,9 @@ from app.routes.iam import permission_router, policy_router, role_router
 
 from app.core.logging_config import setup_logging, get_logger
 
+# Prometheus metrics
+from prometheus_client import make_asgi_app
+from prometheus_fastapi_instrumentator import Instrumentator
 
 # Setup logging as early as possible
 print("MAIN: Setting up logging...", file=sys.stdout, flush=True)
@@ -90,6 +93,23 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Initialize Prometheus instrumentation BEFORE middleware
+# This ensures metrics endpoint is registered first
+instrumentator = Instrumentator(
+    should_group_status_codes=True,
+    should_ignore_untemplated=True,
+    should_respect_env_var=False,
+    should_instrument_requests_inprogress=True,
+    excluded_handlers=["^/metrics$"],
+    inprogress_name="http_requests_inprogress",
+    inprogress_labels=True,
+)
+
+# Instrument the app and expose metrics endpoint
+instrumentator.instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+
+logger.info("✅ Prometheus metrics enabled at /metrics")
 
 # Set up CORS middleware
 app.add_middleware(

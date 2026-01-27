@@ -77,7 +77,7 @@ services:
 
     volumes:
       # ✅ Mount Firebase service account key (host → container)
-      - ~/app/firebase/firebase_key.json:/app/firebase/firebase_key.json:ro
+      - ./app/firebase/firebase_key.json:/app/app/firebase/firebase_key.json:ro
 
       # ✅ Persistent storage for uploaded data
       - /var/lib/fleet/storage:/var/lib/fleet/storage
