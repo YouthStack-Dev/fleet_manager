@@ -540,6 +540,54 @@ async def bulk_create_employees(
                 }
             )
 
+        # Check for duplicates within the Excel file itself
+        seen_emails = set()
+        seen_phones = set()
+        seen_codes = set()
+        duplicate_errors = []
+        
+        for item in employees_data:
+            row_num = item['row']
+            emp_data = item['data']
+            email = emp_data.get('email')
+            phone = emp_data.get('phone')
+            code = emp_data.get('employee_code')
+            
+            if email and email in seen_emails:
+                duplicate_errors.append({
+                    'row': row_num,
+                    'errors': [f"Duplicate email '{email}' found in Excel file (already appears in another row)"]
+                })
+            elif email:
+                seen_emails.add(email)
+            
+            if phone and phone in seen_phones:
+                duplicate_errors.append({
+                    'row': row_num,
+                    'errors': [f"Duplicate phone '{phone}' found in Excel file (already appears in another row)"]
+                })
+            elif phone:
+                seen_phones.add(phone)
+            
+            if code and code in seen_codes:
+                duplicate_errors.append({
+                    'row': row_num,
+                    'errors': [f"Duplicate employee code '{code}' found in Excel file (already appears in another row)"]
+                })
+            elif code:
+                seen_codes.add(code)
+        
+        if duplicate_errors:
+            return ResponseWrapper.error(
+                message=f"Duplicate entries found in Excel file. No employees were created.",
+                error_code="DUPLICATE_IN_FILE",
+                details={
+                    "total_rows": len(employees_data),
+                    "duplicate_rows": len(duplicate_errors),
+                    "errors": duplicate_errors
+                }
+            )
+
         # All validation passed - now create employees
         logger.info(f"Starting bulk employee creation: {len(employees_data)} employees to process")
         created_employees = []
@@ -555,6 +603,27 @@ async def bulk_create_employees(
                     emp_tenant_id = tenant_id
                 else:  # admin
                     emp_tenant_id = emp_data.get('tenant_id', tenant_id)
+                
+                # Double-check for duplicates before creating (race condition protection)
+                email = emp_data['email']
+                phone = emp_data['phone']
+                employee_code = emp_data.get('employee_code')
+                
+                # Check if email already exists (including in this transaction)
+                existing_email = db.query(Employee).filter(Employee.email == email).first()
+                if existing_email:
+                    raise ValueError(f"Email '{email}' already exists in database")
+                
+                # Check if phone already exists
+                existing_phone = db.query(Employee).filter(Employee.phone == phone).first()
+                if existing_phone:
+                    raise ValueError(f"Phone '{phone}' already exists in database")
+                
+                # Check if employee code already exists (if provided)
+                if employee_code:
+                    existing_code = db.query(Employee).filter(Employee.employee_code == employee_code).first()
+                    if existing_code:
+                        raise ValueError(f"Employee code '{employee_code}' already exists in database")
                 
                 # Create employee object
                 employee_create = EmployeeCreate(
