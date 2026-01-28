@@ -463,6 +463,10 @@ async def bulk_create_employees(
         errors = []
         row_number = 2  # Excel row number (1-indexed, header is row 1, instructions row 2)
         
+        # Expire all cached objects to ensure fresh data from database
+        # This is critical for duplicate checking across multiple uploads
+        db.expire_all()
+        
         # Start from row 3 to skip header (row 1) and instructions (row 2)
         for row in sheet.iter_rows(min_row=3, values_only=False):
             row_number += 1
@@ -504,6 +508,10 @@ async def bulk_create_employees(
                 logger.warning(f"Row {row_number} validation failed: {row_validation['errors']}")
                 errors.append({
                     'row': row_number,
+                    'employee_name': employee_dict.get('name', 'Not provided'),
+                    'email': employee_dict.get('email', 'Not provided'),
+                    'phone': employee_dict.get('phone', 'Not provided'),
+                    'employee_code': employee_dict.get('employee_code', 'Not provided'),
                     'errors': row_validation['errors']
                 })
         
@@ -530,13 +538,13 @@ async def bulk_create_employees(
         # If there are validation errors, return them without creating anything
         if errors:
             return ResponseWrapper.error(
-                message=f"Validation failed for {len(errors)} row(s). No employees were created.",
+                message=f"Validation failed for {len(errors)} row(s). Please fix the errors below and try again.",
                 error_code="VALIDATION_FAILED",
                 details={
                     "total_rows": len(employees_data) + len(errors),
                     "valid_rows": len(employees_data),
                     "invalid_rows": len(errors),
-                    "errors": errors
+                    "failed_employees": errors
                 }
             )
 
@@ -549,42 +557,46 @@ async def bulk_create_employees(
         for item in employees_data:
             row_num = item['row']
             emp_data = item['data']
+            name = emp_data.get('name', 'Unknown')
             email = emp_data.get('email')
             phone = emp_data.get('phone')
             code = emp_data.get('employee_code')
+            row_errors = []
             
             if email and email in seen_emails:
-                duplicate_errors.append({
-                    'row': row_num,
-                    'errors': [f"Duplicate email '{email}' found in Excel file (already appears in another row)"]
-                })
+                row_errors.append(f"Email '{email}' is duplicated within this Excel file")
             elif email:
                 seen_emails.add(email)
             
             if phone and phone in seen_phones:
-                duplicate_errors.append({
-                    'row': row_num,
-                    'errors': [f"Duplicate phone '{phone}' found in Excel file (already appears in another row)"]
-                })
+                row_errors.append(f"Phone '{phone}' is duplicated within this Excel file")
             elif phone:
                 seen_phones.add(phone)
             
             if code and code in seen_codes:
-                duplicate_errors.append({
-                    'row': row_num,
-                    'errors': [f"Duplicate employee code '{code}' found in Excel file (already appears in another row)"]
-                })
+                row_errors.append(f"Employee code '{code}' is duplicated within this Excel file")
             elif code:
                 seen_codes.add(code)
+            
+            if row_errors:
+                duplicate_errors.append({
+                    'row': row_num,
+                    'employee_name': name,
+                    'email': email,
+                    'phone': phone,
+                    'employee_code': code,
+                    'errors': row_errors
+                })
         
         if duplicate_errors:
             return ResponseWrapper.error(
-                message=f"Duplicate entries found in Excel file. No employees were created.",
+                message=f"Duplicate entries found in Excel file. Please correct the highlighted rows and try again.",
                 error_code="DUPLICATE_IN_FILE",
                 details={
                     "total_rows": len(employees_data),
+                    "valid_rows": len(employees_data) - len(duplicate_errors),
                     "duplicate_rows": len(duplicate_errors),
-                    "errors": duplicate_errors
+                    "failed_employees": duplicate_errors
                 }
             )
 
@@ -605,23 +617,33 @@ async def bulk_create_employees(
                     emp_tenant_id = emp_data.get('tenant_id', tenant_id)
                 
                 # Double-check for duplicates before creating (race condition protection)
+                # MUST filter by tenant_id to match database unique constraints
                 email = emp_data['email']
                 phone = emp_data['phone']
                 employee_code = emp_data.get('employee_code')
                 
-                # Check if email already exists (including in this transaction)
-                existing_email = db.query(Employee).filter(Employee.email == email).first()
+                # Check if email already exists within tenant
+                existing_email = db.query(Employee).filter(
+                    Employee.email == email,
+                    Employee.tenant_id == emp_tenant_id
+                ).first()
                 if existing_email:
                     raise ValueError(f"Email '{email}' already exists in database")
                 
-                # Check if phone already exists
-                existing_phone = db.query(Employee).filter(Employee.phone == phone).first()
+                # Check if phone already exists within tenant
+                existing_phone = db.query(Employee).filter(
+                    Employee.phone == phone,
+                    Employee.tenant_id == emp_tenant_id
+                ).first()
                 if existing_phone:
                     raise ValueError(f"Phone '{phone}' already exists in database")
                 
-                # Check if employee code already exists (if provided)
+                # Check if employee code already exists within tenant (if provided)
                 if employee_code:
-                    existing_code = db.query(Employee).filter(Employee.employee_code == employee_code).first()
+                    existing_code = db.query(Employee).filter(
+                        Employee.employee_code == employee_code,
+                        Employee.tenant_id == emp_tenant_id
+                    ).first()
                     if existing_code:
                         raise ValueError(f"Employee code '{employee_code}' already exists in database")
                 
@@ -845,8 +867,11 @@ def validate_employee_row(
         if not re.match(email_pattern, email):
             errors.append(f"Invalid email format: {email}")
         else:
-            # Check if email already exists
-            existing = db.query(Employee).filter(Employee.email == email).first()
+            # Check if email already exists (must check within tenant)
+            query = db.query(Employee).filter(Employee.email == email)
+            if token_tenant_id:
+                query = query.filter(Employee.tenant_id == token_tenant_id)
+            existing = query.first()
             if existing:
                 errors.append(f"Email '{email}' already exists in database")
             else:
@@ -862,8 +887,11 @@ def validate_employee_row(
         if not phone_clean.isdigit() or len(phone_clean) < 10:
             errors.append(f"Invalid phone format: {phone}")
         else:
-            # Check if phone already exists
-            existing = db.query(Employee).filter(Employee.phone == phone).first()
+            # Check if phone already exists (must check within tenant)
+            query = db.query(Employee).filter(Employee.phone == phone)
+            if token_tenant_id:
+                query = query.filter(Employee.tenant_id == token_tenant_id)
+            existing = query.first()
             if existing:
                 errors.append(f"Phone '{phone}' already exists in database")
             else:
@@ -894,7 +922,11 @@ def validate_employee_row(
     # 5. Validate employee_code (optional but must be unique if provided)
     employee_code = row_data.get('employee_code', '').strip()
     if employee_code:
-        existing = db.query(Employee).filter(Employee.employee_code == employee_code).first()
+        # Check if employee_code already exists (must check within tenant)
+        query = db.query(Employee).filter(Employee.employee_code == employee_code)
+        if token_tenant_id:
+            query = query.filter(Employee.tenant_id == token_tenant_id)
+        existing = query.first()
         if existing:
             errors.append(f"Employee code '{employee_code}' already exists")
         else:
