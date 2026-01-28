@@ -30,6 +30,10 @@ help:
 	@echo "  make build                        - Build fresh images with auto cleanup"
 	@echo "  make deploy-prod                  - Deploy to production with cleanup"
 	@echo ""
+	@echo "📊 Monitoring Commands (FREE):"
+	@echo "  make monitoring-start             - Start monitoring in production"
+	@echo "  make monitoring-stop              - Stop monitoring in production"
+	@echo ""
 	@echo "🛠️  Utility Commands:"
 	@echo "  make install                      - Install dependencies"
 	@echo "  make clean                        - Clean Python cache files"
@@ -216,3 +220,18 @@ docker-prune-old:
 	@echo "Removing images older than 72 hours..."
 	docker image prune -a -f --filter "until=72h"
 	@echo "✅ Cleanup complete"
+
+# ============================================
+# 📊 Monitoring Commands (FREE)
+# ============================================
+
+# Start monitoring in production
+monitoring-start:
+	@chmod +x ./monitoring_start.sh
+	@./monitoring_start.sh
+
+# Stop monitoring in production
+monitoring-stop:
+	@chmod +x ./monitoring_stop.sh
+	@./monitoring_stop.sh
+

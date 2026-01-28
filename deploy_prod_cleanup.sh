@@ -26,6 +26,18 @@ print_section() {
     echo -e "${GREEN}[$1]${NC} $2"
 }
 
+# Ask about monitoring
+echo -e "${YELLOW}Do you want to include monitoring (Prometheus, Grafana, Loki)?${NC}"
+read -p "Include monitoring? (yes/no): " -r
+if [[ $REPLY =~ ^[Yy][Ee][Ss]$ ]]; then
+    ENABLE_MONITORING=true
+    echo "✅ Monitoring will be enabled"
+else
+    ENABLE_MONITORING=false
+    echo "✅ Monitoring will be disabled"
+fi
+echo ""
+
 # Confirm deployment
 echo -e "${YELLOW}WARNING: This will deploy to production${NC}"
 read -p "Continue? (yes/no): " -r
@@ -47,9 +59,10 @@ print_section "2/7" "Current Docker disk usage:"
 docker system df
 echo ""
 
-# Step 3: Stop monitoring containers if running
-print_section "3/7" "Stopping monitoring containers (if any)..."
-docker compose -f "$COMPOSE_MONITORING_FILE" down --volumes 2>/dev/null || echo "Monitoring not running"
+# Step 3: Stop existing containers
+print_section "3/7" "Stopping existing containers..."
+docker compose -f "$COMPOSE_FILE" down || true
+docker compose -f "$COMPOSE_MONITORING_FILE" down 2>/dev/null || true
 echo ""
 
 # Step 4: Pull latest images
@@ -57,12 +70,26 @@ print_section "4/7" "Pulling latest production images..."
 docker pull dheerajkumarp/fleet_service_manager:latest || echo "Image already up to date"
 docker pull redis:7.4-alpine
 docker pull postgres:15
+
+if [ "$ENABLE_MONITORING" = true ]; then
+    echo "Pulling monitoring images..."
+    docker pull prom/prometheus:latest
+    docker pull grafana/grafana:latest
+    docker pull grafana/loki:latest
+    docker pull grafana/promtail:latest
+    docker pull prom/node-exporter:latest
+fi
 echo ""
 
 # Step 5: Start production services
 print_section "5/7" "Starting production services..."
-docker compose -f "$COMPOSE_FILE" down || true
-docker compose -f "$COMPOSE_FILE" up -d
+if [ "$ENABLE_MONITORING" = true ]; then
+    echo "Starting with monitoring..."
+    docker compose -f "$COMPOSE_FILE" -f "$COMPOSE_MONITORING_FILE" up -d
+else
+    echo "Starting without monitoring..."
+    docker compose -f "$COMPOSE_FILE" up -d
+fi
 echo ""
 
 # Wait for services to be healthy
@@ -99,7 +126,7 @@ echo "Largest images running:"
 docker images --filter "dangling=false" --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}" | grep -v REPOSITORY | sort -k3 -h -r | head -10
 echo ""
 echo "Running containers:"
-docker ps --format "table {{.Image}}\t{{.Status}}"
+docker ps --format "table {{.Image}}\t{{.Status}}\t{{.Ports}}"
 echo ""
 
 # Verify service is running
@@ -109,5 +136,18 @@ if curl -s http://localhost:8100/health > /dev/null 2>&1; then
     echo -e "${GREEN}✓ Service is healthy${NC}"
 else
     echo -e "${YELLOW}⚠ Service health check pending (may take a moment)${NC}"
+fi
+
+# Show monitoring URLs if enabled
+if [ "$ENABLE_MONITORING" = true ]; then
+    echo ""
+    echo -e "${GREEN}=========================================="
+    echo "Monitoring URLs (FREE):"
+    echo "==========================================${NC}"
+    echo "📊 Prometheus: http://localhost:9090"
+    echo "📈 Grafana: http://localhost:3000 (admin/admin123)"
+    echo "📋 Loki: http://localhost:3100"
+    echo ""
+    echo -e "${YELLOW}NOTE: Change default Grafana password after first login!${NC}"
 fi
 echo ""
