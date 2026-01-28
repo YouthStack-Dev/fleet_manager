@@ -208,7 +208,11 @@ def send_employee_created_email(employee_data: dict):
         if sms_success:
             logger.info(f"Employee creation SMS sent: {employee_data['employee_id']}")
         else:
-            logger.error(f"Employee creation SMS FAILED: {employee_data['employee_id']}")
+            # Check if SMS is disabled vs actual failure
+            if not sms_service.enabled:
+                logger.info(f"Employee creation SMS skipped (service disabled): {employee_data['employee_id']}")
+            else:
+                logger.error(f"Employee creation SMS FAILED: {employee_data['employee_id']}")
 
     except Exception as e:
         logger.error(f"Error sending employee creation notifications: {str(e)}")
@@ -459,6 +463,10 @@ async def bulk_create_employees(
         errors = []
         row_number = 2  # Excel row number (1-indexed, header is row 1, instructions row 2)
         
+        # Expire all cached objects to ensure fresh data from database
+        # This is critical for duplicate checking across multiple uploads
+        db.expire_all()
+        
         # Start from row 3 to skip header (row 1) and instructions (row 2)
         for row in sheet.iter_rows(min_row=3, values_only=False):
             row_number += 1
@@ -500,6 +508,10 @@ async def bulk_create_employees(
                 logger.warning(f"Row {row_number} validation failed: {row_validation['errors']}")
                 errors.append({
                     'row': row_number,
+                    'employee_name': employee_dict.get('name', 'Not provided'),
+                    'email': employee_dict.get('email', 'Not provided'),
+                    'phone': employee_dict.get('phone', 'Not provided'),
+                    'employee_code': employee_dict.get('employee_code', 'Not provided'),
                     'errors': row_validation['errors']
                 })
         
@@ -526,17 +538,70 @@ async def bulk_create_employees(
         # If there are validation errors, return them without creating anything
         if errors:
             return ResponseWrapper.error(
-                message=f"Validation failed for {len(errors)} row(s). No employees were created.",
+                message=f"Validation failed for {len(errors)} row(s). Please fix the errors below and try again.",
                 error_code="VALIDATION_FAILED",
                 details={
                     "total_rows": len(employees_data) + len(errors),
                     "valid_rows": len(employees_data),
                     "invalid_rows": len(errors),
-                    "errors": errors
+                    "failed_employees": errors
+                }
+            )
+
+        # Check for duplicates within the Excel file itself
+        seen_emails = set()
+        seen_phones = set()
+        seen_codes = set()
+        duplicate_errors = []
+        
+        for item in employees_data:
+            row_num = item['row']
+            emp_data = item['data']
+            name = emp_data.get('name', 'Unknown')
+            email = emp_data.get('email')
+            phone = emp_data.get('phone')
+            code = emp_data.get('employee_code')
+            row_errors = []
+            
+            if email and email in seen_emails:
+                row_errors.append(f"Email '{email}' is duplicated within this Excel file")
+            elif email:
+                seen_emails.add(email)
+            
+            if phone and phone in seen_phones:
+                row_errors.append(f"Phone '{phone}' is duplicated within this Excel file")
+            elif phone:
+                seen_phones.add(phone)
+            
+            if code and code in seen_codes:
+                row_errors.append(f"Employee code '{code}' is duplicated within this Excel file")
+            elif code:
+                seen_codes.add(code)
+            
+            if row_errors:
+                duplicate_errors.append({
+                    'row': row_num,
+                    'employee_name': name,
+                    'email': email,
+                    'phone': phone,
+                    'employee_code': code,
+                    'errors': row_errors
+                })
+        
+        if duplicate_errors:
+            return ResponseWrapper.error(
+                message=f"Duplicate entries found in Excel file. Please correct the highlighted rows and try again.",
+                error_code="DUPLICATE_IN_FILE",
+                details={
+                    "total_rows": len(employees_data),
+                    "valid_rows": len(employees_data) - len(duplicate_errors),
+                    "duplicate_rows": len(duplicate_errors),
+                    "failed_employees": duplicate_errors
                 }
             )
 
         # All validation passed - now create employees
+        logger.info(f"Starting bulk employee creation: {len(employees_data)} employees to process")
         created_employees = []
         failed_employees = []
         
@@ -550,6 +615,37 @@ async def bulk_create_employees(
                     emp_tenant_id = tenant_id
                 else:  # admin
                     emp_tenant_id = emp_data.get('tenant_id', tenant_id)
+                
+                # Double-check for duplicates before creating (race condition protection)
+                # MUST filter by tenant_id to match database unique constraints
+                email = emp_data['email']
+                phone = emp_data['phone']
+                employee_code = emp_data.get('employee_code')
+                
+                # Check if email already exists within tenant
+                existing_email = db.query(Employee).filter(
+                    Employee.email == email,
+                    Employee.tenant_id == emp_tenant_id
+                ).first()
+                if existing_email:
+                    raise ValueError(f"Email '{email}' already exists in database")
+                
+                # Check if phone already exists within tenant
+                existing_phone = db.query(Employee).filter(
+                    Employee.phone == phone,
+                    Employee.tenant_id == emp_tenant_id
+                ).first()
+                if existing_phone:
+                    raise ValueError(f"Phone '{phone}' already exists in database")
+                
+                # Check if employee code already exists within tenant (if provided)
+                if employee_code:
+                    existing_code = db.query(Employee).filter(
+                        Employee.employee_code == employee_code,
+                        Employee.tenant_id == emp_tenant_id
+                    ).first()
+                    if existing_code:
+                        raise ValueError(f"Employee code '{employee_code}' already exists in database")
                 
                 # Create employee object
                 employee_create = EmployeeCreate(
@@ -574,6 +670,12 @@ async def bulk_create_employees(
                 )
                 
                 db.flush()  # Get the ID without committing yet
+                
+                # Log successful creation
+                logger.info(
+                    f"✓ Row {row_num}: Employee created successfully - "
+                    f"ID: {db_employee.employee_id}, Name: {db_employee.name}, Email: {db_employee.email}"
+                )
                 
                 # Add to background email tasks
                 background_tasks.add_task(
@@ -614,7 +716,10 @@ async def bulk_create_employees(
                     'email': emp_data.get('email', 'Unknown'),
                     'error': error_msg
                 })
-                logger.error(f"Row {row_num}: Database integrity error - {error_msg}")
+                logger.error(
+                    f"✗ Row {row_num}: FAILED - {emp_data.get('name', 'Unknown')} ({emp_data.get('email', 'Unknown')}) - "
+                    f"Error: {error_msg}"
+                )
                 
             except Exception as e:
                 db.rollback()
@@ -624,12 +729,29 @@ async def bulk_create_employees(
                     'email': emp_data.get('email', 'Unknown'),
                     'error': str(e)
                 })
-                logger.error(f"Row {row_num}: Unexpected error - {str(e)}")
+                logger.error(
+                    f"✗ Row {row_num}: FAILED - {emp_data.get('name', 'Unknown')} ({emp_data.get('email', 'Unknown')}) - "
+                    f"Unexpected error: {str(e)}"
+                )
         
         # Commit all successful creations
         if created_employees:
             try:
                 db.commit()
+                logger.info(
+                    f"✅ Database transaction committed successfully: "
+                    f"{len(created_employees)} employees stored in database"
+                )
+                
+                # Log each created employee
+                logger.info("=" * 80)
+                logger.info("BULK EMPLOYEE CREATION SUMMARY - SUCCESSFULLY CREATED:")
+                logger.info("=" * 80)
+                for emp in created_employees:
+                    logger.info(
+                        f"  • Row {emp['row']}: {emp['name']} ({emp['email']}) - Employee ID: {emp['employee_id']}"
+                    )
+                logger.info("=" * 80)
                 
                 # Create audit log for bulk creation
                 log_audit(
@@ -642,16 +764,46 @@ async def bulk_create_employees(
                     new_values={
                         "total_created": len(created_employees),
                         "total_failed": len(failed_employees),
-                        "file_name": file.filename
+                        "file_name": file.filename,
+                        "created_employee_ids": [emp['employee_id'] for emp in created_employees]
                     },
                     request=request
                 )
-                logger.info(f"Bulk creation completed: {len(created_employees)} created, {len(failed_employees)} failed")
                 
             except Exception as commit_error:
                 db.rollback()
-                logger.error(f"Failed to commit bulk creation: {str(commit_error)}")
-                raise
+                logger.error("=" * 80)
+                logger.error("❌ BULK EMPLOYEE CREATION FAILED - TRANSACTION ROLLED BACK")
+                logger.error("=" * 80)
+                logger.error(f"Commit error: {str(commit_error)}")
+                logger.error(f"NO EMPLOYEES WERE CREATED - All {len(created_employees)} employees rolled back")
+                logger.error("=" * 80)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=ResponseWrapper.error(
+                        message=f"Failed to save employees to database. No employees were created. Error: {str(commit_error)}",
+                        error_code="BULK_CREATION_COMMIT_FAILED",
+                    ),
+                )
+        else:
+            logger.warning("No employees were created - all rows had errors")
+        
+        # Log failures if any
+        if failed_employees:
+            logger.warning("=" * 80)
+            logger.warning(f"BULK EMPLOYEE CREATION - FAILED ROWS ({len(failed_employees)}):")
+            logger.warning("=" * 80)
+            for emp in failed_employees:
+                logger.warning(
+                    f"  • Row {emp['row']}: {emp['name']} ({emp['email']}) - Error: {emp['error']}"
+                )
+            logger.warning("=" * 80)
+        
+        # Final summary log
+        logger.info(
+            f"BULK EMPLOYEE CREATION COMPLETED: "
+            f"Total: {len(employees_data)}, Success: {len(created_employees)}, Failed: {len(failed_employees)}"
+        )
         
         # Prepare response
         response_data = {
@@ -715,8 +867,11 @@ def validate_employee_row(
         if not re.match(email_pattern, email):
             errors.append(f"Invalid email format: {email}")
         else:
-            # Check if email already exists
-            existing = db.query(Employee).filter(Employee.email == email).first()
+            # Check if email already exists (must check within tenant)
+            query = db.query(Employee).filter(Employee.email == email)
+            if token_tenant_id:
+                query = query.filter(Employee.tenant_id == token_tenant_id)
+            existing = query.first()
             if existing:
                 errors.append(f"Email '{email}' already exists in database")
             else:
@@ -732,8 +887,11 @@ def validate_employee_row(
         if not phone_clean.isdigit() or len(phone_clean) < 10:
             errors.append(f"Invalid phone format: {phone}")
         else:
-            # Check if phone already exists
-            existing = db.query(Employee).filter(Employee.phone == phone).first()
+            # Check if phone already exists (must check within tenant)
+            query = db.query(Employee).filter(Employee.phone == phone)
+            if token_tenant_id:
+                query = query.filter(Employee.tenant_id == token_tenant_id)
+            existing = query.first()
             if existing:
                 errors.append(f"Phone '{phone}' already exists in database")
             else:
@@ -764,7 +922,11 @@ def validate_employee_row(
     # 5. Validate employee_code (optional but must be unique if provided)
     employee_code = row_data.get('employee_code', '').strip()
     if employee_code:
-        existing = db.query(Employee).filter(Employee.employee_code == employee_code).first()
+        # Check if employee_code already exists (must check within tenant)
+        query = db.query(Employee).filter(Employee.employee_code == employee_code)
+        if token_tenant_id:
+            query = query.filter(Employee.tenant_id == token_tenant_id)
+        existing = query.first()
         if existing:
             errors.append(f"Employee code '{employee_code}' already exists")
         else:
