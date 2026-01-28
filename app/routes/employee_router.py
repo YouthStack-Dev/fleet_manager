@@ -208,7 +208,11 @@ def send_employee_created_email(employee_data: dict):
         if sms_success:
             logger.info(f"Employee creation SMS sent: {employee_data['employee_id']}")
         else:
-            logger.error(f"Employee creation SMS FAILED: {employee_data['employee_id']}")
+            # Check if SMS is disabled vs actual failure
+            if not sms_service.enabled:
+                logger.info(f"Employee creation SMS skipped (service disabled): {employee_data['employee_id']}")
+            else:
+                logger.error(f"Employee creation SMS FAILED: {employee_data['employee_id']}")
 
     except Exception as e:
         logger.error(f"Error sending employee creation notifications: {str(e)}")
@@ -537,6 +541,7 @@ async def bulk_create_employees(
             )
 
         # All validation passed - now create employees
+        logger.info(f"Starting bulk employee creation: {len(employees_data)} employees to process")
         created_employees = []
         failed_employees = []
         
@@ -574,6 +579,12 @@ async def bulk_create_employees(
                 )
                 
                 db.flush()  # Get the ID without committing yet
+                
+                # Log successful creation
+                logger.info(
+                    f"✓ Row {row_num}: Employee created successfully - "
+                    f"ID: {db_employee.employee_id}, Name: {db_employee.name}, Email: {db_employee.email}"
+                )
                 
                 # Add to background email tasks
                 background_tasks.add_task(
@@ -614,7 +625,10 @@ async def bulk_create_employees(
                     'email': emp_data.get('email', 'Unknown'),
                     'error': error_msg
                 })
-                logger.error(f"Row {row_num}: Database integrity error - {error_msg}")
+                logger.error(
+                    f"✗ Row {row_num}: FAILED - {emp_data.get('name', 'Unknown')} ({emp_data.get('email', 'Unknown')}) - "
+                    f"Error: {error_msg}"
+                )
                 
             except Exception as e:
                 db.rollback()
@@ -624,12 +638,29 @@ async def bulk_create_employees(
                     'email': emp_data.get('email', 'Unknown'),
                     'error': str(e)
                 })
-                logger.error(f"Row {row_num}: Unexpected error - {str(e)}")
+                logger.error(
+                    f"✗ Row {row_num}: FAILED - {emp_data.get('name', 'Unknown')} ({emp_data.get('email', 'Unknown')}) - "
+                    f"Unexpected error: {str(e)}"
+                )
         
         # Commit all successful creations
         if created_employees:
             try:
                 db.commit()
+                logger.info(
+                    f"✅ Database transaction committed successfully: "
+                    f"{len(created_employees)} employees stored in database"
+                )
+                
+                # Log each created employee
+                logger.info("=" * 80)
+                logger.info("BULK EMPLOYEE CREATION SUMMARY - SUCCESSFULLY CREATED:")
+                logger.info("=" * 80)
+                for emp in created_employees:
+                    logger.info(
+                        f"  • Row {emp['row']}: {emp['name']} ({emp['email']}) - Employee ID: {emp['employee_id']}"
+                    )
+                logger.info("=" * 80)
                 
                 # Create audit log for bulk creation
                 log_audit(
@@ -642,16 +673,46 @@ async def bulk_create_employees(
                     new_values={
                         "total_created": len(created_employees),
                         "total_failed": len(failed_employees),
-                        "file_name": file.filename
+                        "file_name": file.filename,
+                        "created_employee_ids": [emp['employee_id'] for emp in created_employees]
                     },
                     request=request
                 )
-                logger.info(f"Bulk creation completed: {len(created_employees)} created, {len(failed_employees)} failed")
                 
             except Exception as commit_error:
                 db.rollback()
-                logger.error(f"Failed to commit bulk creation: {str(commit_error)}")
-                raise
+                logger.error("=" * 80)
+                logger.error("❌ BULK EMPLOYEE CREATION FAILED - TRANSACTION ROLLED BACK")
+                logger.error("=" * 80)
+                logger.error(f"Commit error: {str(commit_error)}")
+                logger.error(f"NO EMPLOYEES WERE CREATED - All {len(created_employees)} employees rolled back")
+                logger.error("=" * 80)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=ResponseWrapper.error(
+                        message=f"Failed to save employees to database. No employees were created. Error: {str(commit_error)}",
+                        error_code="BULK_CREATION_COMMIT_FAILED",
+                    ),
+                )
+        else:
+            logger.warning("No employees were created - all rows had errors")
+        
+        # Log failures if any
+        if failed_employees:
+            logger.warning("=" * 80)
+            logger.warning(f"BULK EMPLOYEE CREATION - FAILED ROWS ({len(failed_employees)}):")
+            logger.warning("=" * 80)
+            for emp in failed_employees:
+                logger.warning(
+                    f"  • Row {emp['row']}: {emp['name']} ({emp['email']}) - Error: {emp['error']}"
+                )
+            logger.warning("=" * 80)
+        
+        # Final summary log
+        logger.info(
+            f"BULK EMPLOYEE CREATION COMPLETED: "
+            f"Total: {len(employees_data)}, Success: {len(created_employees)}, Failed: {len(failed_employees)}"
+        )
         
         # Prepare response
         response_data = {
