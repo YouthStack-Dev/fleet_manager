@@ -321,7 +321,17 @@ def create_booking(
                 )
 
             if existing_booking:
-                if existing_booking.status != BookingStatusEnum.CANCELLED:  # Only allow if previous booking was cancelled
+                if existing_booking.status == BookingStatusEnum.CANCELLED:
+                    # Reject and ask to update the existing cancelled booking
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=ResponseWrapper.error(
+                            message=f"Employee already has a cancelled booking for this shift and date ({booking_date}). Please update the existing booking (ID: {existing_booking.booking_id}) instead of creating a new one.",
+                            error_code="CANCELLED_BOOKING_EXISTS",
+                        ),
+                    )
+                else:
+                    # Reject if booking has any other active status
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=ResponseWrapper.error(
@@ -329,8 +339,6 @@ def create_booking(
                             error_code="ALREADY_BOOKED",
                         ),
                     )
-                else:
-                    logger.info(f"Previous booking was cancelled, proceeding to create a new one for booking_date={booking_date}")
 
             # 4️⃣ Compute pickup/drop based on shift
             shift_log_type = get_shift_log_type(shift)
