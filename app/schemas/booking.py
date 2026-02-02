@@ -76,6 +76,9 @@ class BookingCreate(BaseModel):
         if v < date.today():
             raise ValueError("Booking date cannot be in the past")
         return v
+    
+class UpdateBookingRequest(BaseModel):
+    shift_id: Optional[int] = None
 
 class BookingUpdate(BaseModel):
     status: Optional[BookingStatusEnum] = None
