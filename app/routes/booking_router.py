@@ -15,9 +15,10 @@ from typing import Optional, List
 from datetime import date, datetime, datetime, timedelta, timezone
 from app.database.session import get_db
 from app.models.booking import Booking
-from app.schemas.booking import BookingCreate, BookingUpdate, BookingResponse,  BookingStatusEnum
+from app.schemas.booking import BookingCreate, BookingUpdate, BookingResponse,  BookingStatusEnum ,UpdateBookingRequest
 from app.utils.pagination import paginate_query
 from common_utils.auth.permission_checker import PermissionChecker
+from common_utils.auth.token_validation import validate_bearer_token
 from common_utils import get_current_ist_time
 from app.utils import cache_manager
 from app.schemas.base import BaseResponse, PaginatedResponse
@@ -27,6 +28,52 @@ from app.core.logging_config import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/bookings", tags=["bookings"])
+
+# Custom dependency for booking update - allows either app-employee.update OR booking.update
+async def BookingUpdatePermission(user_data: dict = Depends(validate_bearer_token(use_cache=True))):
+    """
+    Custom dependency that allows either app-employee.update OR booking.update permission.
+    Checks if user has at least one of the two permissions.
+    """
+    user_permissions = user_data.get("permissions", [])
+    
+    # Extract permission strings from the permissions list
+    permission_strings = set()
+    for p in user_permissions:
+        if isinstance(p, dict):
+            module = p.get("module", "")
+            actions = p.get("action", [])
+            if module and actions:
+                if isinstance(actions, list):
+                    for action in actions:
+                        permission_strings.add(f"{module}.{action}")
+                else:
+                    permission_strings.add(f"{module}.{actions}")
+        elif isinstance(p, str):
+            permission_strings.add(p)
+    
+    # Check if user has either permission
+    has_app_employee_update = "app-employee.update" in permission_strings
+    has_booking_update = "booking.update" in permission_strings
+    
+    if not (has_app_employee_update or has_booking_update):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ResponseWrapper.error(
+                message="Insufficient permissions. Required: app-employee.update or booking.update",
+                error_code="INSUFFICIENT_PERMISSIONS",
+                details={
+                    "required_permissions": ["app-employee.update", "booking.update"],
+                    "user_permissions": sorted(permission_strings)
+                }
+            ),
+        )
+    
+    return user_data
+
+# Helper functions for cached configuration retrieval
+    
+    return user_data
 
 # Helper functions for cached configuration retrieval
 def get_tenant_cached(db: Session, tenant_id: str) -> Tenant:
@@ -1073,6 +1120,241 @@ def get_booking_by_id(
         raise handle_http_error(e)
     except Exception as e:
         logger.exception("Unexpected error occurred while fetching booking by ID")
+        raise handle_http_error(e)
+
+@router.put("/{booking_id}", status_code=status.HTTP_200_OK)
+async def update_booking(
+    booking_id: int,
+    request: UpdateBookingRequest,
+    db: Session = Depends(get_db),
+    user_data=Depends(BookingUpdatePermission),
+):
+    """
+    Update booking - allows changing shift and re-booking cancelled bookings.
+    Only bookings with status 'Request' or 'Cancelled' can be updated.
+    - For 'Request' status: allows changing shift.
+    - For 'Cancelled' status: allows changing shift and re-booking (changes status to 'Request').
+    - Validation: Employee can have only one booking per shift per date.
+    
+    Permission logic:
+    - app-employee.update: Employee can update only their own bookings
+    - booking.update: Employee can update any booking in their tenant
+    """
+    try:
+        user_type = user_data.get("user_type")
+        tenant_id = user_data.get("tenant_id")
+        employee_id = user_data.get("user_id")
+        
+        # Only employees can use this endpoint
+        if user_type != "employee":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Only employees can update bookings through this endpoint",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # Check which permission the user has
+        user_permissions = user_data.get("permissions", [])
+        has_app_employee_update = any(
+            (isinstance(p, dict) and p.get("module") == "app-employee" and "update" in p.get("action", [])) or
+            (isinstance(p, str) and p == "app-employee.update")
+            for p in user_permissions
+        )
+        has_booking_update = any(
+            (isinstance(p, dict) and p.get("module") == "booking" and "update" in p.get("action", [])) or
+            (isinstance(p, str) and p == "booking.update")
+            for p in user_permissions
+        )
+
+        logger.info(f"[booking.update] tenant={tenant_id}, employee={employee_id}, booking={booking_id}, has_app_employee_update={has_app_employee_update}, has_booking_update={has_booking_update}")
+
+        # Fetch booking with appropriate filter based on permission
+        if has_booking_update:
+            # Can update any booking in their tenant
+            logger.info(f"[booking.update] User has booking.update - querying with filters: booking_id={booking_id}, tenant_id={tenant_id}")
+            booking = db.query(Booking).filter(
+                Booking.booking_id == booking_id,
+                Booking.tenant_id == tenant_id,
+            ).first()
+            logger.info(f"[booking.update] Query result: {'Found' if booking else 'Not Found'}")
+            
+            # Additional debug: Check if booking exists at all
+            if not booking:
+                any_booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+                if any_booking:
+                    logger.warning(f"[booking.update] Booking {booking_id} exists but in different tenant: booking.tenant_id={any_booking.tenant_id}, user.tenant_id={tenant_id}, booking.employee_id={any_booking.employee_id}")
+                else:
+                    logger.warning(f"[booking.update] Booking {booking_id} does not exist in database at all")
+        else:
+            # Can only update their own bookings (app-employee.update)
+            logger.info(f"[booking.update] User has app-employee.update only - querying with filters: booking_id={booking_id}, employee_id={employee_id}, tenant_id={tenant_id}")
+            booking = db.query(Booking).filter(
+                Booking.booking_id == booking_id,
+                Booking.employee_id == employee_id,
+                Booking.tenant_id == tenant_id,
+            ).first()
+            logger.info(f"[booking.update] Query result: {'Found' if booking else 'Not Found'}")
+            
+            # Additional debug: Check if booking exists but belongs to different employee
+            if not booking:
+                any_booking = db.query(Booking).filter(
+                    Booking.booking_id == booking_id,
+                    Booking.tenant_id == tenant_id
+                ).first()
+                if any_booking:
+                    logger.warning(f"[booking.update] Booking {booking_id} exists in tenant {tenant_id} but belongs to different employee: booking.employee_id={any_booking.employee_id}, user.employee_id={employee_id}")
+                else:
+                    logger.warning(f"[booking.update] Booking {booking_id} does not exist in tenant {tenant_id}")
+
+        if not booking:
+            logger.error(f"[booking.update] FAILED - Booking not found. booking_id={booking_id}, tenant_id={tenant_id}, employee_id={employee_id}, has_booking_update={has_booking_update}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Booking not found",
+                    error_code="BOOKING_NOT_FOUND",
+                    details={
+                        "booking_id": booking_id,
+                        "tenant_id": tenant_id,
+                        "employee_id": employee_id,
+                        "permission_type": "booking.update" if has_booking_update else "app-employee.update"
+                    }
+                ),
+            )
+
+        logger.info(f"[booking.update] Found booking: booking_id={booking.booking_id}, employee_id={booking.employee_id}, tenant_id={booking.tenant_id}, status={booking.status.value}, booking_date={booking.booking_date}, shift_id={booking.shift_id}")
+
+        if booking.status not in [BookingStatusEnum.REQUEST, BookingStatusEnum.CANCELLED]:
+            logger.warning(f"[booking.update] FAILED - Invalid status. Current status: {booking.status.value}, Allowed: [REQUEST, CANCELLED]")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Booking can only be updated if status is Request or Cancelled",
+                    error_code="INVALID_BOOKING_STATUS",
+                    details={
+                        "current_status": booking.status.value,
+                        "allowed_statuses": ["REQUEST", "CANCELLED"]
+                    }
+                ),
+            )
+
+        updated = False
+
+        if request.shift_id is not None:
+            # Validate shift exists
+            logger.info(f"[booking.update] Validating shift_id={request.shift_id}")
+            shift = db.query(Shift).filter(Shift.shift_id == request.shift_id).first()
+            if not shift:
+                logger.error(f"[booking.update] FAILED - Shift not found: shift_id={request.shift_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message="Shift not found",
+                        error_code="SHIFT_NOT_FOUND",
+                        details={"shift_id": request.shift_id}
+                    ),
+                )
+            logger.info(f"[booking.update] Shift found: shift_id={shift.shift_id}, shift_time={shift.shift_time}, log_type={shift.log_type}")
+            # Cutoff validation for the new shift
+            cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == tenant_id).first()
+            cutoff_interval = None
+            if cutoff:
+                if booking.booking_type == "adhoc":
+                    if not cutoff.allow_adhoc_booking:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=ResponseWrapper.error(
+                                "Ad-hoc booking is not enabled for this tenant",
+                                "ADHOC_BOOKING_DISABLED",
+                            ),
+                        )
+                    cutoff_interval = cutoff.adhoc_booking_cutoff
+                elif booking.booking_type == "medical_emergency":
+                    if not cutoff.allow_medical_emergency_booking:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=ResponseWrapper.error(
+                                "Medical emergency booking is not enabled for this tenant",
+                                "MEDICAL_EMERGENCY_BOOKING_DISABLED",
+                            ),
+                        )
+                    cutoff_interval = cutoff.medical_emergency_booking_cutoff
+                else:
+                    if shift.log_type == "IN":
+                        cutoff_interval = cutoff.booking_login_cutoff
+                    elif shift.log_type == "OUT":
+                        cutoff_interval = cutoff.booking_logout_cutoff
+
+            shift_datetime = datetime.combine(booking.booking_date, shift.shift_time).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
+            now = get_current_ist_time()
+            time_until_shift = shift_datetime - now
+
+            if cutoff and shift and cutoff_interval and cutoff_interval.total_seconds() > 0:
+                if time_until_shift < cutoff_interval:
+                    booking_type_name = "ad-hoc" if booking.booking_type == "adhoc" else ("medical emergency" if booking.booking_type == "medical_emergency" else ("login" if shift.log_type == "IN" else "logout"))
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=ResponseWrapper.error(
+                            f"Booking cutoff time has passed for this {booking_type_name} shift (cutoff: {cutoff_interval})",
+                            "BOOKING_CUTOFF",
+                        ),
+                    )
+
+            # Prevent updating to a shift that has already passed today
+            if booking.booking_date == date.today() and now >= shift_datetime:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message=f"Cannot update to a shift that has already started or passed (Shift time: {shift.shift_time})",
+                        error_code="PAST_SHIFT_TIME",
+                    ),
+                )
+
+            # Validate no duplicate booking for same date and shift
+            # Use the actual employee_id from the booking for validation
+            existing_booking = db.query(Booking).filter(
+                Booking.employee_id == booking.employee_id,
+                Booking.tenant_id == tenant_id,
+                Booking.booking_date == booking.booking_date,
+                Booking.shift_id == request.shift_id,
+                Booking.booking_id != booking_id,
+            ).first()
+            if existing_booking:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Employee already has a booking for this shift on the same date",
+                        error_code="DUPLICATE_BOOKING",
+                    ),
+                )
+            booking.shift_id = request.shift_id
+            updated = True
+
+        if booking.status == BookingStatusEnum.CANCELLED:
+            booking.status = BookingStatusEnum.REQUEST
+            updated = True
+
+        if updated:
+            booking.updated_at = func.now()
+            db.commit()
+            db.refresh(booking)
+
+        return ResponseWrapper.success(
+            data={
+                "booking_id": booking.booking_id,
+                "status": booking.status.value,
+                "shift_id": booking.shift_id,
+                "updated_at": booking.updated_at.isoformat() if booking.updated_at else None,
+            },
+            message="Booking updated successfully",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error updating booking")
         raise handle_http_error(e)
 
 
