@@ -351,18 +351,14 @@ async def get_roles(
     
     user_type = user_data.get("user_type")
     
-    # Admin must provide tenant_id
+    # Admin can optionally provide tenant_id
     if user_type == "admin":
-        if not tenant_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ResponseWrapper.error(
-                    message="Tenant ID is required as query parameter for admin",
-                    error_code="TENANT_ID_REQUIRED"
-                )
-            )
-        # Admin can view any tenant's roles
-        resolved_tenant_id = tenant_id
+        if tenant_id:
+            # Admin provided tenant_id: return system roles + tenant-specific roles
+            resolved_tenant_id = tenant_id
+        else:
+            # Admin did NOT provide tenant_id: return only system roles
+            resolved_tenant_id = None
     elif user_type in ["employee", "vendor"]:
         # Employee/vendor use their token tenant_id
         resolved_tenant_id = user_data.get("tenant_id")
@@ -392,16 +388,20 @@ async def get_roles(
             )
         )
     
-    # Include system roles (tenant_id=null) + tenant-specific roles
-    # Query system roles separately to ensure they're included
+    # Include system roles (tenant_id=null) + tenant-specific roles (if applicable)
     from sqlalchemy import or_
     
-    base_query = db.query(Role).filter(
-        or_(
-            Role.is_system_role == True,  # System roles (tenant_id should be null)
-            Role.tenant_id == resolved_tenant_id  # Tenant-specific roles
+    if resolved_tenant_id is None:
+        # Only return system roles (admin without tenant_id)
+        base_query = db.query(Role).filter(Role.is_system_role == True)
+    else:
+        # Return system roles + tenant-specific roles
+        base_query = db.query(Role).filter(
+            or_(
+                Role.is_system_role == True,  # System roles (tenant_id should be null)
+                Role.tenant_id == resolved_tenant_id  # Tenant-specific roles
+            )
         )
-    )
     
     # Apply other filters
     if name:
