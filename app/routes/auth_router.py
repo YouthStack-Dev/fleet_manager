@@ -1442,6 +1442,14 @@ async def driver_login_initial(
     password: str = Body(...),
     db: Session = Depends(get_db)
 ):
+    """
+    Driver login step 1: Authenticate with license number and password.
+    Returns available vendor/tenant accounts where the password matches.
+    
+    IMPORTANT: A driver may have the same license number across multiple vendors
+    with different passwords. This endpoint validates the password against ALL
+    driver records and only returns accounts where the password matches.
+    """
     try:
         license_number = license_number.strip()
         password = password.strip()
@@ -1462,17 +1470,29 @@ async def driver_login_initial(
                 detail=ResponseWrapper.error("Invalid DL or password", "INVALID_LOGIN")
             )
 
-        # Validate password on FIRST matching record
-        driver = drivers[0]
-        if not verify_password(hash_password(password), driver.password):
+        # =====================================================
+        # PERMANENT FIX: Validate password against ALL drivers
+        # and only return accounts where password matches
+        # =====================================================
+        hashed_input_password = hash_password(password)
+        matching_drivers = []
+        
+        for driver in drivers:
+            if verify_password(hashed_input_password, driver.password):
+                matching_drivers.append(driver)
+        
+        if not matching_drivers:
+            logger.warning(f"Password mismatch for DL={license_number} across {len(drivers)} vendor(s)")
             raise HTTPException(
                 status_code=401,
                 detail=ResponseWrapper.error("Invalid password", "INVALID_PASSWORD")
             )
+        
+        logger.info(f"Password matched for {len(matching_drivers)} out of {len(drivers)} vendor account(s)")
 
-        # Build accounts list
+        # Build accounts list ONLY for matching drivers
         accounts = []
-        for d in drivers:
+        for d in matching_drivers:
             v, t = d.vendor, d.vendor.tenant
             accounts.append({
                 "driver_id": d.driver_id,
@@ -1482,9 +1502,12 @@ async def driver_login_initial(
                 "tenant_name": t.name
             })
 
-        # TEMP TOKEN MUST NOT contain driver_id
+        # Use first matching driver for profile info (all have same license_number)
+        representative_driver = matching_drivers[0]
+
+        # TEMP TOKEN MUST NOT contain driver_id (stores license_number only)
         temp_payload = {
-            "license_number": driver.license_number,
+            "license_number": representative_driver.license_number,
             "type": "driver_temp_login",
             "iat": int(time.time()),
             "exp": int(time.time()) + 300,
@@ -1493,19 +1516,18 @@ async def driver_login_initial(
 
         # STORE TEMP TOKEN (ONE TIME USE)
         redis_client = Oauth2AsAccessor().redis_manager.client
-        temp_key = f"temp_driver_login:{driver.license_number}"
+        temp_key = f"temp_driver_login:{representative_driver.license_number}"
         redis_client.setex(temp_key, 300, temp_token)
-
 
         return ResponseWrapper.success(
             message="Select vendor/tenant to continue",
             data={
                 "temp_token": temp_token,
                 "driver": {
-                    "name": driver.name,
-                    "license_number": driver.license_number,
-                    "phone": driver.phone,
-                    "email": driver.email,
+                    "name": representative_driver.name,
+                    "license_number": representative_driver.license_number,
+                    "phone": representative_driver.phone,
+                    "email": representative_driver.email,
                 },
                 "accounts": accounts
             }
