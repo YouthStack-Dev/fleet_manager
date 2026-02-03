@@ -3,11 +3,14 @@ import secrets
 import time
 import logging
 import sys
+import json
+import random
+import asyncio
 from app.crud.vendor_user import vendor_user_crud
 from app.models.admin import Admin
 from app.models.driver import Driver
 from app.models.tenant import Tenant
-from fastapi import APIRouter, Depends, HTTPException, Header, status, Body, Query
+from fastapi import APIRouter, Depends, HTTPException, Header, status, Body, Query, BackgroundTasks
 
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session, joinedload
@@ -21,12 +24,26 @@ from app.models import Employee
 from app.models.vendor import Vendor
 from app.models.vendor_user import VendorUser
 from app.schemas.auth import (
-    AdminLoginRequest, AdminLoginResponse, LoginRequest, TokenResponse, RefreshTokenRequest, LoginResponse, PasswordResetRequest
+    AdminLoginRequest, AdminLoginResponse, LoginRequest, TokenResponse, RefreshTokenRequest, LoginResponse, PasswordResetRequest,
+    OTPRequestSchema, OTPVerifySchema, SelectTenantSchema, SwitchTenantSchema
 )
 from app.schemas.driver import DriverResponse
 from app.schemas.tenant import TenantResponse
 from app.schemas.vendor import VendorResponse
 from app.schemas.vendor_user import VendorUserResponse
+from common_utils.auth.utils import (
+    create_access_token, create_refresh_token, 
+    verify_token, hash_password, verify_password
+)
+from common_utils.auth.token_validation import Oauth2AsAccessor, validate_bearer_token
+from app.schemas.employee import EmployeeResponse
+from app.crud.employee import employee_crud
+from app.crud.admin import admin_crud
+from app.crud.driver import driver_crud
+from app.core.logging_config import get_logger
+from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
+from app.core.email_service import EmailService
+from app.services.sms_service import SMSService
 from common_utils.auth.utils import (
     create_access_token, create_refresh_token, 
     verify_token, hash_password, verify_password
@@ -266,6 +283,36 @@ def introspect_token_direct(token: str, db: Session = None) -> dict:
                     
                     if not token_data:
                         # Redis cache expired but JWT is still valid
+                        # CRITICAL: Check if session key still exists before refreshing
+                        # If session key is missing, token was explicitly invalidated (logout/switch)
+                        session_key = f"{user_type}_session:{user_id}"
+                        active_token = oauth_accessor.redis_manager.client.get(session_key)
+                        
+                        if not active_token:
+                            # Session was explicitly invalidated - do NOT refresh
+                            logger.warning(f"🚫 Session invalidated for user {user_id} - token was explicitly revoked")
+                            raise HTTPException(
+                                status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail=ResponseWrapper.error(
+                                    message="Session has been invalidated. Please log in again.",
+                                    error_code="SESSION_INVALIDATED"
+                                )
+                            )
+                        
+                        # Verify this is the active session token
+                        if isinstance(active_token, bytes):
+                            active_token = active_token.decode()
+                        if active_token != opaque_token:
+                            logger.warning(f"🚫 Token mismatch for user {user_id} - not the active session")
+                            raise HTTPException(
+                                status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail=ResponseWrapper.error(
+                                    message="Session expired due to login on another device",
+                                    error_code="SESSION_EXPIRED"
+                                )
+                            )
+                        
+                        # Only refresh if session key exists and matches
                         logger.info(f"🔄 Redis cache expired for user {user_id} ({user_type}), refreshing from DB")
                         
                         if db is None:
@@ -642,6 +689,955 @@ async def employee_login(
             ),
         )
 
+
+@router.post("/employee/request-otp")
+async def request_employee_otp(
+    form_data: OTPRequestSchema = Body(...),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    db: Session = Depends(get_db)
+):
+    """
+    STEP 1: Request OTP for employee login using email or phone number.
+    
+    Security: NO tenant information is revealed before OTP verification.
+    Sends OTP to all active employee accounts associated with this email/phone.
+    
+    OTP expires in 5 minutes and has 3 attempt limit.
+    """
+    logger.info(f"🔐 OTP request for user: {form_data.username}")
+    
+    try:
+        # Determine if username is email or phone
+        is_email = "@" in form_data.username
+        username_type = "email" if is_email else "phone"
+        
+        # Find all active employees with this email/phone
+        if is_email:
+            employees = db.query(Employee).filter(Employee.email == form_data.username).options(joinedload(Employee.tenant)).all()
+        else:
+            employees = db.query(Employee).filter(Employee.phone == form_data.username).options(joinedload(Employee.tenant)).all()
+        
+        # Check if any employee account is active
+        active_employees = [emp for emp in employees if emp.is_active and emp.tenant.is_active]
+        
+        # If no valid employees found, return proper error
+        if not employees:
+            logger.warning(f"No employee found for {username_type}: {form_data.username}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"No account found with this {username_type}.",
+                    error_code="ACCOUNT_NOT_FOUND"
+                )
+            )
+        
+        # If employee exists but has no active tenant associations
+        if not active_employees:
+            logger.warning(f"Employee found but no active tenant associations for {username_type}: {form_data.username}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Your account has no active tenant associations. Please contact support.",
+                    error_code="NO_TENANT_ACCESS"
+                )
+            )
+        
+        # Generate single OTP for this username (works for all associated tenants)
+        otp = str(random.randint(100000, 999999))
+        
+        # Store OTP in Redis with username as key (no tenant info)
+        oauth_accessor = Oauth2AsAccessor()
+        otp_key = f"otp_request:{form_data.username}"
+        
+        # Store employee IDs for all active accounts
+        employee_ids = [str(emp.employee_id) for emp in active_employees]
+        
+        otp_data = {
+            "otp": otp,
+            "username": form_data.username,
+            "employee_ids": employee_ids,  # List of all associated employee accounts
+            "attempts": 0,
+            "max_attempts": 3,
+            "created_at": int(time.time())
+        }
+        
+        ttl = 300  # 5 minutes
+        
+        try:
+            if oauth_accessor.use_redis:
+                redis_client = oauth_accessor.redis_manager.client
+                redis_client.setex(otp_key, ttl, json.dumps(otp_data))
+                logger.info(f"✅ OTP stored in Redis for {len(employee_ids)} employee account(s) with {ttl}s TTL")
+            else:
+                oauth_accessor.cache[otp_key] = (otp_data, int(time.time()) + ttl)
+                logger.info(f"✅ OTP stored in memory for {len(employee_ids)} employee account(s)")
+        except Exception as storage_err:
+            logger.error(f"Failed to store OTP: {storage_err}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error(
+                    message="Failed to generate OTP",
+                    error_code="OTP_STORAGE_FAILED"
+                )
+            )
+        
+        # Send OTP via appropriate channel (use first active employee for delivery)
+        employee = active_employees[0]
+        delivery_channel = username_type
+        
+        # Send OTP asynchronously in background for faster response
+        def send_otp_background():
+            """Background task to send OTP without blocking response"""
+            if is_email:
+                try:
+                    email_service = EmailService()
+                    subject = "Your Login Verification Code"
+                    body = f"""
+                    <html>
+                    <body>
+                        <h2>Login Verification Code</h2>
+                        <p>Hello,</p>
+                        <p>Your OTP for login is:</p>
+                        <h1 style="color: #4CAF50; font-size: 32px; letter-spacing: 5px;">{otp}</h1>
+                        <p>This code will expire in <strong>5 minutes</strong>.</p>
+                        <p>If you didn't request this code, please ignore this email.</p>
+                    </body>
+                    </html>
+                    """
+                    
+                    otp_sent = email_service.send_email(
+                        to_emails=employee.email,
+                        subject=subject,
+                        html_content=body
+                    )
+                    
+                    if otp_sent:
+                        logger.info(f"✉️ OTP sent via email to {employee.email}")
+                    else:
+                        logger.warning(f"Failed to send OTP email to {employee.email}")
+                        
+                except Exception as email_err:
+                    logger.error(f"Email sending error: {email_err}")
+            else:
+                try:
+                    sms_service = SMSService()
+                    message = f"Your login OTP is: {otp}. Valid for 5 minutes. Do not share this code."
+                    
+                    otp_sent = sms_service.send_sms(
+                        to_phone=employee.phone,
+                        message=message
+                    )
+                    
+                    if otp_sent:
+                        logger.info(f"📱 OTP sent via SMS to {employee.phone}")
+                    else:
+                        logger.warning(f"Failed to send OTP SMS to {employee.phone}")
+                        
+                except Exception as sms_err:
+                    logger.error(f"SMS sending error: {sms_err}")
+        
+        # Add task to background - response will be sent immediately
+        background_tasks.add_task(send_otp_background)
+        
+        response_data = {
+            "otp_sent": True,
+            "delivery_channel": delivery_channel,
+            "expires_in": ttl,
+            "max_attempts": 3
+        }
+        
+        # In dev mode, include OTP for testing
+        if settings.ENV == "development":
+            response_data["otp_dev"] = otp
+            response_data["note"] = "OTP included for development testing only"
+            logger.info(f"🔐 DEV MODE - OTP for {form_data.username}: {otp}")
+        
+        logger.info(f"✅ OTP request processed in background for {form_data.username}")
+        return ResponseWrapper.success(
+            data=response_data,
+            message=f"OTP is being sent to your {delivery_channel}"
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Request OTP failed with unexpected error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message="Failed to process OTP request",
+                error_code="OTP_REQUEST_FAILED",
+                details={"error": str(e)}
+            )
+        )
+
+
+@router.post("/employee/verify-otp")
+async def verify_employee_otp(
+    form_data: OTPVerifySchema = Body(...),
+    db: Session = Depends(get_db)
+):
+    """
+    STEP 2: Verify OTP and return pre-auth token + list of available tenants.
+    
+    Security: Only reveals tenant information AFTER successful OTP verification.
+    Returns a temporary pre-auth token (valid 15 minutes) for tenant selection.
+    """
+    logger.info(f"🔐 OTP verification attempt for user: {form_data.username}")
+    
+    try:
+        from app.models.iam import Role, Policy, Permission
+        
+        # Retrieve OTP from Redis
+        oauth_accessor = Oauth2AsAccessor()
+        otp_key = f"otp_request:{form_data.username}"
+        
+        otp_data = None
+        
+        try:
+            if oauth_accessor.use_redis:
+                redis_client = oauth_accessor.redis_manager.client
+                stored_data = redis_client.get(otp_key)
+                if stored_data:
+                    if isinstance(stored_data, bytes):
+                        stored_data = stored_data.decode()
+                    otp_data = json.loads(stored_data)
+            else:
+                cached = oauth_accessor.cache.get(otp_key)
+                if cached:
+                    otp_data, expiry = cached if isinstance(cached, tuple) else (cached, 0)
+                    if expiry > int(time.time()):
+                        pass  # Valid
+                    else:
+                        otp_data = None
+        except Exception as retrieval_err:
+            logger.error(f"Failed to retrieve OTP: {retrieval_err}")
+        
+        if not otp_data:
+            logger.warning(f"OTP not found or expired for {form_data.username}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="OTP expired or invalid. Please request a new one.",
+                    error_code="OTP_EXPIRED"
+                )
+            )
+        
+        # Check attempt limit
+        if otp_data.get("attempts", 0) >= otp_data.get("max_attempts", 3):
+            try:
+                if oauth_accessor.use_redis:
+                    redis_client.delete(otp_key)
+                else:
+                    if otp_key in oauth_accessor.cache:
+                        del oauth_accessor.cache[otp_key]
+            except Exception:
+                pass
+            
+            logger.warning(f"Max OTP attempts exceeded for {form_data.username}")
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=ResponseWrapper.error(
+                    message="Maximum OTP attempts exceeded. Please request a new OTP.",
+                    error_code="MAX_OTP_ATTEMPTS"
+                )
+            )
+        
+        # Verify OTP
+        if otp_data.get("otp") != form_data.otp:
+            # Increment attempt counter
+            otp_data["attempts"] = otp_data.get("attempts", 0) + 1
+            
+            try:
+                if oauth_accessor.use_redis:
+                    ttl = redis_client.ttl(otp_key)
+                    if ttl > 0:
+                        redis_client.setex(otp_key, ttl, json.dumps(otp_data))
+                else:
+                    cached = oauth_accessor.cache.get(otp_key)
+                    if cached and isinstance(cached, tuple):
+                        _, expiry = cached
+                        oauth_accessor.cache[otp_key] = (otp_data, expiry)
+            except Exception:
+                pass
+            
+            remaining_attempts = otp_data.get("max_attempts", 3) - otp_data["attempts"]
+            logger.warning(f"Invalid OTP for {form_data.username}. {remaining_attempts} attempts remaining")
+            
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error(
+                    message=f"Invalid OTP. {remaining_attempts} attempt(s) remaining.",
+                    error_code="INVALID_OTP",
+                    details={"remaining_attempts": remaining_attempts}
+                )
+            )
+        
+        # ✅ OTP VERIFIED - Delete OTP
+        try:
+            if oauth_accessor.use_redis:
+                redis_client.delete(otp_key)
+            else:
+                if otp_key in oauth_accessor.cache:
+                    del oauth_accessor.cache[otp_key]
+            logger.info(f"✅ OTP verified and deleted for {form_data.username}")
+        except Exception as del_err:
+            logger.warning(f"Failed to delete OTP: {del_err}")
+        
+        # Fetch all employee accounts with tenant details
+        is_email = "@" in form_data.username
+        
+        employees = (
+            db.query(Employee)
+            .options(joinedload(Employee.tenant))
+            .filter(
+                Employee.email == form_data.username if is_email else Employee.phone == form_data.username
+            )
+            .all()
+        )
+        
+        # Filter active employees
+        active_employees = [emp for emp in employees if emp.is_active and emp.tenant.is_active]
+        
+        if not active_employees:
+            logger.error(f"No active employees found after OTP verification: {form_data.username}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="All associated accounts are inactive",
+                    error_code="ACCOUNT_INACTIVE"
+                )
+            )
+        
+        # Build tenant list (NOW safe to reveal since OTP verified)
+        available_tenants = [
+            {
+                "tenant_id": emp.tenant.tenant_id,
+                "name": emp.tenant.name,
+                "logo_url": emp.tenant.logo_url if hasattr(emp.tenant, "logo_url") else None,
+                "employee_id": str(emp.employee_id)  # Internal use for token generation
+            }
+            for emp in active_employees
+        ]
+        
+        # Generate pre-auth token (short-lived, 15 minutes)
+        current_time = int(time.time())
+        pre_auth_expiry = current_time + 900  # 15 minutes
+        pre_auth_token_value = secrets.token_hex(32)
+        
+        pre_auth_payload = {
+            "username": form_data.username,
+            "employee_ids": [str(emp.employee_id) for emp in active_employees],
+            "token_type": "pre_auth",
+            "iat": current_time,
+            "exp": pre_auth_expiry
+        }
+        
+        # Store pre-auth token in Redis
+        pre_auth_key = f"pre_auth:{pre_auth_token_value}"
+        ttl = 900  # 15 minutes
+        
+        try:
+            if oauth_accessor.use_redis:
+                redis_client.setex(pre_auth_key, ttl, json.dumps(pre_auth_payload))
+            else:
+                oauth_accessor.cache[pre_auth_key] = (pre_auth_payload, pre_auth_expiry)
+            logger.info(f"✅ Pre-auth token generated for {form_data.username} with {len(available_tenants)} tenant(s)")
+        except Exception as storage_err:
+            logger.error(f"Failed to store pre-auth token: {storage_err}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error(
+                    message="Failed to generate authentication token",
+                    error_code="TOKEN_STORAGE_FAILED"
+                )
+            )
+        
+        response_data = {
+            "pre_auth_token": pre_auth_token_value,
+            "token_type": "pre_auth",
+            "expires_in": ttl,
+            "available_tenants": [
+                {
+                    "tenant_id": t["tenant_id"],
+                    "name": t["name"],
+                    "logo_url": t["logo_url"]
+                }
+                for t in available_tenants
+            ]
+        }
+        
+        return ResponseWrapper.success(
+            data=response_data,
+            message=f"OTP verified. {len(available_tenants)} organization(s) available."
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"OTP verification failed with unexpected error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message="OTP verification failed",
+                error_code="OTP_VERIFY_FAILED",
+                details={"error": str(e)}
+            )
+        )
+
+
+@router.post("/employee/select-tenant")
+async def select_employee_tenant(
+    form_data: SelectTenantSchema = Body(...),
+    pre_auth_token: str = Header(..., alias="X-Pre-Auth-Token"),
+    db: Session = Depends(get_db)
+):
+    """
+    STEP 3: Select tenant and get full access token.
+    
+    Requires: Pre-auth token from verify-otp endpoint (Header: X-Pre-Auth-Token)
+    Returns: Full JWT access token + refresh token + user details with roles & permissions
+    """
+    logger.info(f"🔐 Tenant selection attempt for tenant: {form_data.tenant_id}")
+    
+    try:
+        from app.models.iam import Role, Policy, Permission
+        
+        # Validate pre-auth token
+        oauth_accessor = Oauth2AsAccessor()
+        pre_auth_key = f"pre_auth:{pre_auth_token}"
+        
+        pre_auth_data = None
+        
+        try:
+            if oauth_accessor.use_redis:
+                redis_client = oauth_accessor.redis_manager.client
+                stored_data = redis_client.get(pre_auth_key)
+                if stored_data:
+                    if isinstance(stored_data, bytes):
+                        stored_data = stored_data.decode()
+                    pre_auth_data = json.loads(stored_data)
+            else:
+                cached = oauth_accessor.cache.get(pre_auth_key)
+                if cached:
+                    pre_auth_data, expiry = cached if isinstance(cached, tuple) else (cached, 0)
+                    if expiry <= int(time.time()):
+                        pre_auth_data = None
+        except Exception as retrieval_err:
+            logger.error(f"Failed to retrieve pre-auth token: {retrieval_err}")
+        
+        if not pre_auth_data:
+            logger.warning(f"Invalid or expired pre-auth token")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error(
+                    message="Pre-authentication token invalid or expired. Please verify OTP again.",
+                    error_code="PRE_AUTH_TOKEN_INVALID"
+                )
+            )
+        
+        # Find employee for selected tenant
+        username = pre_auth_data.get("username")
+        is_email = "@" in username
+        
+        employee = (
+            db.query(Employee)
+            .options(
+                joinedload(Employee.tenant),
+                joinedload(Employee.team),
+                joinedload(Employee.role)
+                .joinedload(Role.policies)
+                .joinedload(Policy.permissions)
+            )
+            .filter(
+                Employee.email == username if is_email else Employee.phone == username,
+                Employee.tenant_id == form_data.tenant_id
+            )
+            .first()
+        )
+        
+        if not employee:
+            logger.error(f"Employee not found for tenant: {form_data.tenant_id}, username: {username}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="You do not have access to this organization",
+                    error_code="TENANT_ACCESS_DENIED"
+                )
+            )
+        
+        # Verify employee is in the pre-auth list
+        if str(employee.employee_id) not in pre_auth_data.get("employee_ids", []):
+            logger.warning(f"Employee {employee.employee_id} not in pre-auth list")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Access denied to this organization",
+                    error_code="TENANT_ACCESS_DENIED"
+                )
+            )
+        
+        tenant = employee.tenant
+        
+        # Account active checks
+        team_inactive = employee.team and not employee.team.is_active
+        if not employee.is_active or not tenant.is_active or team_inactive:
+            logger.warning(f"Inactive account for employee: {employee.employee_id}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="User account is inactive",
+                    error_code="ACCOUNT_INACTIVE"
+                )
+            )
+        
+        # Extract roles & permissions
+        roles = []
+        all_permissions = []
+        
+        role = employee.role
+        
+        if role:
+            if role and role.is_active and (role.tenant_id == tenant.tenant_id or role.is_system_role):
+                roles.append(role.name)
+                
+                for policy in role.policies:
+                    for permission in policy.permissions:
+                        module, action = permission.module, permission.action
+                        existing = next((p for p in all_permissions if p["module"] == module), None)
+                        if existing:
+                            if action == "*":
+                                existing["action"] = ["create", "read", "update", "delete", "*"]
+                            elif action not in existing["action"]:
+                                existing["action"].append(action)
+                        else:
+                            actions = (
+                                ["create", "read", "update", "delete", "*"]
+                                if action == "*"
+                                else [action]
+                            )
+                            all_permissions.append({"module": module, "action": actions})
+        
+        if not roles:
+            logger.error(f"No active roles found for employee: {employee.employee_id}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error(
+                    message="Failed to fetch user roles",
+                    error_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            )
+        
+        logger.info(f"🎯 Permissions collected for employee {employee.employee_id}: {len(all_permissions)} modules, roles: {roles}")
+        
+        # Generate full access tokens
+        current_time = int(time.time())
+        expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
+        opaque_token = secrets.token_hex(16)
+        
+        token_payload = {
+            "user_id": str(employee.employee_id),
+            "tenant_id": str(employee.tenant_id),
+            "opaque_token": opaque_token,
+            "roles": roles,
+            "permissions": all_permissions,
+            "user_type": "employee",
+            "iat": current_time,
+            "exp": expiry_time,
+        }
+        
+        # Single-session enforcement
+        ttl = expiry_time - current_time
+        employee_session_key = f"employee_session:{employee.employee_id}"
+        metadata_prefix = "opaque_token_metadata:"
+        basic_prefix = "opaque_token:"
+        
+        try:
+            if oauth_accessor.use_redis:
+                try:
+                    old_token = redis_client.get(employee_session_key)
+                    if old_token:
+                        if isinstance(old_token, bytes):
+                            old_token = old_token.decode()
+                        
+                        redis_client.delete(f"{metadata_prefix}{old_token}")
+                        redis_client.delete(f"{basic_prefix}{old_token}")
+                        redis_client.delete(old_token)
+                        logger.info(f"Invalidated previous session for employee {employee.employee_id}")
+                except Exception as redis_err:
+                    logger.warning(f"Redis error while cleaning old session: {redis_err}")
+                
+                stored = oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl)
+                try:
+                    redis_client.setex(employee_session_key, int(ttl), opaque_token)
+                except Exception as ex:
+                    logger.warning(f"Failed to set employee_session key: {ex}")
+                
+                if not stored:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=ResponseWrapper.error("Failed to store authentication token", "TOKEN_STORE_FAILED")
+                    )
+                
+                # Delete pre-auth token after successful tenant selection
+                try:
+                    redis_client.delete(pre_auth_key)
+                    logger.info(f"✅ Pre-auth token consumed and deleted")
+                except Exception:
+                    pass
+                    
+            else:
+                # In-memory fallback
+                try:
+                    old_session_val = oauth_accessor.cache.get(employee_session_key)
+                    if old_session_val:
+                        old_token = old_session_val[0] if isinstance(old_session_val, tuple) else old_session_val
+                        try:
+                            meta_key = hashkey(f"{metadata_prefix}{old_token}")
+                            basic_key = hashkey(f"{basic_prefix}{old_token}")
+                            if meta_key in oauth_accessor.cache:
+                                del oauth_accessor.cache[meta_key]
+                            if basic_key in oauth_accessor.cache:
+                                del oauth_accessor.cache[basic_key]
+                            logger.info(f"Invalidated previous in-memory session for employee {employee.employee_id}")
+                        except Exception as ie:
+                            logger.warning(f"Error cleaning in-memory old token: {ie}")
+                except Exception as ex:
+                    logger.warning(f"In-memory session cleanup failed: {ex}")
+                
+                oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl)
+                try:
+                    oauth_accessor.cache[employee_session_key] = (opaque_token, current_time + ttl)
+                except Exception as ex:
+                    logger.warning(f"Failed to set in-memory employee_session pointer: {ex}")
+                
+                # Delete pre-auth token
+                if pre_auth_key in oauth_accessor.cache:
+                    del oauth_accessor.cache[pre_auth_key]
+        
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected token storage error: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error("Failed to complete login", "TOKEN_STORE_ERROR", {"error": str(e)})
+            )
+        
+        # Build JWT tokens
+        access_token = create_access_token(
+            user_id=str(employee.employee_id),
+            tenant_id=str(employee.tenant_id),
+            opaque_token=opaque_token,
+            user_type="employee",
+        )
+        refresh_token = create_refresh_token(
+            user_id=str(employee.employee_id),
+            user_type="employee",
+        )
+        
+        tenant_details = {
+            "tenant_id": tenant.tenant_id,
+            "name": tenant.name,
+            "address": tenant.address,
+            "latitude": tenant.latitude,
+            "longitude": tenant.longitude,
+            "logo_url": tenant.logo_url if hasattr(tenant, "logo_url") else None,
+        }
+        
+        login_method = "email" if is_email else "phone"
+        logger.info(f"🚀 Tenant selection successful for employee: {employee.employee_id} ({login_method}) in tenant: {tenant.tenant_id}")
+        
+        response_data = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "user": {
+                "employee": employee_to_schema(employee),
+                "roles": roles,
+                "permissions": all_permissions,
+                "tenant": tenant_details
+            }
+        }
+        
+        return ResponseWrapper.success(data=response_data, message="Login successful")
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Tenant selection failed with unexpected error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message="Tenant selection failed",
+                error_code="TENANT_SELECTION_FAILED",
+                details={"error": str(e)}
+            )
+        )
+
+
+@router.post("/employee/switch-tenant")
+async def switch_employee_tenant(
+    form_data: SwitchTenantSchema = Body(...),
+    current_token: dict = Depends(validate_bearer_token()),
+    db: Session = Depends(get_db)
+):
+    """
+    BONUS: Switch to a different tenant without re-authentication.
+    
+    Requires: Valid access token for an employee with multiple tenant associations.
+    Returns: New access token for the selected tenant.
+    """
+    logger.info(f"🔐 Tenant switch attempt to tenant: {form_data.tenant_id}")
+    
+    try:
+        from app.models.iam import Role, Policy, Permission
+        
+        # Get current employee from token
+        current_employee_id = current_token.get("user_id")
+        current_tenant_id = current_token.get("tenant_id")
+        
+        # Check if trying to switch to the same tenant
+        if current_tenant_id == form_data.tenant_id:
+            logger.info(f"⚠️ User already in tenant {form_data.tenant_id}, returning current session")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="You are already logged into this organization",
+                    error_code="ALREADY_IN_TENANT"
+                )
+            )
+        
+        current_employee = db.query(Employee).filter(Employee.employee_id == current_employee_id).first()
+        
+        if not current_employee:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Current employee not found",
+                    error_code="EMPLOYEE_NOT_FOUND"
+                )
+            )
+        
+        # Get employee's email or phone to find other tenant associations
+        username = current_employee.email or current_employee.phone
+        is_email = "@" in username
+        
+        # Find employee account in target tenant
+        target_employee = (
+            db.query(Employee)
+            .options(
+                joinedload(Employee.tenant),
+                joinedload(Employee.team),
+                joinedload(Employee.role)
+                .joinedload(Role.policies)
+                .joinedload(Policy.permissions)
+            )
+            .filter(
+                Employee.email == username if is_email else Employee.phone == username,
+                Employee.tenant_id == form_data.tenant_id
+            )
+            .first()
+        )
+        
+        if not target_employee:
+            logger.warning(f"Employee {current_employee_id} does not have access to tenant {form_data.tenant_id}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You do not have access to this organization",
+                    error_code="TENANT_ACCESS_DENIED"
+                )
+            )
+        
+        tenant = target_employee.tenant
+        
+        # Account active checks
+        team_inactive = target_employee.team and not target_employee.team.is_active
+        if not target_employee.is_active or not tenant.is_active or team_inactive:
+            logger.warning(f"Inactive account for employee: {target_employee.employee_id} in tenant: {form_data.tenant_id}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Target account is inactive",
+                    error_code="ACCOUNT_INACTIVE"
+                )
+            )
+        
+        # Extract roles & permissions for target tenant
+        roles = []
+        all_permissions = []
+        
+        role = target_employee.role
+        
+        if role:
+            if role and role.is_active and (role.tenant_id == tenant.tenant_id or role.is_system_role):
+                roles.append(role.name)
+                
+                for policy in role.policies:
+                    for permission in policy.permissions:
+                        module, action = permission.module, permission.action
+                        existing = next((p for p in all_permissions if p["module"] == module), None)
+                        if existing:
+                            if action == "*":
+                                existing["action"] = ["create", "read", "update", "delete", "*"]
+                            elif action not in existing["action"]:
+                                existing["action"].append(action)
+                        else:
+                            actions = (
+                                ["create", "read", "update", "delete", "*"]
+                                if action == "*"
+                                else [action]
+                            )
+                            all_permissions.append({"module": module, "action": actions})
+        
+        if not roles:
+            logger.error(f"No active roles found for employee: {target_employee.employee_id} in tenant: {form_data.tenant_id}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error(
+                    message="Failed to fetch user roles for target organization",
+                    error_code="ROLES_NOT_FOUND"
+                )
+            )
+        
+        logger.info(f"🎯 Permissions collected for employee {target_employee.employee_id}: {len(all_permissions)} modules")
+        
+        # Generate new tokens for target tenant
+        current_time = int(time.time())
+        expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
+        opaque_token = secrets.token_hex(16)
+        
+        token_payload = {
+            "user_id": str(target_employee.employee_id),
+            "tenant_id": str(target_employee.tenant_id),
+            "opaque_token": opaque_token,
+            "roles": roles,
+            "permissions": all_permissions,
+            "user_type": "employee",
+            "iat": current_time,
+            "exp": expiry_time,
+        }
+        
+        oauth_accessor = Oauth2AsAccessor()
+        ttl = expiry_time - current_time
+        
+        # Store new token and invalidate old session for target employee
+        employee_session_key = f"employee_session:{target_employee.employee_id}"
+        metadata_prefix = "opaque_token_metadata:"
+        basic_prefix = "opaque_token:"
+        
+        try:
+            if oauth_accessor.use_redis:
+                redis_client = oauth_accessor.redis_manager.client
+                
+                # Invalidate old session for target employee
+                try:
+                    old_token = redis_client.get(employee_session_key)
+                    if old_token:
+                        if isinstance(old_token, bytes):
+                            old_token = old_token.decode()
+                        redis_client.delete(f"{metadata_prefix}{old_token}")
+                        redis_client.delete(f"{basic_prefix}{old_token}")
+                        redis_client.delete(old_token)
+                except Exception:
+                    pass
+                
+                # Store new token first
+                stored = oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl)
+                redis_client.setex(employee_session_key, int(ttl), opaque_token)
+                
+                # CRITICAL: Invalidate current token (source) AFTER storing new token to prevent reuse
+                current_opaque_token = current_token.get("opaque_token")
+                logger.debug(f"Source token: {current_opaque_token[:8] if current_opaque_token else 'None'}..., New token: {opaque_token[:8]}...")
+                
+                if current_opaque_token:
+                    if current_opaque_token != opaque_token:
+                        try:
+                            current_session_key = f"employee_session:{current_employee_id}"
+                            # Delete all Redis keys for the old token
+                            deleted_meta = redis_client.delete(f"{metadata_prefix}{current_opaque_token}")
+                            deleted_basic = redis_client.delete(f"{basic_prefix}{current_opaque_token}")
+                            deleted_token = redis_client.delete(current_opaque_token)
+                            deleted_session = redis_client.delete(current_session_key)
+                            
+                            logger.info(f"🔒 Invalidated source token {current_opaque_token[:8]}... (deleted: meta={deleted_meta}, basic={deleted_basic}, token={deleted_token}, session={deleted_session})")
+                        except Exception as e:
+                            logger.error(f"❌ Failed to invalidate source token: {e}", exc_info=True)
+                    else:
+                        logger.warning(f"⚠️ Source token same as new token - not invalidating")
+                else:
+                    logger.warning(f"⚠️ No source opaque_token found in current_token")
+                
+                if not stored:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=ResponseWrapper.error("Failed to store authentication token", "TOKEN_STORE_FAILED")
+                    )
+            else:
+                # In-memory fallback
+                oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl)
+                oauth_accessor.cache[employee_session_key] = (opaque_token, current_time + ttl)
+        
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Token storage error during tenant switch: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error("Failed to switch tenant", "TOKEN_STORE_ERROR", {"error": str(e)})
+            )
+        
+        # Build new JWT tokens
+        access_token = create_access_token(
+            user_id=str(target_employee.employee_id),
+            tenant_id=str(target_employee.tenant_id),
+            opaque_token=opaque_token,
+            user_type="employee",
+        )
+        refresh_token = create_refresh_token(
+            user_id=str(target_employee.employee_id),
+            user_type="employee",
+        )
+        
+        tenant_details = {
+            "tenant_id": tenant.tenant_id,
+            "name": tenant.name,
+            "address": tenant.address,
+            "latitude": tenant.latitude,
+            "longitude": tenant.longitude,
+            "logo_url": tenant.logo_url if hasattr(tenant, "logo_url") else None,
+        }
+        
+        logger.info(f"🚀 Tenant switch successful: {current_employee_id} → employee {target_employee.employee_id} in tenant {form_data.tenant_id}")
+        
+        response_data = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "user": {
+                "employee": employee_to_schema(target_employee),
+                "roles": roles,
+                "permissions": all_permissions,
+                "tenant": tenant_details
+            }
+        }
+        
+        return ResponseWrapper.success(data=response_data, message="Tenant switched successfully")
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Tenant switch failed with unexpected error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message="Tenant switch failed",
+                error_code="TENANT_SWITCH_FAILED",
+                details={"error": str(e)}
+            )
+        )
+
 @router.post("/vendor/login")
 async def vendor_user_login(
     form_data: LoginRequest = Body(...),
@@ -943,199 +1939,6 @@ async def admin_login(
         )
 
 
-@router.post("/driver/login")
-async def driver_login(
-    form_data: LoginRequest = Body(...),
-    db: Session = Depends(get_db)
-):
-    """
-    Authenticate a driver and return JWT + opaque token + roles + permissions.
-    Enforces single active session per driver: new login invalidates previous session.
-    """
-    logger.info(f"Driver login attempt: {form_data.username}, tenant: {form_data.tenant_id}")
-
-    try:
-        # Fetch driver based on tenant + email
-        driver = (
-            db.query(Driver)
-            .join(Vendor, Vendor.vendor_id == Driver.vendor_id)
-            .join(Tenant, Tenant.tenant_id == Vendor.tenant_id)
-            .filter(
-                Driver.email == form_data.username,
-                Tenant.tenant_id == form_data.tenant_id
-            )
-            .first()
-        )
-
-        if not driver:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ResponseWrapper.error(
-                    message="Incorrect tenant, email, or password",
-                    error_code=status.HTTP_401_UNAUTHORIZED
-                )
-            )
-
-        vendor = driver.vendor
-        tenant = vendor.tenant
-        logger.debug(f"Tenant validation successful - ID: {tenant.tenant_id}")
-
-        # Password verification
-        if not verify_password(hash_password(form_data.password), driver.password):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ResponseWrapper.error("Incorrect password", "INVALID_PASSWORD")
-            )
-
-        # Active status check
-        if not driver.is_active or not vendor.is_active or not tenant.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=ResponseWrapper.error("User account is inactive", "ACCOUNT_INACTIVE")
-            )
-
-        # Roles & permissions
-        driver_with_roles, roles, all_permissions = driver_crud.get_driver_roles_and_permissions(
-            db, driver_id=driver.driver_id, tenant_id=tenant.tenant_id
-        )
-        if not driver_with_roles:
-            raise HTTPException(
-                status_code=500,
-                detail=ResponseWrapper.error("Failed to fetch roles", "ROLE_FETCH_ERROR")
-            )
-
-        # Prepare tokens
-        current_time = int(time.time())
-        expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
-        opaque_token = secrets.token_hex(16)
-
-        token_payload = {
-            "user_id": str(driver.driver_id),
-            "tenant_id": str(tenant.tenant_id),
-            "vendor_id": str(vendor.vendor_id),
-            "opaque_token": opaque_token,
-            "roles": roles,
-            "permissions": all_permissions,
-            "user_type": "driver",
-            "iat": current_time,
-            "exp": expiry_time,
-        }
-
-        # ================================
-        # 🔥 SINGLE SESSION ENFORCEMENT
-        # ================================
-        oauth_accessor = Oauth2AsAccessor()
-        ttl = expiry_time - current_time
-
-        driver_session_key = f"driver_session:{driver.driver_id}"
-        metadata_prefix = "opaque_token_metadata:"
-        basic_prefix = "opaque_token:"
-
-        try:
-            if oauth_accessor.use_redis:
-                redis_client = oauth_accessor.redis_manager.client
-
-                # Delete old session token if exists
-                try:
-                    old_token = redis_client.get(driver_session_key)
-                    if old_token:
-                        if isinstance(old_token, bytes):
-                            old_token = old_token.decode()
-                        redis_client.delete(f"{metadata_prefix}{old_token}")
-                        redis_client.delete(f"{basic_prefix}{old_token}")
-                        redis_client.delete(old_token)
-                        logger.info(f"Invalidated previous session for driver {driver.driver_id} (old_token={old_token})")
-                except Exception as redis_err:
-                    logger.warning(f"Redis cleanup failed for driver {driver.driver_id}: {redis_err}")
-
-                # Store new token
-                stored = oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl)
-                try:
-                    redis_client.setex(driver_session_key, int(ttl), opaque_token)
-                except Exception as ex:
-                    logger.warning(f"Failed to store driver_session pointer for driver {driver.driver_id}: {ex}")
-
-                if not stored:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=ResponseWrapper.error("Failed to store authentication token", "TOKEN_STORE_FAILED")
-                    )
-
-            else:
-                # In-memory fallback
-                try:
-                    old_session_val = oauth_accessor.cache.get(driver_session_key)
-                    if old_session_val:
-                        old_token = old_session_val[0] if isinstance(old_session_val, tuple) else old_session_val
-                        try:
-                            meta_key = hashkey(f"{metadata_prefix}{old_token}")
-                            basic_key = hashkey(f"{basic_prefix}{old_token}")
-                            if meta_key in oauth_accessor.cache:
-                                del oauth_accessor.cache[meta_key]
-                            if basic_key in oauth_accessor.cache:
-                                del oauth_accessor.cache[basic_key]
-                            logger.info(f"Invalidated old in-memory session for driver {driver.driver_id}")
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-                oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl)
-
-                try:
-                    oauth_accessor.cache[driver_session_key] = (opaque_token, current_time + ttl)
-                except Exception:
-                    pass
-
-        except Exception as e:
-            logger.error(f"Single-session storage failed for driver {driver.driver_id}: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500,
-                detail=ResponseWrapper.error("Login failed (session error)", "SESSION_ERROR", {"error": str(e)})
-            )
-
-        # Generate access/refresh tokens
-        access_token = create_access_token(
-            user_id=str(driver.driver_id),
-            tenant_id=str(tenant.tenant_id),
-            vendor_id=str(vendor.vendor_id),
-            opaque_token=opaque_token,
-            user_type="driver"
-        )
-        refresh_token = create_refresh_token(
-            user_id=str(driver.driver_id),
-            user_type="driver"
-        )
-
-        logger.info(f"🚀 Login successful for driver {driver.driver_id} ({driver.email}) in tenant {tenant.tenant_id}")
-
-        return ResponseWrapper.success(
-            data={
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-                "token_type": "bearer",
-                "user": {
-                    "driver": DriverResponse.model_validate(driver),
-                    "tenant": TenantResponse.model_validate(tenant),
-                    "roles": roles,
-                    "permissions": all_permissions,
-                },
-            },
-            message="Driver login successful",
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Driver login failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=ResponseWrapper.error(
-                message="Login failed due to server error",
-                error_code="SERVER_ERROR",
-                details={"error": str(e)}
-            )
-        )
 
 @router.post("/introspect")
 async def introspect(x_introspect_secret: str = Header(...,alias="X_Introspect_Secret"), authorization: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)):
