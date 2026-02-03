@@ -537,15 +537,18 @@ async def bulk_create_employees(
 
         # If there are validation errors, return them without creating anything
         if errors:
-            return ResponseWrapper.error(
-                message=f"Validation failed for {len(errors)} row(s). Please fix the errors below and try again.",
-                error_code="VALIDATION_FAILED",
-                details={
-                    "total_rows": len(employees_data) + len(errors),
-                    "valid_rows": len(employees_data),
-                    "invalid_rows": len(errors),
-                    "failed_employees": errors
-                }
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message=f"Validation failed for {len(errors)} row(s). Please fix the errors below and try again.",
+                    error_code="VALIDATION_FAILED",
+                    details={
+                        "total_rows": len(employees_data) + len(errors),
+                        "valid_rows": len(employees_data),
+                        "invalid_rows": len(errors),
+                        "failed_employees": errors
+                    }
+                )
             )
 
         # Check for duplicates within the Excel file itself
@@ -589,15 +592,18 @@ async def bulk_create_employees(
                 })
         
         if duplicate_errors:
-            return ResponseWrapper.error(
-                message=f"Duplicate entries found in Excel file. Please correct the highlighted rows and try again.",
-                error_code="DUPLICATE_IN_FILE",
-                details={
-                    "total_rows": len(employees_data),
-                    "valid_rows": len(employees_data) - len(duplicate_errors),
-                    "duplicate_rows": len(duplicate_errors),
-                    "failed_employees": duplicate_errors
-                }
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message=f"Duplicate entries found in Excel file. Please correct the highlighted rows and try again.",
+                    error_code="DUPLICATE_IN_FILE",
+                    details={
+                        "total_rows": len(employees_data),
+                        "valid_rows": len(employees_data) - len(duplicate_errors),
+                        "duplicate_rows": len(duplicate_errors),
+                        "failed_employees": duplicate_errors
+                    }
+                )
             )
 
         # All validation passed - now create employees
