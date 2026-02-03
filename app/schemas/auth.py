@@ -68,3 +68,46 @@ class TokenData(BaseModel):
     permissions: List[Dict[str, Any]] = []
     
     model_config = ConfigDict(from_attributes=True)
+
+
+class OTPRequestSchema(BaseModel):
+    """Schema for OTP request - supports email or phone number (NO tenant_id for security)"""
+    username: str = Field(..., description="Email address or phone number")
+    
+    @field_validator('username')
+    @classmethod
+    def validate_username(cls, v):
+        v = v.strip()
+        # Check if it's email format
+        if "@" in v:
+            # Basic email validation
+            if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', v):
+                raise ValueError("Invalid email format")
+        else:
+            # Check if it's phone number format (digits with optional + prefix)
+            if not re.match(r'^\+?\d{10,15}$', v):
+                raise ValueError("Invalid phone number format. Must be 10-15 digits with optional + prefix")
+        return v
+
+
+class OTPVerifySchema(BaseModel):
+    """Schema for OTP verification - returns pre-auth token + tenant list"""
+    username: str = Field(..., description="Email address or phone number")
+    otp: str = Field(..., min_length=6, max_length=6, description="6-digit OTP code")
+    
+    @field_validator('otp')
+    @classmethod
+    def validate_otp(cls, v):
+        if not v.isdigit():
+            raise ValueError("OTP must contain only digits")
+        return v
+
+
+class SelectTenantSchema(BaseModel):
+    """Schema for selecting tenant after OTP verification"""
+    tenant_id: str = Field(..., description="Selected tenant ID")
+
+
+class SwitchTenantSchema(BaseModel):
+    """Schema for switching to a different tenant"""
+    tenant_id: str = Field(..., description="Target tenant ID to switch to")

@@ -49,7 +49,8 @@ class Employee(Base):
     team = relationship("Team", back_populates="employees")
     bookings = relationship("Booking", back_populates="employee")
     weekoff_config = relationship("WeekoffConfig", back_populates="employee", uselist=False)
-    roles = relationship(
+    role = relationship(
         "Role",
         back_populates="employees",
+        uselist=False
     )

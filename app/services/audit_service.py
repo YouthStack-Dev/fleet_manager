@@ -2,7 +2,11 @@ from sqlalchemy.orm import Session
 from typing import Optional, Dict, Any
 from fastapi import Request
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from app.models.audit_log import AuditLog
+
+# India Standard Time
+IST = ZoneInfo("Asia/Kolkata")
 from app.schemas.audit_log import AuditLogCreate
 from app.crud.audit_log import audit_log
 
@@ -54,7 +58,7 @@ class AuditService:
             },
             "description": description,
             "new_values": new_values,
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": datetime.now(IST).isoformat()
         }
         
         # Add request info if available

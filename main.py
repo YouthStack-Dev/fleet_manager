@@ -43,7 +43,8 @@ from app.routes import (
     
     auth_router,  # Add the auth router
     monitoring_router,  # Add monitoring router
-    tenant_config_router  # Add tenant config router
+    tenant_config_router,  # Add tenant config router
+    push_notifications_router  # Add push notifications router
 )
 from app.routes.alert_router import router as alert_router
 from app.routes.alert_config_router import router as alert_config_router
@@ -54,6 +55,9 @@ from app.routes.iam import permission_router, policy_router, role_router
 
 from app.core.logging_config import setup_logging, get_logger
 
+# Prometheus metrics
+from prometheus_client import make_asgi_app
+from prometheus_fastapi_instrumentator import Instrumentator
 
 # Setup logging as early as possible
 print("MAIN: Setting up logging...", file=sys.stdout, flush=True)
@@ -90,6 +94,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Initialize Prometheus instrumentation BEFORE middleware
+# This ensures metrics endpoint is registered first
+instrumentator = Instrumentator(
+    should_group_status_codes=True,
+    should_ignore_untemplated=True,
+    should_respect_env_var=False,
+    should_instrument_requests_inprogress=True,
+    excluded_handlers=["^/metrics$"],
+    inprogress_name="http_requests_inprogress",
+    inprogress_labels=True,
+)
+
+# Instrument the app and expose metrics endpoint
+instrumentator.instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+
+logger.info("✅ Prometheus metrics enabled at /metrics")
+
 # Set up CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -98,6 +119,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add monitoring middleware
+from app.middleware import ErrorTrackingMiddleware, RequestTrackingMiddleware
+
+# Request tracking should be first to capture all requests
+app.add_middleware(RequestTrackingMiddleware)
+
+# Error tracking should be second to catch all errors
+app.add_middleware(ErrorTrackingMiddleware)
+
+logger.info("✅ Monitoring middleware enabled (request tracking + error tracking)")
 
 # Include routers
 app.include_router(audit_log_router, prefix="/api/v1")
@@ -130,6 +162,9 @@ app.include_router(monitoring_router, prefix="/api/v1")  # Add monitoring router
 # Include alert routers (SOS system)
 app.include_router(alert_router)  # Already has /api/v1/alerts prefix
 app.include_router(alert_config_router)  # Already has /api/v1/alert-config prefix
+
+# Include push notifications router
+app.include_router(push_notifications_router, prefix="/api/v1")
 
 # Include IAM routers
 app.include_router(permission_router, prefix="/api/v1/iam")

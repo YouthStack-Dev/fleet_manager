@@ -2,6 +2,10 @@ from typing import Any, Dict, Generic, List, Optional, TypeVar
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+# India Standard Time
+IST = ZoneInfo("Asia/Kolkata")
 
 # Generic type for data payload
 DataType = TypeVar('DataType')
@@ -13,7 +17,7 @@ class BaseResponse(BaseModel, Generic[DataType]):
     success: bool = Field(True, description="Indicates if the request was successful")
     message: str = Field("Success", description="Human readable message")
     data: Optional[DataType] = Field(None, description="Response data payload")
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Response timestamp")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(IST), description="Response timestamp in IST")
     
     model_config = ConfigDict()
 
@@ -25,7 +29,7 @@ class ErrorResponse(BaseModel):
     message: str = Field(..., description="Error message")
     error_code: Optional[str] = Field(None, description="Specific error code")
     details: Optional[Dict[str, Any]] = Field(None, description="Additional error details")
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Error timestamp")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(IST), description="Error timestamp in IST")
     
     model_config = ConfigDict()
 
@@ -48,7 +52,7 @@ class PaginatedResponse(BaseModel, Generic[DataType]):
     message: str = Field("Success", description="Human readable message")
     data: List[DataType] = Field(..., description="List of items")
     meta: PaginationMeta = Field(..., description="Pagination metadata")
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Response timestamp")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(IST), description="Response timestamp in IST")
     
     model_config = ConfigDict()
 
@@ -58,28 +62,28 @@ class SuccessResponse(BaseModel):
     """
     success: bool = Field(True, description="Indicates if the request was successful")
     message: str = Field("Operation completed successfully", description="Success message")
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Response timestamp")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(IST), description="Response timestamp in IST")
     
     model_config = ConfigDict()
 
 # Utility functions for creating consistent responses
 def create_success_response(data: Any = None, message: str = "Success") -> Dict[str, Any]:
-    """Create a success response"""
+    """Create a success response with IST timestamp"""
     return {
         "success": True,
         "message": message,
         "data": data,
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
     }
 
 def create_error_response(message: str, error_code: Optional[str] = None, details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Create an error response"""
+    """Create an error response with IST timestamp"""
     return {
         "success": False,
         "message": message,
         "error_code": error_code,
         "details": details,
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
     }
 
 def create_paginated_response(
@@ -89,7 +93,7 @@ def create_paginated_response(
     per_page: int, 
     message: str = "Success"
 ) -> Dict[str, Any]:
-    """Create a paginated response"""
+    """Create a paginated response with IST timestamp"""
     total_pages = (total + per_page - 1) // per_page
     
     return {
@@ -104,5 +108,5 @@ def create_paginated_response(
             "has_next": page < total_pages,
             "has_prev": page > 1
         },
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
     }

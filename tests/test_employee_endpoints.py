@@ -152,7 +152,7 @@ class TestCreateEmployee:
             "name": "Duplicate Code Employee",
             "email": "different@example.com",
             "phone": "+1111111111",
-            "employee_code": test_employee["employee"].employee_code,  # Duplicate code
+            "employee_code": test_employee['employee'].employee_code,  # Duplicate code
             "team_id": test_team.team_id,
             "tenant_id": test_tenant.tenant_id,
             "password": "TestPass123!"
@@ -174,7 +174,7 @@ class TestCreateEmployee:
         """Cannot create employee with duplicate email"""
         payload = {
             "name": "Duplicate Email Employee",
-            "email": test_employee["employee"].email,  # Duplicate email
+            "email": test_employee['employee'].email,  # Duplicate email
             "phone": "+1111111111",
             "employee_code": "unique_code_123",
             "team_id": test_team.team_id,
@@ -435,8 +435,9 @@ class TestListEmployees:
 
     def test_list_employees_with_name_filter(self, client: TestClient, admin_token: str, test_tenant, test_employee):
         """Filter employees by name"""
+        employee = test_employee['employee']
         response = client.get(
-            f"/api/v1/employees/?tenant_id={test_tenant.tenant_id}&name={test_employee["employee"].name[:5]}",
+            f"/api/v1/employees/?tenant_id={test_tenant.tenant_id}&name={employee.name[:5]}",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
 
@@ -445,7 +446,7 @@ class TestListEmployees:
         assert data["success"] is True
         # All returned employees should have matching name
         for employee in data["data"]["items"]:
-            assert test_employee["employee"].name[:5].lower() in employee["name"].lower()
+            assert test_employee['employee'].name[:5].lower() in employee["name"].lower()
 
     def test_list_employees_with_team_filter(
         self, client: TestClient, admin_token: str, test_tenant, test_team, test_employee
@@ -538,7 +539,7 @@ class TestGetSingleEmployee:
     def test_get_employee_as_admin(self, client: TestClient, admin_token: str, test_employee):
         """Admin can retrieve any employee"""
         response = client.get(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
 
@@ -546,29 +547,29 @@ class TestGetSingleEmployee:
         data = response.json()
         assert data["success"] is True
         assert "employee" in data["data"]
-        assert data["data"]["employee"]["employee_id"] == test_employee["employee"].employee_id
-        assert data["data"]["employee"]["name"] == test_employee["employee"].name
+        assert data["data"]["employee"]["employee_id"] == test_employee['employee'].employee_id
+        assert data["data"]["employee"]["name"] == test_employee['employee'].name
 
     def test_get_employee_as_employee_own_tenant(
         self, client: TestClient, employee_token: str, test_employee
     ):
         """Employee can retrieve employee from their own tenant"""
         response = client.get(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}",
             headers={"Authorization": f"Bearer {employee_token}"}
         )
 
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
-        assert data["data"]["employee"]["employee_id"] == test_employee["employee"].employee_id
+        assert data["data"]["employee"]["employee_id"] == test_employee['employee'].employee_id
 
     def test_get_employee_as_employee_other_tenant(
         self, client: TestClient, employee_token: str, second_employee
     ):
         """Employee cannot retrieve employee from different tenant"""
         response = client.get(
-            f"/api/v1/employees/{second_employee["employee"].employee_id}",
+            f"/api/v1/employees/{second_employee['employee'].employee_id}",
             headers={"Authorization": f"Bearer {employee_token}"}
         )
 
@@ -590,7 +591,7 @@ class TestGetSingleEmployee:
     def test_get_employee_includes_tenant_location(self, client: TestClient, admin_token: str, test_employee):
         """Response includes tenant location details"""
         response = client.get(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
 
@@ -605,7 +606,7 @@ class TestGetSingleEmployee:
     def test_get_employee_as_vendor_forbidden(self, client: TestClient, vendor_token: str, test_employee):
         """Vendors cannot retrieve employees"""
         response = client.get(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}",
             headers={"Authorization": f"Bearer {vendor_token}"}
         )
 
@@ -615,7 +616,7 @@ class TestGetSingleEmployee:
 
     def test_get_employee_without_auth(self, client: TestClient, test_employee):
         """Cannot retrieve employee without authentication"""
-        response = client.get(f"/api/v1/employees/{test_employee["employee"].employee_id}")
+        response = client.get(f"/api/v1/employees/{test_employee['employee'].employee_id}")
         assert response.status_code == 401
 
 
@@ -630,7 +631,7 @@ class TestUpdateEmployee:
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {admin_token}"}
         )
@@ -650,7 +651,7 @@ class TestUpdateEmployee:
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {employee_token}"}
         )
@@ -669,7 +670,7 @@ class TestUpdateEmployee:
         }
 
         response = client.put(
-            f"/api/v1/employees/{second_employee["employee"].employee_id}",
+            f"/api/v1/employees/{second_employee['employee'].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {employee_token}"}
         )
@@ -680,13 +681,13 @@ class TestUpdateEmployee:
 
     def test_update_employee_partial_update(self, client: TestClient, admin_token: str, test_employee):
         """Partial update works correctly"""
-        original_email = test_employee["employee"].email
+        original_email = test_employee['employee'].email
         payload = {
             "name": "Partially Updated"
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {admin_token}"}
         )
@@ -707,7 +708,7 @@ class TestUpdateEmployee:
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {admin_token}"}
         )
@@ -726,7 +727,7 @@ class TestUpdateEmployee:
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {admin_token}"}
         )
@@ -742,7 +743,7 @@ class TestUpdateEmployee:
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {admin_token}"}
         )
@@ -758,7 +759,7 @@ class TestUpdateEmployee:
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {admin_token}"}
         )
@@ -774,7 +775,7 @@ class TestUpdateEmployee:
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {admin_token}"}
         )
@@ -806,7 +807,7 @@ class TestUpdateEmployee:
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}",
             json=payload,
             headers={"Authorization": f"Bearer {vendor_token}"}
         )
@@ -822,7 +823,7 @@ class TestUpdateEmployee:
         }
 
         response = client.put(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}",
             json=payload
         )
 
@@ -834,10 +835,10 @@ class TestToggleEmployeeStatus:
 
     def test_toggle_employee_status_as_admin(self, client: TestClient, admin_token: str, test_employee):
         """Admin can toggle employee status"""
-        original_status = test_employee["employee"].is_active
+        original_status = test_employee['employee'].is_active
 
         response = client.patch(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}/toggle-status",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}/toggle-status",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
 
@@ -850,7 +851,7 @@ class TestToggleEmployeeStatus:
         """Toggle twice returns to original state"""
         # First toggle
         response1 = client.patch(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}/toggle-status",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}/toggle-status",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
         assert response1.status_code == 200
@@ -858,7 +859,7 @@ class TestToggleEmployeeStatus:
 
         # Second toggle
         response2 = client.patch(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}/toggle-status",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}/toggle-status",
             headers={"Authorization": f"Bearer {admin_token}"}
         )
         assert response2.status_code == 200
@@ -871,7 +872,7 @@ class TestToggleEmployeeStatus:
     ):
         """Employee can toggle status within their tenant"""
         response = client.patch(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}/toggle-status",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}/toggle-status",
             headers={"Authorization": f"Bearer {employee_token}"}
         )
 
@@ -884,7 +885,7 @@ class TestToggleEmployeeStatus:
     ):
         """Employee cannot toggle status in different tenant"""
         response = client.patch(
-            f"/api/v1/employees/{second_employee["employee"].employee_id}/toggle-status",
+            f"/api/v1/employees/{second_employee['employee'].employee_id}/toggle-status",
             headers={"Authorization": f"Bearer {employee_token}"}
         )
 
@@ -906,7 +907,7 @@ class TestToggleEmployeeStatus:
     def test_toggle_employee_status_as_vendor_forbidden(self, client: TestClient, vendor_token: str, test_employee):
         """Vendors cannot toggle employee status"""
         response = client.patch(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}/toggle-status",
+            f"/api/v1/employees/{test_employee['employee'].employee_id}/toggle-status",
             headers={"Authorization": f"Bearer {vendor_token}"}
         )
 
@@ -917,7 +918,7 @@ class TestToggleEmployeeStatus:
     def test_toggle_employee_status_without_auth(self, client: TestClient, test_employee):
         """Cannot toggle status without authentication"""
         response = client.patch(
-            f"/api/v1/employees/{test_employee["employee"].employee_id}/toggle-status"
+            f"/api/v1/employees/{test_employee['employee'].employee_id}/toggle-status"
         )
 
         assert response.status_code == 401
@@ -992,14 +993,14 @@ class TestEmployeeIntegration:
         """Verify employees cannot access data from different tenants"""
         # Try to get employee from different tenant
         get_response = client.get(
-            f"/api/v1/employees/{second_employee["employee"].employee_id}",
+            f"/api/v1/employees/{second_employee['employee'].employee_id}",
             headers={"Authorization": f"Bearer {employee_token}"}
         )
         assert get_response.status_code == 404
 
         # Try to update employee from different tenant
         update_response = client.put(
-            f"/api/v1/employees/{second_employee["employee"].employee_id}",
+            f"/api/v1/employees/{second_employee['employee'].employee_id}",
             json={"name": "Should Fail"},
             headers={"Authorization": f"Bearer {employee_token}"}
         )

@@ -47,6 +47,9 @@ services:
     ports:
       - "8000:8000"
     environment:
+      # Timezone - Set to IST for India
+      - TZ=Asia/Kolkata
+      
       # Database settings
       - POSTGRES_HOST=fleet_postgres
       - POSTGRES_USER=fleetadmin
@@ -96,9 +99,10 @@ services:
       - PYTHONUNBUFFERED=1
       - PYTHONIOENCODING=utf-8
       - FORCE_COLOR=1
+      - FIREBASE_KEY_PATH=/app/app/firebase/firebase_key.json
       
     volumes:
-      # - ./firebase_key.json:/app/secrets/firebase_key.json
+      - ./app/firebase/firebase_key.json:/app/app/firebase/firebase_key.json:ro
       - /var/lib/fleet/uploads:/app/uploaded_files
       - redis_data:/app/redis_data
       - .:/app

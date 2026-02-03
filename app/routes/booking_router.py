@@ -15,9 +15,10 @@ from typing import Optional, List
 from datetime import date, datetime, datetime, timedelta, timezone
 from app.database.session import get_db
 from app.models.booking import Booking
-from app.schemas.booking import BookingCreate, BookingUpdate, BookingResponse,  BookingStatusEnum
+from app.schemas.booking import BookingCreate, BookingUpdate, BookingResponse,  BookingStatusEnum ,UpdateBookingRequest
 from app.utils.pagination import paginate_query
 from common_utils.auth.permission_checker import PermissionChecker
+from common_utils.auth.token_validation import validate_bearer_token
 from common_utils import get_current_ist_time
 from app.utils import cache_manager
 from app.schemas.base import BaseResponse, PaginatedResponse
@@ -27,6 +28,52 @@ from app.core.logging_config import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/bookings", tags=["bookings"])
+
+# Custom dependency for booking update - allows either app-employee.update OR booking.update
+async def BookingUpdatePermission(user_data: dict = Depends(validate_bearer_token(use_cache=True))):
+    """
+    Custom dependency that allows either app-employee.update OR booking.update permission.
+    Checks if user has at least one of the two permissions.
+    """
+    user_permissions = user_data.get("permissions", [])
+    
+    # Extract permission strings from the permissions list
+    permission_strings = set()
+    for p in user_permissions:
+        if isinstance(p, dict):
+            module = p.get("module", "")
+            actions = p.get("action", [])
+            if module and actions:
+                if isinstance(actions, list):
+                    for action in actions:
+                        permission_strings.add(f"{module}.{action}")
+                else:
+                    permission_strings.add(f"{module}.{actions}")
+        elif isinstance(p, str):
+            permission_strings.add(p)
+    
+    # Check if user has either permission
+    has_app_employee_update = "app-employee.update" in permission_strings
+    has_booking_update = "booking.update" in permission_strings
+    
+    if not (has_app_employee_update or has_booking_update):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ResponseWrapper.error(
+                message="Insufficient permissions. Required: app-employee.update or booking.update",
+                error_code="INSUFFICIENT_PERMISSIONS",
+                details={
+                    "required_permissions": ["app-employee.update", "booking.update"],
+                    "user_permissions": sorted(permission_strings)
+                }
+            ),
+        )
+    
+    return user_data
+
+# Helper functions for cached configuration retrieval
+    
+    return user_data
 
 # Helper functions for cached configuration retrieval
 def get_tenant_cached(db: Session, tenant_id: str) -> Tenant:
@@ -44,19 +91,42 @@ def get_tenant_cached(db: Session, tenant_id: str) -> Tenant:
         cache_manager.cache_tenant(tenant_id, tenant_dict)
     return tenant
 
-def get_shift_cached(db: Session, shift_id: int, tenant_id: str) -> Shift:
+def get_shift_cached(db: Session, shift_id: int, tenant_id: str):
     """Get shift with caching (1 hour TTL)"""
     cached_data = cache_manager.get_cached_shift(shift_id, tenant_id)
     if cached_data:
-        shift = Shift(**cached_data)
-        return shift
+        # Return cached dict directly (contains string-formatted time)
+        return cached_data
     
     # Cache miss - query database
     shift = db.query(Shift).filter(Shift.shift_id == shift_id, Shift.tenant_id == tenant_id).first()
     if shift:
-        shift_dict = {c.name: getattr(shift, c.name) for c in shift.__table__.columns}
+        shift_dict = {
+            "shift_id": shift.shift_id,
+            "shift_time": shift.shift_time.strftime("%H:%M:%S") if shift.shift_time else None,
+            "log_type": shift.log_type.value if shift.log_type else None,
+            "tenant_id": shift.tenant_id
+        }
         cache_manager.cache_shift(shift_id, tenant_id, shift_dict)
-    return shift
+        return shift_dict
+    return None
+
+def get_shift_time(shift):
+    """Extract shift_time from either a dict (cached) or Shift object"""
+    if isinstance(shift, dict):
+        time_str = shift.get("shift_time")
+        if time_str:
+            from datetime import time as dt_time
+            h, m, s = map(int, time_str.split(":"))
+            return dt_time(h, m, s)
+        return None
+    return shift.shift_time if hasattr(shift, "shift_time") else None
+
+def get_shift_log_type(shift):
+    """Extract log_type from either a dict (cached) or Shift object"""
+    if isinstance(shift, dict):
+        return shift.get("log_type")
+    return shift.log_type.value if hasattr(shift, "log_type") and shift.log_type else None
 
 def get_cutoff_cached(db: Session, tenant_id: str) -> Cutoff:
     """Get cutoff config with caching (1 hour TTL)"""
@@ -232,9 +302,10 @@ def create_booking(
             else:
                 # Regular booking - use shift-type specific cutoffs
                 if cutoff:
-                    if shift.log_type == "IN":  # Login shift (home → office)
+                    shift_log_type = get_shift_log_type(shift)
+                    if shift_log_type == "IN":  # Login shift (home → office)
                         cutoff_interval = cutoff.booking_login_cutoff
-                    elif shift.log_type == "OUT":  # Logout shift (office → home)  
+                    elif shift_log_type == "OUT":  # Logout shift (office → home)  
                         cutoff_interval = cutoff.booking_logout_cutoff
                 else:
                     # No cutoff configuration for this tenant - skip cutoff validation
@@ -242,11 +313,13 @@ def create_booking(
                     logger.info(f"No cutoff configuration found for tenant {tenant_id} - skipping cutoff validation")
             
             if cutoff and shift and cutoff_interval and cutoff_interval.total_seconds() > 0:
-                shift_datetime = datetime.combine(booking_date, shift.shift_time).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
+                shift_time = get_shift_time(shift)
+                shift_datetime = datetime.combine(booking_date, shift_time).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
                 now = get_current_ist_time()
                 time_until_shift = shift_datetime - now
+                shift_log_type = get_shift_log_type(shift)
                 logger.info(
-                    f"Cutoff check: shift_type={shift.log_type}, booking_type={booking.booking_type}, now={now}, shift_datetime={shift_datetime}, "
+                    f"Cutoff check: shift_type={shift_log_type}, booking_type={booking.booking_type}, now={now}, shift_datetime={shift_datetime}, "
                     f"time_until_shift={time_until_shift}, cutoff={cutoff_interval}"
                 )
                 if time_until_shift < cutoff_interval:
@@ -255,7 +328,8 @@ def create_booking(
                     elif booking.booking_type == "medical_emergency":
                         booking_type_name = "medical emergency"
                     else:
-                        booking_type_name = "login" if shift.log_type == "IN" else "logout"
+                        shift_log_type = get_shift_log_type(shift)
+                        booking_type_name = "login" if shift_log_type == "IN" else "logout"
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=ResponseWrapper.error(
@@ -265,14 +339,15 @@ def create_booking(
                     )
 
             # 3️⃣ Prevent booking if shift time has already passed today
-            shift_datetime = datetime.combine(booking_date, shift.shift_time).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
+            shift_time = get_shift_time(shift)
+            shift_datetime = datetime.combine(booking_date, shift_time).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
             now = get_current_ist_time()
 
             if booking_date == date.today() and now >= shift_datetime:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ResponseWrapper.error(
-                        message=f"Cannot create booking for a shift that has already started or passed (Shift time: {shift.shift_time})",
+                        message=f"Cannot create booking for a shift that has already started or passed (Shift time: {shift_time})",
                         error_code="PAST_SHIFT_TIME",
                     ),
                 )
@@ -287,12 +362,23 @@ def create_booking(
                 )
                 .first()
             )
+            shift_id = shift.get("shift_id") if isinstance(shift, dict) else shift.shift_id
             logger.info(
-                    f"Existing booking check: employee_id={employee.employee_id}, booking_date={booking_date}, shift_id={shift.shift_id}"
+                    f"Existing booking check: employee_id={employee.employee_id}, booking_date={booking_date}, shift_id={shift_id}"
                 )
 
             if existing_booking:
-                if existing_booking.status != BookingStatusEnum.CANCELLED:  # Only allow if previous booking was cancelled
+                if existing_booking.status == BookingStatusEnum.CANCELLED:
+                    # Reject and ask to update the existing cancelled booking
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=ResponseWrapper.error(
+                            message=f"Employee already has a cancelled booking for this shift and date ({booking_date}). Please update the existing booking (ID: {existing_booking.booking_id}) instead of creating a new one.",
+                            error_code="CANCELLED_BOOKING_EXISTS",
+                        ),
+                    )
+                else:
+                    # Reject if booking has any other active status
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=ResponseWrapper.error(
@@ -300,11 +386,10 @@ def create_booking(
                             error_code="ALREADY_BOOKED",
                         ),
                     )
-                else:
-                    logger.info(f"Previous booking was cancelled, proceeding to create a new one for booking_date={booking_date}")
 
             # 4️⃣ Compute pickup/drop based on shift
-            if shift.log_type == "IN":  # home → office
+            shift_log_type = get_shift_log_type(shift)
+            if shift_log_type == "IN":  # home → office
                 pickup_lat, pickup_lng = employee.latitude, employee.longitude
                 pickup_addr = employee.address
                 drop_lat, drop_lng = tenant.latitude, tenant.longitude
@@ -363,7 +448,8 @@ def create_booking(
         for booking_item in created_bookings:
             booking_dict = BookingResponse.model_validate(booking_item).dict()
             if shift:
-                booking_dict["shift_time"] = shift.shift_time
+                shift_time = get_shift_time(shift)
+                booking_dict["shift_time"] = shift_time
             bookings_with_shift.append(booking_dict)
 
         return ResponseWrapper.created(
@@ -507,37 +593,54 @@ def get_bookings(
         if route_obj_dict:
             shift_ids = [r.shift_id for r in route_obj_dict.values() if r.shift_id]
             for shift_id in shift_ids:
-                shift_data = get_shift_cached(shift_id, tenant_id or effective_tenant_id)
-                if not shift_data:
-                    shift_obj = db.query(Shift).filter(Shift.shift_id == shift_id).first()
-                    if shift_obj:
-                        cache_manager.cache_shift(shift_id, tenant_id or effective_tenant_id, {
-                            "shift_id": shift_obj.shift_id,
-                            "shift_time": shift_obj.shift_time.strftime("%H:%M:%S") if shift_obj.shift_time else None,
-                            "log_type": shift_obj.log_type.value if shift_obj.log_type else None
-                        })
-                        shifts_dict[shift_id] = shift_obj
+                shift_data = get_shift_cached(db, shift_id, tenant_id or effective_tenant_id)
+                if shift_data:
+                    shifts_dict[shift_id] = shift_data
 
-        # Fetch all route bookings for passengers with eager loading
-        all_route_bookings = db.query(RouteManagementBooking).options(
-            joinedload(RouteManagementBooking.booking)
-            .joinedload(Booking.employee)
-        ).filter(RouteManagementBooking.route_id.in_(route_ids)).all() if route_ids else []
+        # Fetch all route bookings for passengers
+        # Note: RouteManagementBooking doesn't have a direct 'booking' relationship
+        logger.info(f"Fetching route bookings for {len(route_ids)} routes in get_bookings endpoint")
+        all_route_bookings = db.query(RouteManagementBooking).filter(
+            RouteManagementBooking.route_id.in_(route_ids)
+        ).all() if route_ids else []
+        
+        logger.info(f"Found {len(all_route_bookings)} route bookings")
+        
+        # Fetch all bookings associated with these route bookings
+        route_booking_ids = [rb.booking_id for rb in all_route_bookings]
+        logger.info(f"Fetching {len(route_booking_ids)} bookings for route passengers")
+        
+        passenger_bookings = db.query(Booking).options(
+            joinedload(Booking.employee)
+        ).filter(Booking.booking_id.in_(route_booking_ids)).all() if route_booking_ids else []
+        
+        # Create a mapping of booking_id to booking object
+        booking_map = {b.booking_id: b for b in passenger_bookings}
+        logger.info(f"Created booking map with {len(booking_map)} entries")
+        
+        # Create a mapping of booking_id to booking object
+        booking_map = {b.booking_id: b for b in passenger_bookings}
+        logger.info(f"Created booking map with {len(booking_map)} entries")
         
         # Build passengers per route
         route_passengers = {}
         for route_id in route_ids:
             passengers = []
             for rb in all_route_bookings:
-                if rb.route_id == route_id and rb.booking and rb.booking.employee:
-                    passengers.append({
-                        "employee_name": rb.booking.employee.name,
-                        "headcount": 1,
-                        "position": rb.order_id,
-                        "booking_status": rb.booking.status.value
-                    })
+                if rb.route_id == route_id:
+                    booking_obj = booking_map.get(rb.booking_id)
+                    if booking_obj and booking_obj.employee:
+                        passengers.append({
+                            "employee_name": booking_obj.employee.employee_name if hasattr(booking_obj.employee, 'employee_name') else booking_obj.employee.name if hasattr(booking_obj.employee, 'name') else 'Unknown',
+                            "headcount": 1,
+                            "position": rb.order_id,
+                            "booking_status": booking_obj.status.value if booking_obj.status else 'Unknown'
+                        })
+                    else:
+                        logger.warning(f"Missing booking or employee data for booking_id={rb.booking_id} in route_id={route_id}")
             passengers.sort(key=lambda x: x['position'])
             route_passengers[route_id] = passengers
+            logger.info(f"Route {route_id} has {len(passengers)} passengers")
 
         # Add shift_time and route_details to each booking
         bookings_with_shift = []
@@ -582,16 +685,11 @@ def get_bookings(
 
                 shift_details = None
                 if route.shift_id:
-                    shift_data = get_shift_cached(route.shift_id, tenant_id)
+                    shift_data = get_shift_cached(db, route.shift_id, tenant_id)
                     if shift_data:
                         shift_details = shift_data
                     elif route.shift_id in shifts_dict:
-                        shift_route = shifts_dict[route.shift_id]
-                        shift_details = {
-                        "shift_id": shift_route.shift_id,
-                        "shift_time": shift_route.shift_time.strftime("%H:%M:%S") if shift_route.shift_time else None,
-                        "log_type": shift_route.log_type.value if shift_route.log_type else None,
-                    }
+                        shift_details = shifts_dict[route.shift_id]
 
                 route_info = {
                     "route_id": route.route_id,
@@ -689,11 +787,13 @@ def get_bookings_by_employee(
             logger.info(f"Fetching employee bookings for employee_id={employee_id}, employee_code={employee_code}, date={booking_date}")
             query = query.filter(Booking.booking_date == booking_date)
         if status_filter:        
+            logger.info(f"Applying status filter: {status_filter}")
             query = query.filter(Booking.status == status_filter)
 
         # Tenant enforcement for non-admin employees
         if user_type != "admin":
             query = query.filter(Booking.tenant_id == tenant_id)
+            logger.info(f"Applied tenant filter: {tenant_id}")
         
         # Add eager loading to prevent N+1 queries
         query = query.options(
@@ -702,9 +802,11 @@ def get_bookings_by_employee(
         )
 
         total, items = paginate_query(query, skip, limit)
+        logger.info(f"Found {total} total bookings, returning {len(items)} items")
 
         # Fetch route data with eager loading for efficiency (single optimized query)
         booking_ids = [b.booking_id for b in items]
+        logger.info(f"Fetching route data for {len(booking_ids)} bookings")
         
         # Get route bookings
         route_bookings = db.query(RouteManagementBooking).options(
@@ -751,43 +853,51 @@ def get_bookings_by_employee(
         if route_obj_dict:
             shift_ids = [r.shift_id for r in route_obj_dict.values() if r.shift_id]
             for shift_id in shift_ids:
-                shift_data = get_shift_cached(shift_id, tenant_id)
-                if not shift_data:
-                    shift_obj = db.query(Shift).filter(Shift.shift_id == shift_id).first()
-                    if shift_obj:
-                        cache_manager.cache_shift(shift_id, tenant_id, {
-                            "shift_id": shift_obj.shift_id,
-                            "shift_time": shift_obj.shift_time.strftime("%H:%M:%S") if shift_obj.shift_time else None,
-                            "log_type": shift_obj.log_type.value if shift_obj.log_type else None
-                        })
-                        shifts_dict[shift_id] = shift_obj
+                shift_data = get_shift_cached(db, shift_id, tenant_id)
+                if shift_data:
+                    shifts_dict[shift_id] = shift_data
 
-        # Fetch all route bookings for passengers with eager loading
+        # Fetch all route bookings for passengers
+        # Note: RouteManagementBooking doesn't have a direct 'booking' relationship,
+        # so we need to fetch bookings separately using booking_ids
+        logger.info(f"Fetching route bookings for {len(route_ids)} routes")
+        all_route_bookings = db.query(RouteManagementBooking).filter(
+            RouteManagementBooking.route_id.in_(route_ids)
+        ).all() if route_ids else []
         
-        route_ids = list(set(rb.route_id for rb in route_bookings))
-        route_dict = {rb.booking_id: rb for rb in route_bookings}
-        route_obj_dict = {rb.route_management.route_id: rb.route_management for rb in route_bookings if rb.route_management}
-
-        # Fetch all route bookings for passengers with eager loading
-        all_route_bookings = db.query(RouteManagementBooking).options(
-            joinedload(RouteManagementBooking.booking)
-            .joinedload(Booking.employee)
-        ).filter(RouteManagementBooking.route_id.in_(route_ids)).all() if route_ids else []
+        logger.info(f"Found {len(all_route_bookings)} route bookings")
+        
+        # Fetch all bookings associated with these route bookings
+        route_booking_ids = [rb.booking_id for rb in all_route_bookings]
+        logger.info(f"Fetching {len(route_booking_ids)} bookings for route passengers")
+        
+        passenger_bookings = db.query(Booking).options(
+            joinedload(Booking.employee)
+        ).filter(Booking.booking_id.in_(route_booking_ids)).all() if route_booking_ids else []
+        
+        # Create a mapping of booking_id to booking object
+        booking_map = {b.booking_id: b for b in passenger_bookings}
+        logger.info(f"Created booking map with {len(booking_map)} entries")
         
         # Build passengers per route
         route_passengers = {}
         for route_id in route_ids:
             passengers = []
             for rb in all_route_bookings:
-                if rb.route_id == route_id and rb.booking and rb.booking.employee:
-                    passengers.append({
-                        "employee_name": rb.booking.employee.name,
-                        "headcount": 1,
-                        "position": rb.order_id,
-                        "booking_status": rb.booking.status.value
-                    })
+                if rb.route_id == route_id:
+                    booking_obj = booking_map.get(rb.booking_id)
+                    if booking_obj and booking_obj.employee:
+                        passengers.append({
+                            "employee_name": booking_obj.employee.employee_name if hasattr(booking_obj.employee, 'employee_name') else booking_obj.employee.name if hasattr(booking_obj.employee, 'name') else 'Unknown',
+                            "headcount": 1,
+                            "position": rb.order_id,
+                            "booking_status": booking_obj.status.value if booking_obj.status else 'Unknown'
+                        })
+                    else:
+                        logger.warning(f"Missing booking or employee data for booking_id={rb.booking_id} in route_id={route_id}")
             passengers.sort(key=lambda x: x['position'])
             route_passengers[route_id] = passengers
+            logger.info(f"Route {route_id} has {len(passengers)} passengers")
 
         # Add shift_time and route_details to each booking
         bookings_with_shift = []
@@ -832,16 +942,11 @@ def get_bookings_by_employee(
 
                 shift_details = None
                 if route.shift_id:
-                    shift_data = get_shift_cached(route.shift_id, tenant_id)
+                    shift_data = get_shift_cached(db, route.shift_id, tenant_id)
                     if shift_data:
                         shift_details = shift_data
                     elif route.shift_id in shifts_dict:
-                        shift_route = shifts_dict[route.shift_id]
-                        shift_details = {
-                        "shift_id": shift_route.shift_id,
-                        "shift_time": shift_route.shift_time.strftime("%H:%M:%S") if shift_route.shift_time else None,
-                        "log_type": shift_route.log_type.value if shift_route.log_type else None,
-                    }
+                        shift_details = shifts_dict[route.shift_id]
 
                 route_info = {
                     "route_id": route.route_id,
@@ -1015,6 +1120,241 @@ def get_booking_by_id(
         raise handle_http_error(e)
     except Exception as e:
         logger.exception("Unexpected error occurred while fetching booking by ID")
+        raise handle_http_error(e)
+
+@router.put("/{booking_id}", status_code=status.HTTP_200_OK)
+async def update_booking(
+    booking_id: int,
+    request: UpdateBookingRequest,
+    db: Session = Depends(get_db),
+    user_data=Depends(BookingUpdatePermission),
+):
+    """
+    Update booking - allows changing shift and re-booking cancelled bookings.
+    Only bookings with status 'Request' or 'Cancelled' can be updated.
+    - For 'Request' status: allows changing shift.
+    - For 'Cancelled' status: allows changing shift and re-booking (changes status to 'Request').
+    - Validation: Employee can have only one booking per shift per date.
+    
+    Permission logic:
+    - app-employee.update: Employee can update only their own bookings
+    - booking.update: Employee can update any booking in their tenant
+    """
+    try:
+        user_type = user_data.get("user_type")
+        tenant_id = user_data.get("tenant_id")
+        employee_id = user_data.get("user_id")
+        
+        # Only employees can use this endpoint
+        if user_type != "employee":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Only employees can update bookings through this endpoint",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # Check which permission the user has
+        user_permissions = user_data.get("permissions", [])
+        has_app_employee_update = any(
+            (isinstance(p, dict) and p.get("module") == "app-employee" and "update" in p.get("action", [])) or
+            (isinstance(p, str) and p == "app-employee.update")
+            for p in user_permissions
+        )
+        has_booking_update = any(
+            (isinstance(p, dict) and p.get("module") == "booking" and "update" in p.get("action", [])) or
+            (isinstance(p, str) and p == "booking.update")
+            for p in user_permissions
+        )
+
+        logger.info(f"[booking.update] tenant={tenant_id}, employee={employee_id}, booking={booking_id}, has_app_employee_update={has_app_employee_update}, has_booking_update={has_booking_update}")
+
+        # Fetch booking with appropriate filter based on permission
+        if has_booking_update:
+            # Can update any booking in their tenant
+            logger.info(f"[booking.update] User has booking.update - querying with filters: booking_id={booking_id}, tenant_id={tenant_id}")
+            booking = db.query(Booking).filter(
+                Booking.booking_id == booking_id,
+                Booking.tenant_id == tenant_id,
+            ).first()
+            logger.info(f"[booking.update] Query result: {'Found' if booking else 'Not Found'}")
+            
+            # Additional debug: Check if booking exists at all
+            if not booking:
+                any_booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+                if any_booking:
+                    logger.warning(f"[booking.update] Booking {booking_id} exists but in different tenant: booking.tenant_id={any_booking.tenant_id}, user.tenant_id={tenant_id}, booking.employee_id={any_booking.employee_id}")
+                else:
+                    logger.warning(f"[booking.update] Booking {booking_id} does not exist in database at all")
+        else:
+            # Can only update their own bookings (app-employee.update)
+            logger.info(f"[booking.update] User has app-employee.update only - querying with filters: booking_id={booking_id}, employee_id={employee_id}, tenant_id={tenant_id}")
+            booking = db.query(Booking).filter(
+                Booking.booking_id == booking_id,
+                Booking.employee_id == employee_id,
+                Booking.tenant_id == tenant_id,
+            ).first()
+            logger.info(f"[booking.update] Query result: {'Found' if booking else 'Not Found'}")
+            
+            # Additional debug: Check if booking exists but belongs to different employee
+            if not booking:
+                any_booking = db.query(Booking).filter(
+                    Booking.booking_id == booking_id,
+                    Booking.tenant_id == tenant_id
+                ).first()
+                if any_booking:
+                    logger.warning(f"[booking.update] Booking {booking_id} exists in tenant {tenant_id} but belongs to different employee: booking.employee_id={any_booking.employee_id}, user.employee_id={employee_id}")
+                else:
+                    logger.warning(f"[booking.update] Booking {booking_id} does not exist in tenant {tenant_id}")
+
+        if not booking:
+            logger.error(f"[booking.update] FAILED - Booking not found. booking_id={booking_id}, tenant_id={tenant_id}, employee_id={employee_id}, has_booking_update={has_booking_update}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Booking not found",
+                    error_code="BOOKING_NOT_FOUND",
+                    details={
+                        "booking_id": booking_id,
+                        "tenant_id": tenant_id,
+                        "employee_id": employee_id,
+                        "permission_type": "booking.update" if has_booking_update else "app-employee.update"
+                    }
+                ),
+            )
+
+        logger.info(f"[booking.update] Found booking: booking_id={booking.booking_id}, employee_id={booking.employee_id}, tenant_id={booking.tenant_id}, status={booking.status.value}, booking_date={booking.booking_date}, shift_id={booking.shift_id}")
+
+        if booking.status not in [BookingStatusEnum.REQUEST, BookingStatusEnum.CANCELLED]:
+            logger.warning(f"[booking.update] FAILED - Invalid status. Current status: {booking.status.value}, Allowed: [REQUEST, CANCELLED]")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Booking can only be updated if status is Request or Cancelled",
+                    error_code="INVALID_BOOKING_STATUS",
+                    details={
+                        "current_status": booking.status.value,
+                        "allowed_statuses": ["REQUEST", "CANCELLED"]
+                    }
+                ),
+            )
+
+        updated = False
+
+        if request.shift_id is not None:
+            # Validate shift exists
+            logger.info(f"[booking.update] Validating shift_id={request.shift_id}")
+            shift = db.query(Shift).filter(Shift.shift_id == request.shift_id).first()
+            if not shift:
+                logger.error(f"[booking.update] FAILED - Shift not found: shift_id={request.shift_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message="Shift not found",
+                        error_code="SHIFT_NOT_FOUND",
+                        details={"shift_id": request.shift_id}
+                    ),
+                )
+            logger.info(f"[booking.update] Shift found: shift_id={shift.shift_id}, shift_time={shift.shift_time}, log_type={shift.log_type}")
+            # Cutoff validation for the new shift
+            cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == tenant_id).first()
+            cutoff_interval = None
+            if cutoff:
+                if booking.booking_type == "adhoc":
+                    if not cutoff.allow_adhoc_booking:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=ResponseWrapper.error(
+                                "Ad-hoc booking is not enabled for this tenant",
+                                "ADHOC_BOOKING_DISABLED",
+                            ),
+                        )
+                    cutoff_interval = cutoff.adhoc_booking_cutoff
+                elif booking.booking_type == "medical_emergency":
+                    if not cutoff.allow_medical_emergency_booking:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=ResponseWrapper.error(
+                                "Medical emergency booking is not enabled for this tenant",
+                                "MEDICAL_EMERGENCY_BOOKING_DISABLED",
+                            ),
+                        )
+                    cutoff_interval = cutoff.medical_emergency_booking_cutoff
+                else:
+                    if shift.log_type == "IN":
+                        cutoff_interval = cutoff.booking_login_cutoff
+                    elif shift.log_type == "OUT":
+                        cutoff_interval = cutoff.booking_logout_cutoff
+
+            shift_datetime = datetime.combine(booking.booking_date, shift.shift_time).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
+            now = get_current_ist_time()
+            time_until_shift = shift_datetime - now
+
+            if cutoff and shift and cutoff_interval and cutoff_interval.total_seconds() > 0:
+                if time_until_shift < cutoff_interval:
+                    booking_type_name = "ad-hoc" if booking.booking_type == "adhoc" else ("medical emergency" if booking.booking_type == "medical_emergency" else ("login" if shift.log_type == "IN" else "logout"))
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=ResponseWrapper.error(
+                            f"Booking cutoff time has passed for this {booking_type_name} shift (cutoff: {cutoff_interval})",
+                            "BOOKING_CUTOFF",
+                        ),
+                    )
+
+            # Prevent updating to a shift that has already passed today
+            if booking.booking_date == date.today() and now >= shift_datetime:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message=f"Cannot update to a shift that has already started or passed (Shift time: {shift.shift_time})",
+                        error_code="PAST_SHIFT_TIME",
+                    ),
+                )
+
+            # Validate no duplicate booking for same date and shift
+            # Use the actual employee_id from the booking for validation
+            existing_booking = db.query(Booking).filter(
+                Booking.employee_id == booking.employee_id,
+                Booking.tenant_id == tenant_id,
+                Booking.booking_date == booking.booking_date,
+                Booking.shift_id == request.shift_id,
+                Booking.booking_id != booking_id,
+            ).first()
+            if existing_booking:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Employee already has a booking for this shift on the same date",
+                        error_code="DUPLICATE_BOOKING",
+                    ),
+                )
+            booking.shift_id = request.shift_id
+            updated = True
+
+        if booking.status == BookingStatusEnum.CANCELLED:
+            booking.status = BookingStatusEnum.REQUEST
+            updated = True
+
+        if updated:
+            booking.updated_at = func.now()
+            db.commit()
+            db.refresh(booking)
+
+        return ResponseWrapper.success(
+            data={
+                "booking_id": booking.booking_id,
+                "status": booking.status.value,
+                "shift_id": booking.shift_id,
+                "updated_at": booking.updated_at.isoformat() if booking.updated_at else None,
+            },
+            message="Booking updated successfully",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error updating booking")
         raise handle_http_error(e)
 
 

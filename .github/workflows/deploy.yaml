@@ -66,14 +66,14 @@ jobs:
           push: true
           tags: dheerajkumarp/fleet_service_manager:${{ env.IMAGE_TAG }}
 
-      # 5️⃣ Copy docker-compose file to VPS
-      - name: Copy docker-compose file to VPS
+      # 5️⃣ Copy docker-compose files and scripts to VPS
+      - name: Copy docker-compose files and scripts to VPS
         uses: appleboy/scp-action@v0.1.4
         with:
           host: ${{ secrets.VPS_IP }}
           username: ${{ secrets.VPS_USERNAME }}
           password: ${{ secrets.VPS_PASSWORD }}
-          source: "docker-compose_${{ env.ENV }}.yaml"
+          source: "docker-compose_${{ env.ENV }}.yaml,docker-compose.monitoring.yml,monitoring_start.sh,monitoring_stop.sh,cleanup_docker.sh,deploy_prod_cleanup.sh,monitoring/"
           target: "~/"
 
       # 6️⃣ SSH & deploy on VPS
@@ -116,6 +116,9 @@ jobs:
             MAX_FILE_SIZE_MB=10
             
             EOF
+
+            # Make scripts executable
+            chmod +x ~/*.sh 2>/dev/null || true
 
             # Backup database before deployment
             echo "Creating database backup..."

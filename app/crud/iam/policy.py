@@ -11,6 +11,8 @@ class CRUDPolicy(CRUDBase[Policy, PolicyCreate, PolicyUpdate]):
         db_obj = Policy(
             name=obj_in.name,
             description=obj_in.description,
+            tenant_id=obj_in.tenant_id,
+            is_system_policy=obj_in.is_system_policy,
             is_active=obj_in.is_active
         )
         db.add(db_obj)

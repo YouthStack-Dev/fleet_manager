@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from typing import Optional
@@ -15,6 +15,7 @@ from app.crud.vendor import vendor_crud
 from common_utils.auth.permission_checker import PermissionChecker
 from common_utils.auth.utils import hash_password
 from app.core.logging_config import get_logger
+from app.core.email_service import get_email_service, get_sms_service
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/vendor-users", tags=["vendor users"])
@@ -22,6 +23,7 @@ router = APIRouter(prefix="/vendor-users", tags=["vendor users"])
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def create_vendor_user(
     vendor_user: VendorUserCreate,
+    background_tasks: BackgroundTasks,
     request: Request,
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["vendor-user.create"], check_tenant=False))
@@ -187,6 +189,21 @@ def create_vendor_user(
         except Exception as audit_error:
             logger.error(f"Failed to create audit log for vendor user creation: {str(audit_error)}")
 
+        # 🔥 Add background email and SMS task
+        background_tasks.add_task(
+            send_vendor_user_created_notifications,
+            vendor_user_data={
+                "vendor_user_id": db_vendor_user.vendor_user_id,
+                "name": db_vendor_user.name,
+                "email": db_vendor_user.email,
+                "phone": db_vendor_user.phone,
+                "vendor_id": db_vendor_user.vendor_id,
+                "vendor_name": vendor.name if vendor else "N/A",
+                "role_name": role.name if role else "N/A",
+                "tenant_id": tenant_id,
+            },
+        )
+
         logger.info(
             f"Vendor user created successfully: vendor_user_id={db_vendor_user.vendor_user_id}, "
             f"name={db_vendor_user.name}, vendor_id={vendor_user.vendor_id}"
@@ -207,6 +224,48 @@ def create_vendor_user(
         db.rollback()
         logger.exception(f"Unexpected error while creating vendor user: {e}")
         raise handle_http_error(e)
+
+
+def send_vendor_user_created_notifications(vendor_user_data: dict):
+    """Background task to send vendor user creation email and SMS."""
+    try:
+        email_service = get_email_service()
+        sms_service = get_sms_service()
+
+        # Send Email
+        email_success = email_service.send_vendor_user_created_email(
+            user_email=vendor_user_data["email"],
+            user_name=vendor_user_data["name"],
+            details=vendor_user_data,
+        )
+
+        if email_success:
+            logger.info(f"Vendor user creation email sent: {vendor_user_data['vendor_user_id']}")
+        else:
+            logger.error(f"Vendor user creation email FAILED: {vendor_user_data['vendor_user_id']}")
+
+        # Send SMS
+        sms_message = (
+            f"Welcome to {email_service.app_name}! "
+            f"Your vendor user account has been created. "
+            f"User ID: {vendor_user_data['vendor_user_id']}. "
+            f"Vendor: {vendor_user_data['vendor_name']}. "
+            f"Check your email for login details."
+        )
+        
+        sms_success = sms_service.send_sms(
+            to_phone=vendor_user_data["phone"],
+            message=sms_message
+        )
+
+        if sms_success:
+            logger.info(f"Vendor user creation SMS sent: {vendor_user_data['vendor_user_id']}")
+        else:
+            logger.error(f"Vendor user creation SMS FAILED: {vendor_user_data['vendor_user_id']}")
+
+    except Exception as e:
+        logger.error(f"Error sending vendor user creation notifications: {str(e)}")
+
 
 @router.get("/")
 def read_vendor_users(

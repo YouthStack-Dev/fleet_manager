@@ -2,7 +2,7 @@
 # Usage: make <target>
 # Example: make migrate-create MSG="add user email"
 
-.PHONY: help migrate-init migrate-create migrate-upgrade migrate-downgrade migrate-current migrate-history migrate-test validate clean
+.PHONY: help migrate-init migrate-create migrate-upgrade migrate-downgrade migrate-current migrate-history migrate-test validate clean docker-cleanup docker-cleanup-auto build deploy-prod
 
 # Default Python interpreter
 PYTHON := python
@@ -10,9 +10,9 @@ PIP := pip
 
 # Help target
 help:
-	@echo "Fleet Manager Migration Makefile"
+	@echo "Fleet Manager Makefile"
 	@echo ""
-	@echo "Available targets:"
+	@echo "📦 Database Migration Commands:"
 	@echo "  make migrate-init                 - Initialize database (upgrade to head)"
 	@echo "  make migrate-create MSG='...'     - Create new migration"
 	@echo "  make migrate-upgrade              - Upgrade to latest version"
@@ -22,13 +22,29 @@ help:
 	@echo "  make migrate-test                 - Run migration tests"
 	@echo "  make validate                     - Validate migration setup"
 	@echo "  make check                        - Run pre-commit checks"
+	@echo ""
+	@echo "🐳 Docker & Cleanup Commands:"
+	@echo "  make docker-cleanup               - Interactive cleanup of old Docker images"
+	@echo "  make docker-cleanup-auto          - Automatic cleanup of images >72h old"
+	@echo "  make docker-df                    - Show Docker disk usage"
+	@echo "  make build                        - Build fresh images with auto cleanup"
+	@echo "  make deploy-prod                  - Deploy to production with cleanup"
+	@echo ""
+	@echo "📊 Monitoring Commands (FREE):"
+	@echo "  make monitoring-start             - Start monitoring in production"
+	@echo "  make monitoring-stop              - Stop monitoring in production"
+	@echo ""
+	@echo "🛠️  Utility Commands:"
 	@echo "  make install                      - Install dependencies"
 	@echo "  make clean                        - Clean Python cache files"
+	@echo "  make db-backup                    - Backup database"
+	@echo "  make pre-deploy                   - Run pre-deployment checks"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make migrate-create MSG='add user email field'"
 	@echo "  make migrate-upgrade"
-	@echo "  make validate"
+	@echo "  make docker-cleanup"
+	@echo "  make deploy-prod"
 
 # Install dependencies
 install:
@@ -150,3 +166,72 @@ stats:
 	@echo ""
 	@echo "Database Tables:"
 	@psql -U fleetadmin -h localhost -d fleet_db -c "\dt" 2>/dev/null || echo "Database not accessible"
+
+# ============================================
+# 🐳 Docker Cleanup & Management Commands
+# ============================================
+
+# Show Docker disk usage
+docker-df:
+	@echo "Docker System Disk Usage:"
+	docker system df
+	@echo ""
+	@echo "Largest images:"
+	docker images --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}" | sort -k3 -h -r | head -15
+
+# Interactive Docker cleanup
+docker-cleanup:
+	@echo "Running interactive Docker cleanup..."
+	@chmod +x ./cleanup_docker.sh
+	@./cleanup_docker.sh
+
+# Automatic Docker cleanup (scheduled)
+docker-cleanup-auto:
+	@echo "Running automatic Docker cleanup..."
+	@chmod +x ./cleanup_docker_auto.sh
+	@./cleanup_docker_auto.sh
+
+# Build with automatic cleanup
+build:
+	@chmod +x ./build.sh
+	@./build.sh
+
+# Deploy to production with cleanup
+deploy-prod:
+	@chmod +x ./deploy_prod_cleanup.sh
+	@./deploy_prod_cleanup.sh
+
+# Remove dangling images only
+docker-prune:
+	@echo "Removing dangling images and volumes..."
+	docker image prune -f
+	docker volume prune -f
+	@echo "✅ Cleanup complete"
+
+# Remove all unused images
+docker-prune-all:
+	@echo "Removing all unused images..."
+	docker image prune -a -f
+	docker volume prune -f
+	@echo "✅ Cleanup complete"
+
+# Remove images older than 72 hours
+docker-prune-old:
+	@echo "Removing images older than 72 hours..."
+	docker image prune -a -f --filter "until=72h"
+	@echo "✅ Cleanup complete"
+
+# ============================================
+# 📊 Monitoring Commands (FREE)
+# ============================================
+
+# Start monitoring in production
+monitoring-start:
+	@chmod +x ./monitoring_start.sh
+	@./monitoring_start.sh
+
+# Stop monitoring in production
+monitoring-stop:
+	@chmod +x ./monitoring_stop.sh
+	@./monitoring_stop.sh
+

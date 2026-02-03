@@ -1,0 +1,45 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # Scrape Docker container logs for Fleet API
+  - job_name: fleet_manager_app
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      # Only collect logs from fleet_api container
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(fleet_api).*'
+        action: keep
+      - source_labels: ['__meta_docker_container_name']
+        target_label: 'container'
+      - source_labels: ['__meta_docker_container_log_stream']
+        target_label: 'stream'
+    pipeline_stages:
+      - docker: {}
+
+  # Scrape application logs from local_storage (if any file-based logs exist)
+  - job_name: fleet_manager_files
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: fleet_manager_files
+          __path__: /app/logs/*.log
+
+  # Scrape system logs
+  - job_name: system
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: varlogs
+          __path__: /var/log/*log

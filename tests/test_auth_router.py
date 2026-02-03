@@ -495,7 +495,7 @@ class TestTokenIntrospection:
             }
         )
         
-        assert response.status_code == 403  # Missing authorization header
+        assert response.status_code == 401  # Missing authorization header
 
 
 # ==========================================
@@ -633,7 +633,7 @@ class TestGetCurrentUser:
         """Cannot get profile without token"""
         response = client.get("/api/v1/auth/me")
         
-        assert response.status_code == 403
+        assert response.status_code == 401
 
     def test_get_me_invalid_token(self, client: TestClient):
         """Cannot get profile with invalid token"""
