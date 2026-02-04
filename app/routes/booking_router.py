@@ -74,7 +74,7 @@ async def BookingUpdatePermission(user_data: dict = Depends(validate_bearer_toke
 # Helper functions for cached configuration retrieval (using DRY helpers)
 
 def get_shift_time(shift):
-    """Extract shift_time from shift dict (cached format)"""
+    """Extract shift_time from shift (handles both cached and DB objects)"""
     if isinstance(shift, dict):
         time_str = shift.get("shift_time")
         if time_str:
@@ -82,13 +82,28 @@ def get_shift_time(shift):
             h, m, s = map(int, time_str.split(":"))
             return dt_time(h, m, s)
         return None
-    return shift.shift_time if hasattr(shift, "shift_time") else None
+    if hasattr(shift, "shift_time"):
+        shift_time = shift.shift_time
+        # If it's already a string (from cache), parse it
+        if isinstance(shift_time, str):
+            from datetime import time as dt_time
+            h, m, s = map(int, shift_time.split(":"))
+            return dt_time(h, m, s)
+        # If it's a time object (from DB), return as-is
+        return shift_time
+    return None
 
 def get_shift_log_type(shift):
-    """Extract log_type from shift dict (cached format)"""
+    """Extract log_type from shift (handles both cached and DB objects)"""
     if isinstance(shift, dict):
         return shift.get("log_type")
-    return shift.log_type.value if hasattr(shift, "log_type") and shift.log_type else None
+    if hasattr(shift, "log_type") and shift.log_type:
+        # If it's already a string (from cache), return as-is
+        if isinstance(shift.log_type, str):
+            return shift.log_type
+        # If it's an enum (from DB), get the value
+        return shift.log_type.value if hasattr(shift.log_type, 'value') else str(shift.log_type)
+    return None
 
 def booking_validate_future_dates(dates: list[date], context: str = "dates"):
     today = date.today()
