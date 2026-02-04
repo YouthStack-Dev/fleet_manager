@@ -267,6 +267,19 @@ def invalidate_weekoff(employee_id: int):
     """Invalidate weekoff cache when configuration changes"""
     return _invalidate_entity("weekoff", employee_id)
 
+# Team caching
+def cache_team(team_id: int, tenant_id: str, team_data: dict, ttl: int = 3600):
+    """Cache team data for 1 hour (rarely changes)"""
+    return _cache_entity("team", team_data, ttl, tenant_id, team_id)
+
+def get_cached_team(team_id: int, tenant_id: str) -> Optional[dict]:
+    """Get cached team data"""
+    return _get_cached_entity("team", tenant_id, team_id)
+
+def invalidate_team(team_id: int, tenant_id: str):
+    """Invalidate team cache when data changes"""
+    return _invalidate_entity("team", tenant_id, team_id)
+
 # ============================================================
 # DRY Helper Functions with Detailed Logging
 # ============================================================
@@ -890,6 +903,121 @@ def deserialize_weekoff_from_cache(cached_dict: dict):
     except Exception as e:
         logger.error(f"❌ Failed to deserialize weekoff from cache: {str(e)}")
         raise
+
+def serialize_team_for_cache(team_obj) -> dict:
+    """
+    Convert Team object to cacheable dictionary.
+    Handles datetime serialization for JSON compatibility.
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+
+    try:
+        # Automatically get all columns - works with new columns!
+        team_dict = {c.name: getattr(team_obj, c.name) for c in team_obj.__table__.columns}
+
+        # Only convert special types (datetime → ISO string)
+        datetime_fields = ['created_at', 'updated_at']
+        for field in datetime_fields:
+            if team_dict.get(field) and team_dict[field] is not None:
+                team_dict[field] = team_dict[field].isoformat()
+
+        logger.debug(f"✅ Serialized team {team_dict.get('team_id', 'unknown')} for cache")
+        return team_dict
+    except Exception as e:
+        logger.error(f"❌ Failed to serialize team for cache: {str(e)}")
+        raise
+
+def deserialize_team_from_cache(cached_dict: dict):
+    """
+    Convert cached dictionary back to Team object.
+    Handles ISO string back to datetime.
+    """
+    from app.models.team import Team
+    from datetime import datetime
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+
+    try:
+        team_id = cached_dict.get('team_id', 'unknown')
+
+        # Convert ISO string back to datetime
+        datetime_fields = ['created_at', 'updated_at']
+        for field in datetime_fields:
+            if cached_dict.get(field) and isinstance(cached_dict[field], str):
+                cached_dict[field] = datetime.fromisoformat(cached_dict[field])
+
+        logger.debug(f"✅ Deserialized team {team_id} from cache")
+        return Team(**cached_dict)
+    except Exception as e:
+        logger.error(f"❌ Failed to deserialize team from cache: {str(e)}")
+        raise
+
+def get_team_with_cache(db, tenant_id: str, team_id: int):
+    """
+    Get team with automatic caching.
+    Tries cache first, falls back to DB, and auto-caches on miss.
+    
+    Returns: Team object or None
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        logger.info(f"🔍 [CACHE CHECK] team for tenant_id={tenant_id}, team_id={team_id}")
+        cached_team = get_cached_team(team_id, tenant_id)
+        
+        if cached_team:
+            logger.info(f"✅ [CACHE HIT] team found in Redis | tenant_id={tenant_id}, team_id={team_id}")
+            try:
+                team = deserialize_team_from_cache(cached_team)
+                logger.info(f"✅ [CACHE HIT COMPLETE] Successfully deserialized | tenant_id={tenant_id}, team_id={team_id}")
+                return team
+            except Exception as deser_error:
+                logger.error(f"❌ [CACHE HIT ERROR] Deserialization failed: {str(deser_error)} | tenant_id={tenant_id}, team_id={team_id}")
+                raise
+        
+        logger.info(f"⚠️ [CACHE MISS] team not in Redis | tenant_id={tenant_id}, team_id={team_id}")
+        logger.info(f"📊 [CACHE MISS - STEP 1] Querying database... | tenant_id={tenant_id}, team_id={team_id}")
+        from app.models.team import Team
+        team = db.query(Team).filter(Team.team_id == team_id, Team.tenant_id == tenant_id).first()
+        
+        if not team:
+            logger.warning(f"⚠️ [CACHE MISS - NO DATA] team not found in DB | tenant_id={tenant_id}, team_id={team_id}")
+            return None
+        
+        logger.info(f"✅ [CACHE MISS - STEP 2] DB query successful | tenant_id={tenant_id}, team_id={team_id}")
+        logger.info(f"💾 [CACHE MISS - STEP 3] Serializing for cache... | tenant_id={tenant_id}, team_id={team_id}")
+        try:
+            team_dict = serialize_team_for_cache(team)
+            logger.info(f"💾 [CACHE MISS - STEP 4] Writing to Redis... | tenant_id={tenant_id}, team_id={team_id}")
+            cache_team(team_id, tenant_id, team_dict)
+            logger.info(f"✅ [CACHE MISS COMPLETE] Successfully cached to Redis | tenant_id={tenant_id}, team_id={team_id}")
+        except Exception as cache_error:
+            logger.error(f"❌ [CACHE MISS - CACHE FAILED] Could not write to Redis: {str(cache_error)} | tenant_id={tenant_id}, team_id={team_id}")
+        
+        return team
+        
+    except Exception as e:
+        logger.error(f"❌ [CACHE ERROR] Exception during cache lookup: {str(e)} | tenant_id={tenant_id}, team_id={team_id}")
+        logger.info(f"🔄 [FALLBACK - STEP 1] Querying database directly... | tenant_id={tenant_id}, team_id={team_id}")
+        from app.models.team import Team
+        team = db.query(Team).filter(Team.team_id == team_id, Team.tenant_id == tenant_id).first()
+        
+        if not team:
+            logger.warning(f"⚠️ [FALLBACK - NO DATA] team not found in DB | tenant_id={tenant_id}, team_id={team_id}")
+            return None
+        
+        logger.info(f"✅ [FALLBACK - STEP 2] DB query successful | tenant_id={tenant_id}, team_id={team_id}")
+        logger.info(f"🔄 [FALLBACK - STEP 3] Attempting to cache for recovery... | tenant_id={tenant_id}, team_id={team_id}")
+        try:
+            team_dict = serialize_team_for_cache(team)
+            cache_team(team_id, tenant_id, team_dict)
+            logger.info(f"✅ [FALLBACK COMPLETE] Successfully cached after recovery | tenant_id={tenant_id}, team_id={team_id}")
+        except Exception as cache_retry_error:
+            logger.warning(f"⚠️ [FALLBACK - CACHE FAILED] Could not cache after recovery: {str(cache_retry_error)} | tenant_id={tenant_id}, team_id={team_id}")
+        
+        return team
 
 def get_tenant_config_with_cache(db, tenant_id: str):
     """

@@ -80,8 +80,10 @@ def get_weekoffs_by_team(
         tenant_id = user_data.get("tenant_id")
         user_type = user_data.get("user_type")
 
-        # Check team exists
-        team = team_crud.get_by_id(db, team_id=team_id)
+        # Check team exists using cache
+        from app.utils import cache_manager
+        # Try cache with tenant_id if available, otherwise fall back to crud
+        team = cache_manager.get_team_with_cache(db, tenant_id, team_id) if tenant_id else team_crud.get_by_id(db, team_id=team_id)
         if not team:
             logger.warning(f"Team {team_id} not found")
             raise HTTPException(
@@ -422,8 +424,9 @@ def update_weekoff_by_team(
                 ),
             )
 
-        # ✅ Ensure team exists
-        team = db.query(Team).filter(Team.team_id == team_id).first()
+        # ✅ Ensure team exists using cache
+        from app.utils import cache_manager
+        team = cache_manager.get_team_with_cache(db, tenant_id, team_id) if tenant_id else db.query(Team).filter(Team.team_id == team_id).first()
         if not team:
             logger.warning(f"Team {team_id} not found")
             raise HTTPException(
