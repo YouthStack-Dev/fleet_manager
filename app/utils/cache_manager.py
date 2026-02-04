@@ -266,3 +266,859 @@ def get_cached_weekoff(employee_id: int) -> Optional[dict]:
 def invalidate_weekoff(employee_id: int):
     """Invalidate weekoff cache when configuration changes"""
     return _invalidate_entity("weekoff", employee_id)
+
+# Team caching
+def cache_team(team_id: int, tenant_id: str, team_data: dict, ttl: int = 3600):
+    """Cache team data for 1 hour (rarely changes)"""
+    return _cache_entity("team", team_data, ttl, tenant_id, team_id)
+
+def get_cached_team(team_id: int, tenant_id: str) -> Optional[dict]:
+    """Get cached team data"""
+    return _get_cached_entity("team", tenant_id, team_id)
+
+def invalidate_team(team_id: int, tenant_id: str):
+    """Invalidate team cache when data changes"""
+    return _invalidate_entity("team", tenant_id, team_id)
+
+# ============================================================
+# DRY Helper Functions with Detailed Logging
+# ============================================================
+
+def get_tenant_with_cache(db, tenant_id: str):
+    """
+    Get tenant with automatic caching.
+    Tries cache first, falls back to DB, and auto-caches on miss.
+    
+    Returns: Tenant object or None
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        logger.info(f"🔍 [CACHE CHECK] tenant for tenant_id={tenant_id}")
+        cached_tenant = get_cached_tenant(tenant_id)
+        
+        if cached_tenant:
+            logger.info(f"✅ [CACHE HIT] tenant found in Redis | tenant_id={tenant_id}")
+            try:
+                tenant = deserialize_tenant_from_cache(cached_tenant)
+                logger.info(f"✅ [CACHE HIT COMPLETE] Successfully deserialized | tenant_id={tenant_id}")
+                return tenant
+            except Exception as deser_error:
+                logger.error(f"❌ [CACHE HIT ERROR] Deserialization failed: {str(deser_error)} | tenant_id={tenant_id}")
+                raise
+        
+        logger.info(f"⚠️ [CACHE MISS] tenant not in Redis | tenant_id={tenant_id}")
+        logger.info(f"📊 [CACHE MISS - STEP 1] Querying database... | tenant_id={tenant_id}")
+        from app.models.tenant import Tenant
+        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        
+        if not tenant:
+            logger.warning(f"⚠️ [CACHE MISS - NO DATA] tenant not found in DB | tenant_id={tenant_id}")
+            return None
+        
+        logger.info(f"✅ [CACHE MISS - STEP 2] DB query successful | tenant_id={tenant_id}")
+        logger.info(f"💾 [CACHE MISS - STEP 3] Serializing for cache... | tenant_id={tenant_id}")
+        try:
+            tenant_dict = serialize_tenant_for_cache(tenant)
+            logger.info(f"💾 [CACHE MISS - STEP 4] Writing to Redis... | tenant_id={tenant_id}")
+            cache_tenant(tenant_id, tenant_dict)
+            logger.info(f"✅ [CACHE MISS COMPLETE] Successfully cached to Redis | tenant_id={tenant_id}")
+        except Exception as cache_error:
+            logger.error(f"❌ [CACHE MISS - CACHE FAILED] Could not write to Redis: {str(cache_error)} | tenant_id={tenant_id}")
+        
+        return tenant
+        
+    except Exception as e:
+        logger.error(f"❌ [CACHE ERROR] Exception during cache lookup: {str(e)} | tenant_id={tenant_id}")
+        logger.info(f"🔄 [FALLBACK - STEP 1] Querying database directly... | tenant_id={tenant_id}")
+        from app.models.tenant import Tenant
+        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        
+        if not tenant:
+            logger.warning(f"⚠️ [FALLBACK - NO DATA] tenant not found in DB | tenant_id={tenant_id}")
+            return None
+        
+        logger.info(f"✅ [FALLBACK - STEP 2] DB query successful | tenant_id={tenant_id}")
+        logger.info(f"🔄 [FALLBACK - STEP 3] Attempting to cache for recovery... | tenant_id={tenant_id}")
+        try:
+            tenant_dict = {c.name: getattr(tenant, c.name) for c in tenant.__table__.columns}
+            cache_tenant(tenant_id, tenant_dict)
+            logger.info(f"✅ [FALLBACK COMPLETE] Successfully cached after recovery | tenant_id={tenant_id}")
+        except Exception as cache_retry_error:
+            logger.warning(f"⚠️ [FALLBACK - CACHE FAILED] Could not cache after recovery: {str(cache_retry_error)} | tenant_id={tenant_id}")
+        
+        return tenant
+
+def get_shift_with_cache(db, tenant_id: str, shift_id: int):
+    """
+    Get shift with automatic caching.
+    Returns dict with serialized time values for consistency.
+    
+    Returns: dict or None
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        logger.info(f"🔍 [CACHE CHECK] shift for tenant_id={tenant_id}, shift_id={shift_id}")
+        cached_shift = get_cached_shift(shift_id, tenant_id)
+        
+        if cached_shift:
+            logger.info(f"✅ [CACHE HIT] shift found in Redis | tenant_id={tenant_id}, shift_id={shift_id}")
+            try:
+                shift = deserialize_shift_from_cache(cached_shift)
+                logger.info(f"✅ [CACHE HIT COMPLETE] Successfully deserialized | tenant_id={tenant_id}, shift_id={shift_id}")
+                return shift
+            except Exception as deser_error:
+                logger.error(f"❌ [CACHE HIT ERROR] Deserialization failed: {str(deser_error)} | tenant_id={tenant_id}, shift_id={shift_id}")
+                raise
+        
+        logger.info(f"⚠️ [CACHE MISS] shift not in Redis | tenant_id={tenant_id}, shift_id={shift_id}")
+        logger.info(f"📊 [CACHE MISS - STEP 1] Querying database... | tenant_id={tenant_id}, shift_id={shift_id}")
+        from app.models.shift import Shift
+        shift = db.query(Shift).filter(Shift.shift_id == shift_id, Shift.tenant_id == tenant_id).first()
+        
+        if not shift:
+            logger.warning(f"⚠️ [CACHE MISS - NO DATA] shift not found in DB | tenant_id={tenant_id}, shift_id={shift_id}")
+            return None
+        
+        logger.info(f"✅ [CACHE MISS - STEP 2] DB query successful | tenant_id={tenant_id}, shift_id={shift_id}")
+        logger.info(f"💾 [CACHE MISS - STEP 3] Serializing for cache... | tenant_id={tenant_id}, shift_id={shift_id}")
+        try:
+            shift_dict = serialize_shift_for_cache(shift)
+            logger.info(f"💾 [CACHE MISS - STEP 4] Writing to Redis... | tenant_id={tenant_id}, shift_id={shift_id}")
+            cache_shift(shift_id, tenant_id, shift_dict)
+            logger.info(f"✅ [CACHE MISS COMPLETE] Successfully cached to Redis | tenant_id={tenant_id}, shift_id={shift_id}")
+        except Exception as cache_error:
+            logger.error(f"❌ [CACHE MISS - CACHE FAILED] Could not write to Redis: {str(cache_error)} | tenant_id={tenant_id}, shift_id={shift_id}")
+        
+        return shift
+        
+    except Exception as e:
+        logger.error(f"❌ [CACHE ERROR] Exception during cache lookup: {str(e)} | tenant_id={tenant_id}, shift_id={shift_id}")
+        logger.info(f"🔄 [FALLBACK - STEP 1] Querying database directly... | tenant_id={tenant_id}, shift_id={shift_id}")
+        from app.models.shift import Shift
+        shift = db.query(Shift).filter(Shift.shift_id == shift_id, Shift.tenant_id == tenant_id).first()
+        
+        if not shift:
+            logger.warning(f"⚠️ [FALLBACK - NO DATA] shift not found in DB | tenant_id={tenant_id}, shift_id={shift_id}")
+            return None
+        
+        logger.info(f"✅ [FALLBACK - STEP 2] DB query successful | tenant_id={tenant_id}, shift_id={shift_id}")
+        logger.info(f"🔄 [FALLBACK - STEP 3] Attempting to cache for recovery... | tenant_id={tenant_id}, shift_id={shift_id}")
+        try:
+            shift_dict = {
+                "shift_id": shift.shift_id,
+                "shift_time": shift.shift_time.strftime("%H:%M:%S") if shift.shift_time else None,
+                "log_type": shift.log_type.value if shift.log_type else None,
+                "tenant_id": shift.tenant_id
+            }
+            cache_shift(shift_id, tenant_id, shift_dict)
+            logger.info(f"✅ [FALLBACK COMPLETE] Successfully cached after recovery | tenant_id={tenant_id}, shift_id={shift_id}")
+            return shift_dict
+        except Exception as cache_retry_error:
+            logger.warning(f"⚠️ [FALLBACK - CACHE FAILED] Could not cache after recovery: {str(cache_retry_error)} | tenant_id={tenant_id}, shift_id={shift_id}")
+            return None
+
+def get_cutoff_with_cache(db, tenant_id: str):
+    """
+    Get cutoff with automatic caching.
+    Tries cache first, falls back to DB, and auto-caches on miss.
+    
+    Returns: Cutoff object or None
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        logger.info(f"🔍 [CACHE CHECK] cutoff for tenant_id={tenant_id}")
+        cached_cutoff = get_cached_cutoff(tenant_id)
+        
+        if cached_cutoff:
+            logger.info(f"✅ [CACHE HIT] cutoff found in Redis | tenant_id={tenant_id}")
+            try:
+                cutoff = deserialize_cutoff_from_cache(cached_cutoff)
+                logger.info(f"✅ [CACHE HIT COMPLETE] Successfully deserialized | tenant_id={tenant_id}")
+                return cutoff
+            except Exception as deser_error:
+                logger.error(f"❌ [CACHE HIT ERROR] Deserialization failed: {str(deser_error)} | tenant_id={tenant_id}")
+                raise
+        
+        logger.info(f"⚠️ [CACHE MISS] cutoff not in Redis | tenant_id={tenant_id}")
+        logger.info(f"📊 [CACHE MISS - STEP 1] Querying database... | tenant_id={tenant_id}")
+        from app.models.cutoff import Cutoff
+        cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == tenant_id).first()
+        
+        if not cutoff:
+            logger.warning(f"⚠️ [CACHE MISS - NO DATA] cutoff not found in DB | tenant_id={tenant_id}")
+            return None
+        
+        logger.info(f"✅ [CACHE MISS - STEP 2] DB query successful | tenant_id={tenant_id}")
+        logger.info(f"💾 [CACHE MISS - STEP 3] Serializing for cache... | tenant_id={tenant_id}")
+        try:
+            cutoff_dict = serialize_cutoff_for_cache(cutoff)
+            logger.info(f"💾 [CACHE MISS - STEP 4] Writing to Redis... | tenant_id={tenant_id}")
+            cache_cutoff(tenant_id, cutoff_dict)
+            logger.info(f"✅ [CACHE MISS COMPLETE] Successfully cached to Redis | tenant_id={tenant_id}")
+        except Exception as cache_error:
+            logger.error(f"❌ [CACHE MISS - CACHE FAILED] Could not write to Redis: {str(cache_error)} | tenant_id={tenant_id}")
+        
+        return cutoff
+        
+    except Exception as e:
+        logger.error(f"❌ [CACHE ERROR] Exception during cache lookup: {str(e)} | tenant_id={tenant_id}")
+        logger.info(f"🔄 [FALLBACK - STEP 1] Querying database directly... | tenant_id={tenant_id}")
+        from app.models.cutoff import Cutoff
+        cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == tenant_id).first()
+        
+        if not cutoff:
+            logger.warning(f"⚠️ [FALLBACK - NO DATA] cutoff not found in DB | tenant_id={tenant_id}")
+            return None
+        
+        logger.info(f"✅ [FALLBACK - STEP 2] DB query successful | tenant_id={tenant_id}")
+        logger.info(f"🔄 [FALLBACK - STEP 3] Attempting to cache for recovery... | tenant_id={tenant_id}")
+        try:
+            cutoff_dict = serialize_cutoff_for_cache(cutoff)
+            cache_cutoff(tenant_id, cutoff_dict)
+            logger.info(f"✅ [FALLBACK COMPLETE] Successfully cached after recovery | tenant_id={tenant_id}")
+        except Exception as cache_retry_error:
+            logger.warning(f"⚠️ [FALLBACK - CACHE FAILED] Could not cache after recovery: {str(cache_retry_error)} | tenant_id={tenant_id}")
+        
+        return cutoff
+
+def get_weekoff_with_cache(db, employee_id: int):
+    """
+    Get weekoff with automatic caching.
+    Tries cache first, falls back to DB, and auto-caches on miss.
+    
+    Returns: WeekoffConfig object or None
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        logger.info(f"🔍 [CACHE CHECK] weekoff for employee_id={employee_id}")
+        cached_weekoff = get_cached_weekoff(employee_id)
+        
+        if cached_weekoff:
+            logger.info(f"✅ [CACHE HIT] weekoff found in Redis | employee_id={employee_id}")
+            try:
+                weekoff = deserialize_weekoff_from_cache(cached_weekoff)
+                logger.info(f"✅ [CACHE HIT COMPLETE] Successfully deserialized | employee_id={employee_id}")
+                return weekoff
+            except Exception as deser_error:
+                logger.error(f"❌ [CACHE HIT ERROR] Deserialization failed: {str(deser_error)} | employee_id={employee_id}")
+                raise
+        
+        logger.info(f"⚠️ [CACHE MISS] weekoff not in Redis | employee_id={employee_id}")
+        logger.info(f"📊 [CACHE MISS - STEP 1] Querying database... | employee_id={employee_id}")
+        from app.models.weekoff_config import WeekoffConfig
+        weekoff = db.query(WeekoffConfig).filter(WeekoffConfig.employee_id == employee_id).first()
+        
+        if not weekoff:
+            logger.warning(f"⚠️ [CACHE MISS - NO DATA] weekoff not found in DB | employee_id={employee_id}")
+            return None
+        
+        logger.info(f"✅ [CACHE MISS - STEP 2] DB query successful | employee_id={employee_id}")
+        logger.info(f"💾 [CACHE MISS - STEP 3] Serializing for cache... | employee_id={employee_id}")
+        try:
+            weekoff_dict = serialize_weekoff_for_cache(weekoff)
+            logger.info(f"💾 [CACHE MISS - STEP 4] Writing to Redis... | employee_id={employee_id}")
+            cache_weekoff(employee_id, weekoff_dict)
+            logger.info(f"✅ [CACHE MISS COMPLETE] Successfully cached to Redis | employee_id={employee_id}")
+        except Exception as cache_error:
+            logger.error(f"❌ [CACHE MISS - CACHE FAILED] Could not write to Redis: {str(cache_error)} | employee_id={employee_id}")
+        
+        return weekoff
+        
+    except Exception as e:
+        logger.error(f"❌ [CACHE ERROR] Exception during cache lookup: {str(e)} | employee_id={employee_id}")
+        logger.info(f"🔄 [FALLBACK - STEP 1] Querying database directly... | employee_id={employee_id}")
+        from app.models.weekoff_config import WeekoffConfig
+        weekoff = db.query(WeekoffConfig).filter(WeekoffConfig.employee_id == employee_id).first()
+        
+        if not weekoff:
+            logger.warning(f"⚠️ [FALLBACK - NO DATA] weekoff not found in DB | employee_id={employee_id}")
+            return None
+        
+        logger.info(f"✅ [FALLBACK - STEP 2] DB query successful | employee_id={employee_id}")
+        logger.info(f"🔄 [FALLBACK - STEP 3] Attempting to cache for recovery... | employee_id={employee_id}")
+        try:
+            weekoff_dict = serialize_weekoff_for_cache(weekoff)
+            cache_weekoff(employee_id, weekoff_dict)
+            logger.info(f"✅ [FALLBACK COMPLETE] Successfully cached after recovery | employee_id={employee_id}")
+        except Exception as cache_retry_error:
+            logger.warning(f"⚠️ [FALLBACK - CACHE FAILED] Could not cache after recovery: {str(cache_retry_error)} | employee_id={employee_id}")
+        
+        return weekoff
+
+# ============================================================
+# TenantConfig Helper Functions (DRY)
+# ============================================================
+
+def serialize_tenant_config_for_cache(config_obj) -> dict:
+    """
+    Convert TenantConfig object to cache-ready dictionary.
+    Handles time and datetime serialization for JSON compatibility.
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        config_dict = {column.name: getattr(config_obj, column.name) for column in config_obj.__table__.columns}
+        tenant_id = config_dict.get('tenant_id', 'unknown')
+        
+        # Convert time objects to strings
+        if config_dict.get('escort_required_start_time'):
+            config_dict['escort_required_start_time'] = str(config_dict['escort_required_start_time'])
+        if config_dict.get('escort_required_end_time'):
+            config_dict['escort_required_end_time'] = str(config_dict['escort_required_end_time'])
+        
+        # Convert datetime objects to ISO format strings
+        if config_dict.get('created_at'):
+            config_dict['created_at'] = config_dict['created_at'].isoformat()
+        if config_dict.get('updated_at'):
+            config_dict['updated_at'] = config_dict['updated_at'].isoformat()
+        
+        logger.debug(f"✅ Serialized tenant_config for tenant {tenant_id}")
+        return config_dict
+    except Exception as e:
+        logger.error(f"❌ Failed to serialize tenant_config: {str(e)}")
+        raise
+
+def deserialize_tenant_config_from_cache(cached_dict: dict):
+    """
+    Convert cached dictionary back to TenantConfig object.
+    Handles time string parsing back to time objects.
+    """
+    from app.models.tenant_config import TenantConfig
+    from datetime import time as datetime_time
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        tenant_id = cached_dict.get('tenant_id', 'unknown')
+        
+        # Parse time strings back to time objects
+        if cached_dict.get('escort_required_start_time') and isinstance(cached_dict['escort_required_start_time'], str):
+            time_parts = cached_dict['escort_required_start_time'].split(':')
+            cached_dict['escort_required_start_time'] = datetime_time(
+                int(time_parts[0]), 
+                int(time_parts[1]), 
+                int(time_parts[2]) if len(time_parts) > 2 else 0
+            )
+        
+        if cached_dict.get('escort_required_end_time') and isinstance(cached_dict['escort_required_end_time'], str):
+            time_parts = cached_dict['escort_required_end_time'].split(':')
+            cached_dict['escort_required_end_time'] = datetime_time(
+                int(time_parts[0]), 
+                int(time_parts[1]), 
+                int(time_parts[2]) if len(time_parts) > 2 else 0
+            )
+        
+        logger.debug(f"✅ Deserialized tenant_config for tenant {tenant_id}")
+        return TenantConfig(**cached_dict)
+    except Exception as e:
+        logger.error(f"❌ Failed to deserialize tenant_config: {str(e)}")
+        raise
+
+def serialize_tenant_for_cache(tenant_obj) -> dict:
+    """
+    Convert Tenant object to cacheable dictionary.
+    Handles Decimal fields by converting to float.
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+
+    try:
+        tenant_dict = {c.name: getattr(tenant_obj, c.name) for c in tenant_obj.__table__.columns}
+
+        # Convert Decimal to float for JSON serialization
+        if 'latitude' in tenant_dict and tenant_dict['latitude'] is not None:
+            tenant_dict['latitude'] = float(tenant_dict['latitude'])
+        if 'longitude' in tenant_dict and tenant_dict['longitude'] is not None:
+            tenant_dict['longitude'] = float(tenant_dict['longitude'])
+
+        # Convert datetime to ISO string for JSON serialization
+        datetime_fields = ['created_at', 'updated_at']
+        for field in datetime_fields:
+            if field in tenant_dict and tenant_dict[field] is not None:
+                tenant_dict[field] = tenant_dict[field].isoformat()
+
+        logger.debug(f"✅ Serialized tenant {tenant_dict.get('tenant_id', 'unknown')} for cache")
+        return tenant_dict
+    except Exception as e:
+        logger.error(f"❌ Failed to serialize tenant for cache: {str(e)}")
+        raise
+
+def deserialize_tenant_from_cache(cached_dict: dict):
+    """
+    Convert cached dictionary back to Tenant object.
+    Handles float to Decimal conversion.
+    """
+    from app.models.tenant import Tenant
+    from decimal import Decimal
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+
+    try:
+        tenant_id = cached_dict.get('tenant_id', 'unknown')
+
+        # Convert float back to Decimal
+        if cached_dict.get('latitude') is not None:
+            cached_dict['latitude'] = Decimal(str(cached_dict['latitude']))
+        if cached_dict.get('longitude') is not None:
+            cached_dict['longitude'] = Decimal(str(cached_dict['longitude']))
+
+        # Convert ISO string back to datetime
+        from datetime import datetime
+        datetime_fields = ['created_at', 'updated_at']
+        for field in datetime_fields:
+            if cached_dict.get(field) and isinstance(cached_dict[field], str):
+                cached_dict[field] = datetime.fromisoformat(cached_dict[field])
+
+        logger.debug(f"✅ Deserialized tenant {tenant_id} from cache")
+        return Tenant(**cached_dict)
+    except Exception as e:
+        logger.error(f"❌ Failed to deserialize tenant from cache: {str(e)}")
+        raise
+
+def serialize_cutoff_for_cache(cutoff_obj) -> dict:
+    """
+    Convert Cutoff object to cacheable dictionary.
+    Handles timedelta fields by converting to string.
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+
+    try:
+        cutoff_dict = {c.name: getattr(cutoff_obj, c.name) for c in cutoff_obj.__table__.columns}
+
+        # Convert timedelta to string for JSON serialization
+        time_fields = [
+            'booking_login_cutoff', 'cancel_login_cutoff', 'booking_logout_cutoff',
+            'cancel_logout_cutoff', 'medical_emergency_booking_cutoff', 'adhoc_booking_cutoff'
+        ]
+
+        for field in time_fields:
+            if field in cutoff_dict and cutoff_dict[field] is not None:
+                cutoff_dict[field] = str(cutoff_dict[field])
+
+        # Convert datetime to ISO string for JSON serialization
+        datetime_fields = ['created_at', 'updated_at']
+        for field in datetime_fields:
+            if field in cutoff_dict and cutoff_dict[field] is not None:
+                cutoff_dict[field] = cutoff_dict[field].isoformat()
+
+        logger.debug(f"✅ Serialized cutoff for tenant {cutoff_dict.get('tenant_id', 'unknown')} for cache")
+        return cutoff_dict
+    except Exception as e:
+        logger.error(f"❌ Failed to serialize cutoff for cache: {str(e)}")
+        raise
+
+def deserialize_cutoff_from_cache(cached_dict: dict):
+    """
+    Convert cached dictionary back to Cutoff object.
+    Handles string to timedelta conversion.
+    """
+    from app.models.cutoff import Cutoff
+    from datetime import timedelta
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+
+    try:
+        tenant_id = cached_dict.get('tenant_id', 'unknown')
+
+        # Convert string back to timedelta
+        time_fields = [
+            'booking_login_cutoff', 'cancel_login_cutoff', 'booking_logout_cutoff',
+            'cancel_logout_cutoff', 'medical_emergency_booking_cutoff', 'adhoc_booking_cutoff'
+        ]
+
+        for field in time_fields:
+            if cached_dict.get(field) and isinstance(cached_dict[field], str):
+                # Parse timedelta string like "1 day, 2:30:45" or "2:30:45"
+                try:
+                    cached_dict[field] = _parse_timedelta_string(cached_dict[field])
+                except Exception as parse_error:
+                    logger.warning(f"⚠️ Failed to parse {field} '{cached_dict[field]}', setting to None")
+                    cached_dict[field] = None
+
+        # Convert ISO string back to datetime
+        from datetime import datetime
+        datetime_fields = ['created_at', 'updated_at']
+        for field in datetime_fields:
+            if cached_dict.get(field) and isinstance(cached_dict[field], str):
+                cached_dict[field] = datetime.fromisoformat(cached_dict[field])
+
+        logger.debug(f"✅ Deserialized cutoff for tenant {tenant_id} from cache")
+        return Cutoff(**cached_dict)
+    except Exception as e:
+        logger.error(f"❌ Failed to deserialize cutoff from cache: {str(e)}")
+        raise
+
+def _parse_timedelta_string(time_str: str):
+    """Parse timedelta string back to timedelta object"""
+    from datetime import timedelta
+    # Handle formats like "2:30:45" or "-1 day, 2:30:45"
+    if 'day' in time_str:
+        # Complex format with days
+        parts = time_str.split(', ')
+        days = 0
+        time_part = time_str
+        if len(parts) > 1:
+            day_part = parts[0]
+            time_part = parts[1]
+            if 'day' in day_part:
+                days = int(day_part.split()[0])
+
+        time_parts = time_part.split(':')
+    else:
+        # Simple time format
+        time_parts = time_str.split(':')
+        days = 0
+
+    hours = int(time_parts[0]) if len(time_parts) > 0 else 0
+    minutes = int(time_parts[1]) if len(time_parts) > 1 else 0
+    seconds = int(time_parts[2]) if len(time_parts) > 2 else 0
+
+    return timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+
+def serialize_shift_for_cache(shift_obj) -> dict:
+    """
+    Convert Shift object to cacheable dictionary.
+    Handles time fields by converting to string.
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+
+    try:
+        shift_dict = {c.name: getattr(shift_obj, c.name) for c in shift_obj.__table__.columns}
+
+        # Convert time to string for JSON serialization
+        if 'shift_time' in shift_dict and shift_dict['shift_time'] is not None:
+            shift_dict['shift_time'] = str(shift_dict['shift_time'])
+
+        # Convert enum to value for JSON serialization
+        if 'log_type' in shift_dict and shift_dict['log_type'] is not None:
+            shift_dict['log_type'] = shift_dict['log_type'].value if hasattr(shift_dict['log_type'], 'value') else str(shift_dict['log_type'])
+        if 'pickup_type' in shift_dict and shift_dict['pickup_type'] is not None:
+            shift_dict['pickup_type'] = shift_dict['pickup_type'].value if hasattr(shift_dict['pickup_type'], 'value') else str(shift_dict['pickup_type'])
+        if 'gender' in shift_dict and shift_dict['gender'] is not None:
+            shift_dict['gender'] = shift_dict['gender'].value if hasattr(shift_dict['gender'], 'value') else str(shift_dict['gender'])
+
+        # Convert datetime to ISO string for JSON serialization
+        datetime_fields = ['created_at', 'updated_at']
+        for field in datetime_fields:
+            if field in shift_dict and shift_dict[field] is not None:
+                shift_dict[field] = shift_dict[field].isoformat()
+
+        logger.debug(f"✅ Serialized shift {shift_dict.get('shift_id', 'unknown')} for cache")
+        return shift_dict
+    except Exception as e:
+        logger.error(f"❌ Failed to serialize shift for cache: {str(e)}")
+        raise
+
+def deserialize_shift_from_cache(cached_dict: dict):
+    """
+    Convert cached dictionary back to Shift object.
+    Handles string to time conversion.
+    """
+    from app.models.shift import Shift
+    from datetime import time as datetime_time
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+
+    try:
+        shift_id = cached_dict.get('shift_id', 'unknown')
+
+        # Convert string back to time
+        if cached_dict.get('shift_time') and isinstance(cached_dict['shift_time'], str):
+            time_parts = cached_dict['shift_time'].split(':')
+            cached_dict['shift_time'] = datetime_time(
+                int(time_parts[0]),
+                int(time_parts[1]),
+                int(time_parts[2]) if len(time_parts) > 2 else 0
+            )
+
+        # Convert ISO string back to datetime
+        from datetime import datetime
+        datetime_fields = ['created_at', 'updated_at']
+        for field in datetime_fields:
+            if cached_dict.get(field) and isinstance(cached_dict[field], str):
+                cached_dict[field] = datetime.fromisoformat(cached_dict[field])
+
+        # Note: Enums will be reconstructed by Shift model from string values
+
+        logger.debug(f"✅ Deserialized shift {shift_id} from cache")
+        return Shift(**cached_dict)
+    except Exception as e:
+        logger.error(f"❌ Failed to deserialize shift from cache: {str(e)}")
+        raise
+
+def serialize_weekoff_for_cache(weekoff_obj) -> dict:
+    """
+    Convert WeekoffConfig object to cacheable dictionary.
+    Weekoff configs are mostly boolean fields, should be JSON serializable.
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+
+    try:
+        weekoff_dict = {c.name: getattr(weekoff_obj, c.name) for c in weekoff_obj.__table__.columns}
+
+        # Convert datetime to ISO string for JSON serialization
+        datetime_fields = ['created_at', 'updated_at']
+        for field in datetime_fields:
+            if field in weekoff_dict and weekoff_dict[field] is not None:
+                weekoff_dict[field] = weekoff_dict[field].isoformat()
+
+        logger.debug(f"✅ Serialized weekoff for employee {weekoff_dict.get('employee_id', 'unknown')} for cache")
+        return weekoff_dict
+    except Exception as e:
+        logger.error(f"❌ Failed to serialize weekoff for cache: {str(e)}")
+        raise
+
+def deserialize_weekoff_from_cache(cached_dict: dict):
+    """
+    Convert cached dictionary back to WeekoffConfig object.
+    """
+    from app.models.weekoff_config import WeekoffConfig
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+
+    try:
+        employee_id = cached_dict.get('employee_id', 'unknown')
+
+        # Convert ISO string back to datetime
+        from datetime import datetime
+        datetime_fields = ['created_at', 'updated_at']
+        for field in datetime_fields:
+            if cached_dict.get(field) and isinstance(cached_dict[field], str):
+                cached_dict[field] = datetime.fromisoformat(cached_dict[field])
+
+        logger.debug(f"✅ Deserialized weekoff for employee {employee_id} from cache")
+        return WeekoffConfig(**cached_dict)
+    except Exception as e:
+        logger.error(f"❌ Failed to deserialize weekoff from cache: {str(e)}")
+        raise
+
+def serialize_team_for_cache(team_obj) -> dict:
+    """
+    Convert Team object to cacheable dictionary.
+    Handles datetime serialization for JSON compatibility.
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+
+    try:
+        # Automatically get all columns - works with new columns!
+        team_dict = {c.name: getattr(team_obj, c.name) for c in team_obj.__table__.columns}
+
+        # Only convert special types (datetime → ISO string)
+        datetime_fields = ['created_at', 'updated_at']
+        for field in datetime_fields:
+            if team_dict.get(field) and team_dict[field] is not None:
+                team_dict[field] = team_dict[field].isoformat()
+
+        logger.debug(f"✅ Serialized team {team_dict.get('team_id', 'unknown')} for cache")
+        return team_dict
+    except Exception as e:
+        logger.error(f"❌ Failed to serialize team for cache: {str(e)}")
+        raise
+
+def deserialize_team_from_cache(cached_dict: dict):
+    """
+    Convert cached dictionary back to Team object.
+    Handles ISO string back to datetime.
+    """
+    from app.models.team import Team
+    from datetime import datetime
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+
+    try:
+        team_id = cached_dict.get('team_id', 'unknown')
+
+        # Convert ISO string back to datetime
+        datetime_fields = ['created_at', 'updated_at']
+        for field in datetime_fields:
+            if cached_dict.get(field) and isinstance(cached_dict[field], str):
+                cached_dict[field] = datetime.fromisoformat(cached_dict[field])
+
+        logger.debug(f"✅ Deserialized team {team_id} from cache")
+        return Team(**cached_dict)
+    except Exception as e:
+        logger.error(f"❌ Failed to deserialize team from cache: {str(e)}")
+        raise
+
+def get_team_with_cache(db, tenant_id: str, team_id: int):
+    """
+    Get team with automatic caching.
+    Tries cache first, falls back to DB, and auto-caches on miss.
+    
+    Returns: Team object or None
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        logger.info(f"🔍 [CACHE CHECK] team for tenant_id={tenant_id}, team_id={team_id}")
+        cached_team = get_cached_team(team_id, tenant_id)
+        
+        if cached_team:
+            logger.info(f"✅ [CACHE HIT] team found in Redis | tenant_id={tenant_id}, team_id={team_id}")
+            try:
+                team = deserialize_team_from_cache(cached_team)
+                logger.info(f"✅ [CACHE HIT COMPLETE] Successfully deserialized | tenant_id={tenant_id}, team_id={team_id}")
+                return team
+            except Exception as deser_error:
+                logger.error(f"❌ [CACHE HIT ERROR] Deserialization failed: {str(deser_error)} | tenant_id={tenant_id}, team_id={team_id}")
+                raise
+        
+        logger.info(f"⚠️ [CACHE MISS] team not in Redis | tenant_id={tenant_id}, team_id={team_id}")
+        logger.info(f"📊 [CACHE MISS - STEP 1] Querying database... | tenant_id={tenant_id}, team_id={team_id}")
+        from app.models.team import Team
+        team = db.query(Team).filter(Team.team_id == team_id, Team.tenant_id == tenant_id).first()
+        
+        if not team:
+            logger.warning(f"⚠️ [CACHE MISS - NO DATA] team not found in DB | tenant_id={tenant_id}, team_id={team_id}")
+            return None
+        
+        logger.info(f"✅ [CACHE MISS - STEP 2] DB query successful | tenant_id={tenant_id}, team_id={team_id}")
+        logger.info(f"💾 [CACHE MISS - STEP 3] Serializing for cache... | tenant_id={tenant_id}, team_id={team_id}")
+        try:
+            team_dict = serialize_team_for_cache(team)
+            logger.info(f"💾 [CACHE MISS - STEP 4] Writing to Redis... | tenant_id={tenant_id}, team_id={team_id}")
+            cache_team(team_id, tenant_id, team_dict)
+            logger.info(f"✅ [CACHE MISS COMPLETE] Successfully cached to Redis | tenant_id={tenant_id}, team_id={team_id}")
+        except Exception as cache_error:
+            logger.error(f"❌ [CACHE MISS - CACHE FAILED] Could not write to Redis: {str(cache_error)} | tenant_id={tenant_id}, team_id={team_id}")
+        
+        return team
+        
+    except Exception as e:
+        logger.error(f"❌ [CACHE ERROR] Exception during cache lookup: {str(e)} | tenant_id={tenant_id}, team_id={team_id}")
+        logger.info(f"🔄 [FALLBACK - STEP 1] Querying database directly... | tenant_id={tenant_id}, team_id={team_id}")
+        from app.models.team import Team
+        team = db.query(Team).filter(Team.team_id == team_id, Team.tenant_id == tenant_id).first()
+        
+        if not team:
+            logger.warning(f"⚠️ [FALLBACK - NO DATA] team not found in DB | tenant_id={tenant_id}, team_id={team_id}")
+            return None
+        
+        logger.info(f"✅ [FALLBACK - STEP 2] DB query successful | tenant_id={tenant_id}, team_id={team_id}")
+        logger.info(f"🔄 [FALLBACK - STEP 3] Attempting to cache for recovery... | tenant_id={tenant_id}, team_id={team_id}")
+        try:
+            team_dict = serialize_team_for_cache(team)
+            cache_team(team_id, tenant_id, team_dict)
+            logger.info(f"✅ [FALLBACK COMPLETE] Successfully cached after recovery | tenant_id={tenant_id}, team_id={team_id}")
+        except Exception as cache_retry_error:
+            logger.warning(f"⚠️ [FALLBACK - CACHE FAILED] Could not cache after recovery: {str(cache_retry_error)} | tenant_id={tenant_id}, team_id={team_id}")
+        
+        return team
+
+def get_tenant_config_with_cache(db, tenant_id: str):
+    """
+    Get tenant_config with automatic caching.
+    Tries cache first, falls back to DB, and auto-caches on miss.
+    
+    Returns: TenantConfig object or None
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        # Try cache first
+        logger.info(f"🔍 [CACHE CHECK] tenant_config for tenant_id={tenant_id}")
+        cached_config = get_cached_tenant_config(tenant_id)
+        
+        if cached_config:
+            logger.info(f"✅ [CACHE HIT] tenant_config found in Redis | tenant_id={tenant_id}")
+            try:
+                config = deserialize_tenant_config_from_cache(cached_config)
+                logger.info(f"✅ [CACHE HIT COMPLETE] Successfully deserialized | tenant_id={tenant_id}")
+                return config
+            except Exception as deser_error:
+                logger.error(f"❌ [CACHE HIT ERROR] Deserialization failed: {str(deser_error)} | tenant_id={tenant_id}")
+                raise
+        
+        # Cache miss - query database
+        logger.info(f"⚠️ [CACHE MISS] tenant_config not in Redis | tenant_id={tenant_id}")
+        logger.info(f"📊 [CACHE MISS - STEP 1] Querying database... | tenant_id={tenant_id}")
+        from app.models.tenant_config import TenantConfig
+        config = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
+        
+        if not config:
+            logger.warning(f"⚠️ [CACHE MISS - NO DATA] tenant_config not found in DB | tenant_id={tenant_id}")
+            return None
+        
+        logger.info(f"✅ [CACHE MISS - STEP 2] DB query successful | tenant_id={tenant_id}")
+        
+        # Cache it for next time
+        logger.info(f"💾 [CACHE MISS - STEP 3] Serializing config for cache... | tenant_id={tenant_id}")
+        try:
+            config_dict = serialize_tenant_config_for_cache(config)
+            logger.info(f"💾 [CACHE MISS - STEP 4] Writing to Redis... | tenant_id={tenant_id}")
+            cache_tenant_config(tenant_id, config_dict)
+            logger.info(f"✅ [CACHE MISS COMPLETE] Successfully cached to Redis | tenant_id={tenant_id}")
+        except Exception as cache_error:
+            logger.error(f"❌ [CACHE MISS - CACHE FAILED] Could not write to Redis: {str(cache_error)} | tenant_id={tenant_id}")
+        
+        return config
+        
+    except Exception as e:
+        # Fallback to DB if cache fails
+        logger.error(f"❌ [CACHE ERROR] Exception during cache lookup: {str(e)} | tenant_id={tenant_id}")
+        logger.info(f"🔄 [FALLBACK - STEP 1] Querying database directly... | tenant_id={tenant_id}")
+        from app.models.tenant_config import TenantConfig
+        config = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
+        
+        if not config:
+            logger.warning(f"⚠️ [FALLBACK - NO DATA] tenant_config not found in DB | tenant_id={tenant_id}")
+            return None
+        
+        logger.info(f"✅ [FALLBACK - STEP 2] DB query successful | tenant_id={tenant_id}")
+        
+        # Try to cache the DB result for recovery
+        logger.info(f"🔄 [FALLBACK - STEP 3] Attempting to cache for recovery... | tenant_id={tenant_id}")
+        try:
+            config_dict = serialize_tenant_config_for_cache(config)
+            cache_tenant_config(tenant_id, config_dict)
+            logger.info(f"✅ [FALLBACK COMPLETE] Successfully cached after recovery | tenant_id={tenant_id}")
+        except Exception as cache_retry_error:
+            logger.warning(f"⚠️ [FALLBACK - CACHE FAILED] Could not cache after recovery (Redis may be down): {str(cache_retry_error)} | tenant_id={tenant_id}")
+        
+        return config
+
+# TenantConfig caching
+def cache_tenant_config(tenant_id: str, config_data: dict, ttl: int = 3600):
+    """Cache tenant_config for 1 hour (rarely changes)"""
+    return _cache_entity("tenant_config", config_data, ttl, tenant_id)
+
+def get_cached_tenant_config(tenant_id: str) -> Optional[dict]:
+    """Get cached tenant_config"""
+    return _get_cached_entity("tenant_config", tenant_id)
+
+def invalidate_tenant_config(tenant_id: str):
+    """Invalidate tenant_config cache when configuration changes"""
+    return _invalidate_entity("tenant_config", tenant_id)
+
+def refresh_tenant_config(tenant_id: str, config_data: dict, ttl: int = 3600):
+    """Invalidate and refresh tenant_config cache (used after updates)"""
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        logger.debug(f"🔄 Refreshing tenant_config cache for tenant {tenant_id}...")
+        invalidate_tenant_config(tenant_id)
+        result = cache_tenant_config(tenant_id, config_data, ttl)
+        logger.info(f"✅ Successfully refreshed tenant_config cache for tenant {tenant_id}")
+        return result
+    except Exception as e:
+        logger.error(f"❌ Failed to refresh tenant_config cache for tenant {tenant_id}: {str(e)}")
+        raise
+
+# Export the cache instance as cache_manager for backward compatibility
+cache_manager = cache

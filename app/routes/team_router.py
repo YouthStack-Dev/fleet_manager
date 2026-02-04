@@ -14,6 +14,8 @@ from app.utils.pagination import paginate_query
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_db_error, handle_http_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
+from app.utils import cache_manager
+
 logger = get_logger(__name__)
 router = APIRouter(prefix="/teams", tags=["teams"])
 
@@ -98,6 +100,17 @@ def create_team(
         db_team = team_crud.create(db, obj_in=obj_in)
         db.commit()
         db.refresh(db_team)
+
+        # Cache the newly created team
+        try:
+            from app.utils.cache_manager import serialize_team_for_cache
+            team_dict = serialize_team_for_cache(db_team)
+            cache_manager.cache_team(db_team.team_id, db_team.tenant_id, team_dict)
+            # Invalidate teams list cache for this tenant
+            cache_manager.cache.delete(f"teams_list:{db_team.tenant_id}")
+            logger.info(f"✅ Cached newly created team {db_team.team_id} and invalidated teams list")
+        except Exception as cache_error:
+            logger.warning(f"⚠️ Failed to cache new team: {cache_error}")
 
         logger.info(f"Team created successfully under tenant {tenant_id}: {db_team.name}")
 
@@ -192,12 +205,50 @@ def read_teams(
                     ),
                 )
 
-        # --- Teams fetch ---
-        query = db.query(Team).filter(Team.tenant_id == tenant_id)
-        if name:
+        # --- Teams fetch with intelligent caching ---
+        # Cache strategy: For common case (no name filter), try cache first
+        if not name:
+            # Try to get all teams from cache (stored as list)
+            cache_key = f"teams_list:{tenant_id}"
+            try:
+                cached_teams = cache_manager.cache.get(cache_key)
+                if cached_teams:
+                    # cached_teams is already a list (CacheManager.get returns deserialized JSON)
+                    teams_data = cached_teams
+                    # Apply pagination in memory
+                    total = len(teams_data)
+                    items = []
+                    for team_dict in teams_data[skip:skip+limit]:
+                        # Deserialize each team
+                        from app.utils.cache_manager import deserialize_team_from_cache
+                        team = deserialize_team_from_cache(team_dict)
+                        items.append(team)
+                    logger.info(f"✅ [CACHE HIT] teams list for tenant {tenant_id}")
+                else:
+                    # Cache miss - query DB and cache the result
+                    query = db.query(Team).filter(Team.tenant_id == tenant_id)
+                    all_teams = query.all()
+                    total = len(all_teams)
+                    items = all_teams[skip:skip+limit]
+                    
+                    # Cache all teams for this tenant (1 hour TTL)
+                    try:
+                        from app.utils.cache_manager import serialize_team_for_cache
+                        teams_to_cache = [serialize_team_for_cache(t) for t in all_teams]
+                        cache_manager.cache.set(cache_key, teams_to_cache, 3600)
+                        logger.info(f"💾 [CACHE SET] teams list for tenant {tenant_id} ({total} teams)")
+                    except Exception as cache_error:
+                        logger.warning(f"⚠️ Failed to cache teams list: {cache_error}")
+            except Exception as cache_error:
+                # Cache error - fallback to DB query
+                logger.warning(f"⚠️ Cache error, using DB: {cache_error}")
+                query = db.query(Team).filter(Team.tenant_id == tenant_id)
+                total, items = paginate_query(query, skip, limit)
+        else:
+            # With name filter - use DB query directly
+            query = db.query(Team).filter(Team.tenant_id == tenant_id)
             query = query.filter(Team.name.ilike(f"%{name}%"))
-
-        total, items = paginate_query(query, skip, limit)
+            total, items = paginate_query(query, skip, limit)
 
         enriched_items = []
         for team in items:
@@ -270,20 +321,30 @@ def read_team(
                 ),
             )
 
-        # 🔒 Tenant enforcement
-        query = db.query(Team).filter(Team.team_id == team_id)
-        if user_type == "employee":
-            query = query.filter(Team.tenant_id == tenant_id)
-
-        db_team = query.first()
-        if not db_team:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=ResponseWrapper.error(
-                    message=f"Team with ID {team_id} not found",
-                    error_code="TEAM_NOT_FOUND",
-                ),
-            )
+        # 🔒 Tenant enforcement with cache support
+        if user_type == "employee" and tenant_id:
+            # Employee with tenant_id → use cache
+            db_team = cache_manager.get_team_with_cache(db, tenant_id, team_id)
+            if not db_team:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message=f"Team with ID {team_id} not found",
+                        error_code="TEAM_NOT_FOUND",
+                    ),
+                )
+        else:
+            # Admin (cross-tenant access) → fallback to DB query
+            query = db.query(Team).filter(Team.team_id == team_id)
+            db_team = query.first()
+            if not db_team:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message=f"Team with ID {team_id} not found",
+                        error_code="TEAM_NOT_FOUND",
+                    ),
+                )
 
         # Employee counts
         active_count = db.query(Employee).filter(
@@ -378,6 +439,18 @@ def update_team(
         db.commit()
         db.refresh(db_team)
 
+        # Invalidate and refresh team cache after update
+        try:
+            from app.utils.cache_manager import serialize_team_for_cache
+            team_dict = serialize_team_for_cache(db_team)
+            cache_manager.invalidate_team(team_id, db_team.tenant_id)
+            cache_manager.cache_team(team_id, db_team.tenant_id, team_dict)
+            # Invalidate teams list cache for this tenant
+            cache_manager.cache.delete(f"teams_list:{db_team.tenant_id}")
+            logger.info(f"✅ Refreshed cache for team {team_id} and invalidated teams list")
+        except Exception as cache_error:
+            logger.warning(f"⚠️ Failed to refresh team cache: {cache_error}")
+
         return ResponseWrapper.success(
             data={"team": TeamResponse.model_validate(db_team, from_attributes=True)},
             message="Team updated successfully",
@@ -457,6 +530,18 @@ def toggle_team_status(
         db_team.is_active = not db_team.is_active
         db.commit()
         db.refresh(db_team)
+
+        # Invalidate and refresh team cache after status toggle
+        try:
+            from app.utils.cache_manager import serialize_team_for_cache
+            team_dict = serialize_team_for_cache(db_team)
+            cache_manager.invalidate_team(team_id, db_team.tenant_id)
+            cache_manager.cache_team(team_id, db_team.tenant_id, team_dict)
+            # Invalidate teams list cache for this tenant
+            cache_manager.cache.delete(f"teams_list:{db_team.tenant_id}")
+            logger.info(f"✅ Refreshed cache for team {team_id} after status toggle and invalidated teams list")
+        except Exception as cache_error:
+            logger.warning(f"⚠️ Failed to refresh team cache: {cache_error}")
 
         logger.info(
             f"Team {db_team.team_id} status toggled to "

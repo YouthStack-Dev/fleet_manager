@@ -112,6 +112,15 @@ def create_shift(
         db.commit()
         db.refresh(new_shift)
 
+        # Cache the newly created shift
+        try:
+            from app.utils.cache_manager import serialize_shift_for_cache
+            shift_dict = serialize_shift_for_cache(new_shift)
+            cache_manager.cache_shift(new_shift.shift_id, new_shift.tenant_id, shift_dict)
+            logger.info(f"✅ Cached newly created shift {new_shift.shift_id}")
+        except Exception as cache_error:
+            logger.warning(f"⚠️ Failed to cache new shift: {cache_error}")
+
         # 🔍 Audit Log: Shift Creation
         try:
             shift_data = {
@@ -276,16 +285,38 @@ def read_shift(
                 ),
             )
 
-        # ---- Fetch shift by ID (tenant scope applied later if needed) ----
-        db_shift = db.query(Shift).filter(Shift.shift_id == shift_id).first()
-        if not db_shift:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=ResponseWrapper.error(
-                    message=f"Shift {shift_id} not found",
-                    error_code="NOT_FOUND",
-                ),
-            )
+        # ---- Determine tenant_id for cache lookup ----
+        if user_type == "employee":
+            tenant_id_for_cache = token_tenant_id
+            if not tenant_id_for_cache:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message="Tenant ID missing in token",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+            # Try cache first (employee always has tenant_id)
+            db_shift = cache_manager.get_shift_with_cache(db, tenant_id_for_cache, shift_id)
+            if not db_shift:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message=f"Shift {shift_id} not found",
+                        error_code="NOT_FOUND",
+                    ),
+                )
+        else:
+            # Admin/Superadmin: fallback to DB query since they can access cross-tenant
+            db_shift = db.query(Shift).filter(Shift.shift_id == shift_id).first()
+            if not db_shift:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message=f"Shift {shift_id} not found",
+                        error_code="NOT_FOUND",
+                    ),
+                )
 
         # ---- Employee must match their tenant ----
         if user_type == "employee":
@@ -390,9 +421,15 @@ def update_shift(
         db.commit()
         db.refresh(db_shift)
         
-        # Invalidate shift cache after update
-        cache_manager.invalidate_shift(shift_id, db_shift.tenant_id)
-        logger.info(f"Invalidated cache for shift {shift_id}")
+        # Invalidate and refresh shift cache after update
+        try:
+            from app.utils.cache_manager import serialize_shift_for_cache
+            shift_dict = serialize_shift_for_cache(db_shift)
+            cache_manager.invalidate_shift(shift_id, db_shift.tenant_id)
+            cache_manager.cache_shift(shift_id, db_shift.tenant_id, shift_dict)
+            logger.info(f"✅ Refreshed cache for shift {shift_id}")
+        except Exception as cache_error:
+            logger.warning(f"⚠️ Failed to refresh shift cache: {cache_error}")
 
         # 🔍 Capture new values after update
         new_values = {
@@ -493,6 +530,16 @@ def toggle_shift_status(
         db_shift.is_active = not db_shift.is_active
         db.commit()
         db.refresh(db_shift)
+
+        # Invalidate and refresh cache after status toggle
+        try:
+            from app.utils.cache_manager import serialize_shift_for_cache
+            shift_dict = serialize_shift_for_cache(db_shift)
+            cache_manager.invalidate_shift(shift_id, db_shift.tenant_id)
+            cache_manager.cache_shift(shift_id, db_shift.tenant_id, shift_dict)
+            logger.info(f"✅ Refreshed cache for shift {shift_id} after status toggle")
+        except Exception as cache_error:
+            logger.warning(f"⚠️ Failed to refresh shift cache: {cache_error}")
 
         # 🔍 Audit Log: Status Toggle
         try:

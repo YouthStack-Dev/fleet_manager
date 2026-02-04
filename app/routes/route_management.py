@@ -25,7 +25,7 @@ from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger, setup_logging
 from app.utils.response_utils import ResponseWrapper, handle_db_error
 from app.utils.audit_helper import log_audit
-from app.utils.cache_manager import cached
+from app.utils.cache_manager import cached, cache_manager
 from app.utils.task_manager import run_background_task
 from common_utils import datetime_to_minutes, get_current_ist_time
 
@@ -48,6 +48,24 @@ logger = get_logger("route_management")
 
 # Test logger immediately
 logger.info("🚀 Route Management module initialized")
+
+# Helper functions for shift data extraction (from cached format)
+def get_shift_time(shift):
+    """Extract shift_time from shift dict (cached format) or Shift object"""
+    if isinstance(shift, dict):
+        time_str = shift.get("shift_time")
+        if time_str:
+            from datetime import time as dt_time
+            h, m, s = map(int, time_str.split(":"))
+            return dt_time(h, m, s)
+        return None
+    return shift.shift_time if hasattr(shift, "shift_time") else None
+
+def get_shift_log_type(shift):
+    """Extract log_type from shift dict (cached format) or Shift object"""
+    if isinstance(shift, dict):
+        return shift.get("log_type")
+    return shift.log_type.value if hasattr(shift, "log_type") and shift.log_type else None
 logger.debug("📝 Debug logging is active")
 
 router = APIRouter(
@@ -527,7 +545,8 @@ async def get_all_routes(
         logger.info(f"[get_all_routes] resolved tenant: {tenant_id}")
 
         # ---------- Validate Tenant ----------
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        from app.utils import cache_manager
+        tenant = cache_manager.get_tenant_with_cache(db, tenant_id)
         if not tenant:
             raise HTTPException(
                 status_code=404,
@@ -639,7 +658,7 @@ async def get_all_routes(
 
             shift_id_key = route.shift_id
             if shift_id_key not in shifts:
-                s = db.query(Shift).filter(Shift.shift_id == shift_id_key).first()
+                s = cache_manager.get_shift_with_cache(db, tenant_id, shift_id_key)
                 if s:
                     shifts[shift_id_key] = {
                         "shift_id": s.shift_id,
@@ -720,8 +739,8 @@ async def get_unrouted_bookings(
 
         logger.info(f"[unrouted_bookings] Effective tenant resolved: {tenant_id}")
 
-        # ---- Validate tenant exists ----
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        # ---- Validate tenant exists (use cache) ----
+        tenant = cache_manager.get_tenant_with_cache(db, tenant_id)
         if not tenant:
             raise HTTPException(
                 status_code=404,
@@ -1081,8 +1100,13 @@ async def assign_vehicle_to_route(
 
         # Generate OTPs for all bookings in the route
         from app.utils.otp_utils import generate_otp_codes
-        cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == tenant_id).first()
-        tenant_config = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
+        from app.utils import cache_manager
+        
+        cutoff = cache_manager.get_cutoff_with_cache(db, tenant_id)
+        
+        # Get tenant_config using cache-first helper
+        tenant_config = cache_manager.get_tenant_config_with_cache(db, tenant_id)
+        
         # Check if escort is assigned to this route AND route requires escort
         escort_enabled = route.assigned_escort_id
         route_bookings = db.query(RouteManagementBooking).filter(RouteManagementBooking.route_id == route.route_id).all()
@@ -1092,7 +1116,7 @@ async def assign_vehicle_to_route(
         for rb in route_bookings:
             booking = db.query(Booking).filter(Booking.booking_id == rb.booking_id).first()
             # Recalculate OTP count and purposes at assignment time
-            shift = db.query(Shift).filter(Shift.shift_id == booking.shift_id).first()
+            shift = cache_manager.get_shift_with_cache(db, booking.shift_id, booking.tenant_id)
             required_otp_count = get_required_otp_count(booking.booking_type, shift.log_type.value if shift else "IN", tenant_config, escort_enabled)
 
             logger.info(f"[assign_vehicle_to_route] Booking {rb.booking_id}: shift_type={shift.log_type.value if shift else 'IN'}, escort_enabled={bool(escort_enabled)}, required_otp_count={required_otp_count}")
@@ -1169,9 +1193,10 @@ async def assign_vehicle_to_route(
                 continue
             
             # Prepare OTP message
-            shift = db.query(Shift).filter(Shift.shift_id == booking.shift_id).first()
-            shift_time = shift.shift_time.strftime('%H:%M') if shift and shift.shift_time else 'N/A'
-            shift_type = shift.log_type.value if shift else 'IN'
+            shift = cache_manager.get_shift_with_cache(db, tenant_id, booking.shift_id)
+            shift_time = get_shift_time(shift) if shift else None
+            shift_time_str = shift_time.strftime('%H:%M') if shift_time else 'N/A'
+            shift_type = get_shift_log_type(shift) if shift else 'IN'
             
             otp_details = []
             if booking.boarding_otp:
@@ -1382,8 +1407,8 @@ async def get_route_by_id(
 
         logger.info(f"[get_route_by_id] tenant={tenant_id}, route_id={route_id}")
 
-        # Validate tenant exists
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        # Validate tenant exists (use cache)
+        tenant = cache_manager.get_tenant_with_cache(db, tenant_id)
         if not tenant:
             raise HTTPException(
                 status_code=404,
@@ -1607,7 +1632,7 @@ async def merge_routes(
         # --- Pull full booking objects ---
         bookings = get_bookings_by_ids(all_booking_ids, db)
 
-        shift = db.query(Shift).filter(Shift.shift_id == shift_id).first()
+        shift = cache_manager.get_shift_with_cache(db, shift_id, tenant_id)
         if not shift:
             raise HTTPException(
                 404, ResponseWrapper.error("Shift not found", "SHIFT_NOT_FOUND")
@@ -1795,8 +1820,8 @@ async def update_route(
 
         logger.info(f"Updating route {route_id} with operation '{update_request.operation}' for {len(update_request.booking_ids)} bookings, user: {user_data.get('user_id', 'unknown')}")
 
-        # Validate tenant exists
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        # Validate tenant exists (use cache)
+        tenant = cache_manager.get_tenant_with_cache(db, tenant_id)
         if not tenant:
             logger.warning(f"Tenant {tenant_id} not found")
             raise HTTPException(
@@ -1870,8 +1895,8 @@ async def update_route(
         
         logger.debug(f"Fetched request bookings: {request_bookings}")
         
-        # figure out the shift type
-        shift = db.query(Shift).filter(Shift.shift_id == route.shift_id).first()
+        # figure out the shift type (use cache)
+        shift = cache_manager.get_shift_with_cache(db, route.shift_id, route.tenant_id)
         shift_type = shift.log_type.value if hasattr(shift.log_type, "value") else shift.log_type
         logger.debug(f"Shift type for route {route_id} is {shift_type}")
 
@@ -2334,8 +2359,8 @@ async def bulk_delete_routes(
                 ),
             )
 
-        # --- Validate Tenant ---
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        # --- Validate Tenant (use cache) ---
+        tenant = cache_manager.get_tenant_with_cache(db, tenant_id)
         if not tenant:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

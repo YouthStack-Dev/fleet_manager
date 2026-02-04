@@ -71,48 +71,10 @@ async def BookingUpdatePermission(user_data: dict = Depends(validate_bearer_toke
     
     return user_data
 
-# Helper functions for cached configuration retrieval
-    
-    return user_data
-
-# Helper functions for cached configuration retrieval
-def get_tenant_cached(db: Session, tenant_id: str) -> Tenant:
-    """Get tenant with caching (1 hour TTL)"""
-    cached_data = cache_manager.get_cached_tenant(tenant_id)
-    if cached_data:
-        # Reconstruct tenant object from cached dict
-        tenant = Tenant(**cached_data)
-        return tenant
-    
-    # Cache miss - query database
-    tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
-    if tenant:
-        tenant_dict = {c.name: getattr(tenant, c.name) for c in tenant.__table__.columns}
-        cache_manager.cache_tenant(tenant_id, tenant_dict)
-    return tenant
-
-def get_shift_cached(db: Session, shift_id: int, tenant_id: str):
-    """Get shift with caching (1 hour TTL)"""
-    cached_data = cache_manager.get_cached_shift(shift_id, tenant_id)
-    if cached_data:
-        # Return cached dict directly (contains string-formatted time)
-        return cached_data
-    
-    # Cache miss - query database
-    shift = db.query(Shift).filter(Shift.shift_id == shift_id, Shift.tenant_id == tenant_id).first()
-    if shift:
-        shift_dict = {
-            "shift_id": shift.shift_id,
-            "shift_time": shift.shift_time.strftime("%H:%M:%S") if shift.shift_time else None,
-            "log_type": shift.log_type.value if shift.log_type else None,
-            "tenant_id": shift.tenant_id
-        }
-        cache_manager.cache_shift(shift_id, tenant_id, shift_dict)
-        return shift_dict
-    return None
+# Helper functions for cached configuration retrieval (using DRY helpers)
 
 def get_shift_time(shift):
-    """Extract shift_time from either a dict (cached) or Shift object"""
+    """Extract shift_time from shift (handles both cached and DB objects)"""
     if isinstance(shift, dict):
         time_str = shift.get("shift_time")
         if time_str:
@@ -120,41 +82,28 @@ def get_shift_time(shift):
             h, m, s = map(int, time_str.split(":"))
             return dt_time(h, m, s)
         return None
-    return shift.shift_time if hasattr(shift, "shift_time") else None
+    if hasattr(shift, "shift_time"):
+        shift_time = shift.shift_time
+        # If it's already a string (from cache), parse it
+        if isinstance(shift_time, str):
+            from datetime import time as dt_time
+            h, m, s = map(int, shift_time.split(":"))
+            return dt_time(h, m, s)
+        # If it's a time object (from DB), return as-is
+        return shift_time
+    return None
 
 def get_shift_log_type(shift):
-    """Extract log_type from either a dict (cached) or Shift object"""
+    """Extract log_type from shift (handles both cached and DB objects)"""
     if isinstance(shift, dict):
         return shift.get("log_type")
-    return shift.log_type.value if hasattr(shift, "log_type") and shift.log_type else None
-
-def get_cutoff_cached(db: Session, tenant_id: str) -> Cutoff:
-    """Get cutoff config with caching (1 hour TTL)"""
-    cached_data = cache_manager.get_cached_cutoff(tenant_id)
-    if cached_data:
-        cutoff = Cutoff(**cached_data)
-        return cutoff
-    
-    # Cache miss - query database
-    cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == tenant_id).first()
-    if cutoff:
-        cutoff_dict = {c.name: getattr(cutoff, c.name) for c in cutoff.__table__.columns}
-        cache_manager.cache_cutoff(tenant_id, cutoff_dict)
-    return cutoff
-
-def get_weekoff_cached(db: Session, employee_id: int) -> WeekoffConfig:
-    """Get weekoff config with caching (1 hour TTL)"""
-    cached_data = cache_manager.get_cached_weekoff(employee_id)
-    if cached_data:
-        weekoff = WeekoffConfig(**cached_data)
-        return weekoff
-    
-    # Cache miss - query database
-    weekoff = db.query(WeekoffConfig).filter(WeekoffConfig.employee_id == employee_id).first()
-    if weekoff:
-        weekoff_dict = {c.name: getattr(weekoff, c.name) for c in weekoff.__table__.columns}
-        cache_manager.cache_weekoff(employee_id, weekoff_dict)
-    return weekoff
+    if hasattr(shift, "log_type") and shift.log_type:
+        # If it's already a string (from cache), return as-is
+        if isinstance(shift.log_type, str):
+            return shift.log_type
+        # If it's an enum (from DB), get the value
+        return shift.log_type.value if hasattr(shift.log_type, 'value') else str(shift.log_type)
+    return None
 
 def booking_validate_future_dates(dates: list[date], context: str = "dates"):
     today = date.today()
@@ -228,7 +177,7 @@ def create_booking(
             )
 
         # --- Shift validation (with caching) ---
-        shift = get_shift_cached(db, booking.shift_id, tenant_id)
+        shift = cache_manager.get_shift_with_cache(db, tenant_id, booking.shift_id)
         if not shift:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -236,13 +185,13 @@ def create_booking(
             )
 
         # --- Tenant lookup (with caching) ---
-        tenant = get_tenant_cached(db, tenant_id)
+        tenant = cache_manager.get_tenant_with_cache(db, tenant_id)
         if not tenant:
             raise HTTPException(status_code=404, detail="Tenant not found")
 
         # --- Weekoff & Cutoff configs (with caching) ---
-        weekoff_config = get_weekoff_cached(db, employee.employee_id)
-        cutoff = get_cutoff_cached(db, tenant_id)
+        weekoff_config = cache_manager.get_weekoff_with_cache(db, employee.employee_id)
+        cutoff = cache_manager.get_cutoff_with_cache(db, tenant_id)
 
         # Collect booking data for bulk insert
         bookings_to_create = []
@@ -593,7 +542,7 @@ def get_bookings(
         if route_obj_dict:
             shift_ids = [r.shift_id for r in route_obj_dict.values() if r.shift_id]
             for shift_id in shift_ids:
-                shift_data = get_shift_cached(db, shift_id, tenant_id or effective_tenant_id)
+                shift_data = cache_manager.get_shift_with_cache(db, tenant_id or effective_tenant_id, shift_id)
                 if shift_data:
                     shifts_dict[shift_id] = shift_data
 
@@ -685,7 +634,7 @@ def get_bookings(
 
                 shift_details = None
                 if route.shift_id:
-                    shift_data = get_shift_cached(db, route.shift_id, tenant_id)
+                    shift_data = cache_manager.get_shift_with_cache(db, tenant_id, route.shift_id)
                     if shift_data:
                         shift_details = shift_data
                     elif route.shift_id in shifts_dict:
@@ -853,7 +802,7 @@ def get_bookings_by_employee(
         if route_obj_dict:
             shift_ids = [r.shift_id for r in route_obj_dict.values() if r.shift_id]
             for shift_id in shift_ids:
-                shift_data = get_shift_cached(db, shift_id, tenant_id)
+                shift_data = cache_manager.get_shift_with_cache(db, tenant_id, shift_id)
                 if shift_data:
                     shifts_dict[shift_id] = shift_data
 
@@ -942,7 +891,7 @@ def get_bookings_by_employee(
 
                 shift_details = None
                 if route.shift_id:
-                    shift_data = get_shift_cached(db, route.shift_id, tenant_id)
+                    shift_data = cache_manager.get_shift_with_cache(db, tenant_id, route.shift_id)
                     if shift_data:
                         shift_details = shift_data
                     elif route.shift_id in shifts_dict:
@@ -1079,13 +1028,9 @@ def get_booking_by_id(
 
                 shift_details = None
                 if route.shift_id:
-                    shift_route = db.query(Shift).filter(Shift.shift_id == route.shift_id).first()
+                    shift_route = cache_manager.get_shift_with_cache(db, tenant_id, route.shift_id)
                     if shift_route:
-                        shift_details = {
-                            "shift_id": shift_route.shift_id,
-                            "shift_time": shift_route.shift_time.strftime("%H:%M:%S") if shift_route.shift_time else None,
-                            "log_type": shift_route.log_type.value if shift_route.log_type else None,
-                        }
+                        shift_details = shift_route
 
                 route_info = {
                     "route_id": route.route_id,
@@ -1245,7 +1190,7 @@ async def update_booking(
         if request.shift_id is not None:
             # Validate shift exists
             logger.info(f"[booking.update] Validating shift_id={request.shift_id}")
-            shift = db.query(Shift).filter(Shift.shift_id == request.shift_id).first()
+            shift = cache_manager.get_shift_with_cache(db, tenant_id, request.shift_id)
             if not shift:
                 logger.error(f"[booking.update] FAILED - Shift not found: shift_id={request.shift_id}")
                 raise HTTPException(
@@ -1256,9 +1201,12 @@ async def update_booking(
                         details={"shift_id": request.shift_id}
                     ),
                 )
-            logger.info(f"[booking.update] Shift found: shift_id={shift.shift_id}, shift_time={shift.shift_time}, log_type={shift.log_type}")
+            # Get shift details
+            shift_time = get_shift_time(shift)
+            shift_log_type = get_shift_log_type(shift)
+            logger.info(f"[booking.update] Shift found: shift_id={shift.get('shift_id') if isinstance(shift, dict) else shift.shift_id}, shift_time={shift_time}, log_type={shift_log_type}")
             # Cutoff validation for the new shift
-            cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == tenant_id).first()
+            cutoff = cache_manager.get_cutoff_with_cache(db, tenant_id)
             cutoff_interval = None
             if cutoff:
                 if booking.booking_type == "adhoc":
@@ -1442,7 +1390,7 @@ def cancel_booking(
             )
 
         # --- Cancellation cutoff validation ---
-        cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == tenant_id).first()
+        cutoff = cache_manager.get_cutoff_with_cache(db, tenant_id)
         cancel_cutoff_interval = None
         if booking.shift and booking.shift.log_type == "IN":
             cancel_cutoff_interval = cutoff.cancel_login_cutoff if cutoff else None

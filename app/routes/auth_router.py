@@ -2082,6 +2082,280 @@ async def reset_password(
     
     return {"message": "If your email is registered, you will receive a password reset link."}
 
+def format_permissions_with_ids(db: Session, permissions_list: list) -> dict:
+    """
+    Transform permissions from list format to nested dictionary format with permission IDs
+    Format: {"module_name": {"ACTION": "permission_id", ...}, ...}
+    """
+    from app.models.iam.permission import Permission
+    
+    formatted_permissions = {}
+    
+    for perm in permissions_list:
+        module = perm.get("module")
+        actions = perm.get("action", [])
+        
+        if module not in formatted_permissions:
+            formatted_permissions[module] = {}
+        
+        # Query permission IDs from database for each action
+        for action in actions:
+            if action == "*":
+                # For wildcard, add all CRUD operations
+                for crud_action in ["create", "read", "update", "delete"]:
+                    permission = db.query(Permission).filter(
+                        Permission.module == module,
+                        Permission.action == crud_action
+                    ).first()
+                    if permission:
+                        formatted_permissions[module][crud_action.upper()] = str(permission.permission_id)
+            else:
+                permission = db.query(Permission).filter(
+                    Permission.module == module,
+                    Permission.action == action
+                ).first()
+                if permission:
+                    formatted_permissions[module][action.upper()] = str(permission.permission_id)
+    
+    return formatted_permissions
+
+
+@router.get("/profile", response_model=dict, status_code=status.HTTP_200_OK)
+async def get_user_profile_formatted(
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(validate_bearer_token())
+):
+    """
+    Get the current authenticated user's profile with structured format.
+    Returns user info with permissions formatted as: {"module": {"ACTION": "permission_id"}}
+    This is a new endpoint that provides enhanced formatting while keeping /me unchanged.
+    """
+    user_id = token_data.get("user_id")
+    user_type = token_data.get("user_type")
+
+    logger.debug(f"Profile request for user: {user_id} ({user_type})")
+
+    if not user_id or not user_type:
+        logger.warning("Profile request failed - Missing user_id or user_type in token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ResponseWrapper.error(
+                message="Could not validate credentials",
+                error_code=status.HTTP_401_UNAUTHORIZED,
+            ),
+        )
+
+    try:
+        if user_type == "employee":
+            employee = employee_crud.get(db, id=int(user_id))
+            if not employee:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message="Employee not found",
+                        error_code=status.HTTP_404_NOT_FOUND,
+                    ),
+                )
+
+            _, roles_list, permissions = employee_crud.get_employee_roles_and_permissions(
+                db, employee_id=employee.employee_id, tenant_id=employee.tenant_id
+            )
+            
+            # Format permissions with IDs
+            formatted_permissions = format_permissions_with_ids(db, permissions)
+            
+            # Format roles with details
+            from app.models.iam.role import Role
+            user_roles = []
+            for role_name in roles_list:
+                role = db.query(Role).filter(Role.name == role_name).first()
+                if role:
+                    scope_type = "PLATFORM" if role.is_system_role else "TENANT"
+                    user_roles.append({
+                        "roleId": str(role.role_id),
+                        "roleName": role.name,
+                        "scopeType": scope_type,
+                        "scopeId": str(employee.tenant_id) if employee.tenant_id else None
+                    })
+
+            response_data = {
+                "user": {
+                    "id": str(employee.employee_id),
+                    "email": employee.email,
+                    "status": "ACTIVE" if employee.is_active else "INACTIVE",
+                    "userRoles": user_roles,
+                    "permissions": formatted_permissions,
+                    "createdAt": employee.created_at.isoformat() if employee.created_at else None,
+                    "updatedAt": employee.updated_at.isoformat() if employee.updated_at else None
+                }
+            }
+
+        elif user_type == "vendor":
+            vendor_user = db.query(VendorUser).filter(
+                VendorUser.vendor_user_id == int(user_id)
+            ).first()
+            if not vendor_user:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message="Vendor user not found",
+                        error_code=status.HTTP_404_NOT_FOUND,
+                    ),
+                )
+
+            _, roles_list, permissions = vendor_user_crud.get_roles_and_permissions(
+                db, vendor_user_id=vendor_user.vendor_user_id, vendor_id=vendor_user.vendor_id
+            )
+            
+            # Format permissions with IDs
+            formatted_permissions = format_permissions_with_ids(db, permissions)
+            
+            # Format roles with details
+            from app.models.iam.role import Role
+            user_roles = []
+            for role_name in roles_list:
+                role = db.query(Role).filter(Role.name == role_name).first()
+                if role:
+                    scope_type = "PLATFORM" if role.is_system_role else "VENDOR"
+                    user_roles.append({
+                        "roleId": str(role.role_id),
+                        "roleName": role.name,
+                        "scopeType": scope_type,
+                        "scopeId": str(vendor_user.vendor_id) if vendor_user.vendor_id else None
+                    })
+
+            response_data = {
+                "user": {
+                    "id": str(vendor_user.vendor_user_id),
+                    "email": vendor_user.email,
+                    "status": "ACTIVE" if vendor_user.is_active else "INACTIVE",
+                    "userRoles": user_roles,
+                    "permissions": formatted_permissions,
+                    "createdAt": vendor_user.created_at.isoformat() if vendor_user.created_at else None,
+                    "updatedAt": vendor_user.updated_at.isoformat() if vendor_user.updated_at else None
+                }
+            }
+
+        elif user_type == "admin":
+            admin = db.query(Admin).filter(Admin.admin_id == int(user_id)).first()
+            if not admin:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message="Admin not found",
+                        error_code=status.HTTP_404_NOT_FOUND,
+                    ),
+                )
+
+            _, roles_list, permissions = admin_crud.get_admin_roles_and_permissions(
+                db, admin_id=admin.admin_id
+            )
+            
+            # Format permissions with IDs
+            formatted_permissions = format_permissions_with_ids(db, permissions)
+            
+            # Format roles with details
+            from app.models.iam.role import Role
+            user_roles = []
+            for role_name in roles_list:
+                role = db.query(Role).filter(Role.name == role_name).first()
+                if role:
+                    scope_type = "PLATFORM" if role.is_system_role else "TENANT"
+                    user_roles.append({
+                        "roleId": str(role.role_id),
+                        "roleName": role.name,
+                        "scopeType": scope_type,
+                        "scopeId": None
+                    })
+
+            response_data = {
+                "user": {
+                    "id": str(admin.admin_id),
+                    "email": admin.email,
+                    "status": "ACTIVE" if admin.is_active else "INACTIVE",
+                    "userRoles": user_roles,
+                    "permissions": formatted_permissions,
+                    "createdAt": admin.created_at.isoformat() if admin.created_at else None,
+                    "updatedAt": admin.updated_at.isoformat() if admin.updated_at else None
+                }
+            }
+
+        elif user_type == "driver":
+            driver = db.query(Driver).filter(Driver.driver_id == int(user_id)).first()
+            if not driver:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message="Driver not found",
+                        error_code=status.HTTP_404_NOT_FOUND,
+                    ),
+                )
+
+            # Get driver roles and permissions
+            from app.crud.driver import driver_crud
+            _, roles_list, permissions = driver_crud.get_driver_roles_and_permissions(
+                db, driver_id=driver.driver_id, tenant_id=driver.tenant_id
+            )
+            
+            # Format permissions with IDs
+            formatted_permissions = format_permissions_with_ids(db, permissions)
+            
+            # Format roles with details
+            from app.models.iam.role import Role
+            user_roles = []
+            for role_name in roles_list:
+                role = db.query(Role).filter(Role.name == role_name).first()
+                if role:
+                    scope_type = "PLATFORM" if role.is_system_role else "TENANT"
+                    user_roles.append({
+                        "roleId": str(role.role_id),
+                        "roleName": role.name,
+                        "scopeType": scope_type,
+                        "scopeId": str(driver.tenant_id) if driver.tenant_id else None
+                    })
+
+            response_data = {
+                "user": {
+                    "id": str(driver.driver_id),
+                    "email": driver.email,
+                    "status": "ACTIVE" if driver.is_active else "INACTIVE",
+                    "userRoles": user_roles,
+                    "permissions": formatted_permissions,
+                    "createdAt": driver.created_at.isoformat() if driver.created_at else None,
+                    "updatedAt": driver.updated_at.isoformat() if driver.updated_at else None
+                }
+            }
+
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message=f"Unsupported user_type: {user_type}",
+                    error_code="INVALID_USER_TYPE",
+                ),
+            )
+
+        logger.info(f"✅ /profile resolved for {user_type} {user_id}")
+
+        return ResponseWrapper.success(
+            data=response_data,
+            message="Profile retrieved successfully"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"💥 Failed to load /profile: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message="Failed to fetch profile",
+                error_code="SERVER_ERROR",
+                details={"error": str(e)},
+            ),
+        )
+
+
 @router.get("/me", response_model=dict, status_code=status.HTTP_200_OK)
 async def get_current_user_profile(
     db: Session = Depends(get_db),

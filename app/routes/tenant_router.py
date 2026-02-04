@@ -258,6 +258,15 @@ def create_tenant(
             # Commit within the existing transaction
             db.commit()
 
+        # Cache the newly created tenant
+        try:
+            from app.utils.cache_manager import serialize_tenant_for_cache
+            tenant_dict = serialize_tenant_for_cache(new_tenant)
+            cache_manager.cache_tenant(new_tenant.tenant_id, tenant_dict)
+            logger.info(f"✅ Cached newly created tenant {new_tenant.tenant_id}")
+        except Exception as cache_error:
+            logger.warning(f"⚠️ Failed to cache new tenant: {cache_error}")
+
         # --- Send Welcome Emails via Background Task ---
         background_tasks.add_task(
             send_tenant_welcome_emails,
@@ -484,7 +493,8 @@ def read_tenant(
 
         # 👑 Admin/SuperAdmin → tenant_id is taken directly from path param
 
-        db_tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        # Use cache-first approach
+        db_tenant = cache_manager.get_tenant_with_cache(db, tenant_id)
 
         if not db_tenant:
             logger.warning(f"Tenant fetch failed - not found: {tenant_id}")
@@ -641,9 +651,15 @@ def update_tenant(
         db.commit()
         db.refresh(db_tenant)
         
-        # Invalidate tenant cache after update
-        cache_manager.invalidate_tenant(tenant_id)
-        logger.info(f"Invalidated cache for tenant {tenant_id}")
+        # Invalidate and refresh tenant cache after update
+        try:
+            from app.utils.cache_manager import serialize_tenant_for_cache
+            tenant_dict = serialize_tenant_for_cache(db_tenant)
+            cache_manager.invalidate_tenant(tenant_id)
+            cache_manager.cache_tenant(tenant_id, tenant_dict)
+            logger.info(f"✅ Refreshed cache for tenant {tenant_id}")
+        except Exception as cache_error:
+            logger.warning(f"⚠️ Failed to refresh tenant cache: {cache_error}")
 
         # --- ALWAYS fetch the admin policy for the response (no logic change) ---
         admin_policy = (
@@ -770,4 +786,12 @@ def delete_tenant(
     
     db.delete(db_tenant)
     db.commit()
+    
+    # Invalidate tenant cache after deletion
+    try:
+        cache_manager.invalidate_tenant(tenant_id)
+        logger.info(f"✅ Invalidated cache for deleted tenant {tenant_id}")
+    except Exception as cache_error:
+        logger.warning(f"⚠️ Failed to invalidate tenant cache: {cache_error}")
+    
     return None
