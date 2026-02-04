@@ -1,7 +1,12 @@
-FROM python:3.9-slim
+FROM python:3.11-slim
 
-# Install PostgreSQL client tools for database initialization
-RUN apt-get update && apt-get install -y postgresql-client && rm -rf /var/lib/apt/lists/*
+# Install system dependencies including build tools for Python packages
+RUN apt-get update && apt-get install -y \
+    postgresql-client \
+    gcc \
+    g++ \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app

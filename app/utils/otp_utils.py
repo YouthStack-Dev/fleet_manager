@@ -93,11 +93,9 @@ def route_requires_escort(db: Session, route_id: int, tenant_id: str) -> bool:
     from app.models.employee import Employee, GenderEnum
 
     try:
-        # Get tenant escort configuration
-        from app.models.tenant_config import TenantConfig
-        safety_config = db.query(TenantConfig).filter(
-            TenantConfig.tenant_id == tenant_id
-        ).first()
+        # Get tenant escort configuration using cache-first helper
+        from app.utils import cache_manager
+        safety_config = cache_manager.get_tenant_config_with_cache(db, tenant_id)
 
         if not safety_config or not safety_config.escort_required_for_women:
             return False

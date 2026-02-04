@@ -910,7 +910,9 @@ def validate_employee_row(
     else:
         try:
             team_id = int(team_id_str)
-            team = team_crud.get_by_id(db, team_id=team_id)
+            # Use cache for team lookup
+            from app.utils import cache_manager
+            team = cache_manager.get_team_with_cache(db, token_tenant_id or validated_data.get('tenant_id'), team_id) if (token_tenant_id or validated_data.get('tenant_id')) else team_crud.get_by_id(db, team_id=team_id)
             if not team:
                 errors.append(f"Team ID {team_id} does not exist")
             else:
@@ -1056,7 +1058,9 @@ def read_employees(
 
         # --- Team filter check ---
         if team_id is not None:
-            team = team_crud.get_by_id(db, team_id=team_id)
+            # Use cache for team lookup
+            from app.utils import cache_manager
+            team = cache_manager.get_team_with_cache(db, tenant_id, team_id)
             if not team or team.tenant_id != tenant_id:  # 🔒 enforce tenant match
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,

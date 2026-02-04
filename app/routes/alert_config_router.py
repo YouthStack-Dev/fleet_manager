@@ -84,11 +84,8 @@ def create_alert_configuration(
         
         # Validate: team must belong to tenant if specified
         if request.team_id:
-            from app.models.team import Team
-            team = db.query(Team).filter(
-                Team.team_id == request.team_id,
-                Team.tenant_id == tenant_id
-            ).first()
+            from app.utils import cache_manager
+            team = cache_manager.get_team_with_cache(db, tenant_id, request.team_id)
             
             if not team:
                 raise HTTPException(
@@ -185,11 +182,8 @@ def get_alert_configurations(
             
             # Validate team_id if provided - must belong to employee's tenant
             if team_id:
-                from app.models.team import Team
-                team = db.query(Team).filter(
-                    Team.team_id == team_id,
-                    Team.tenant_id == tenant_id
-                ).first()
+                from app.utils import cache_manager
+                team = cache_manager.get_team_with_cache(db, tenant_id, team_id)
                 
                 if not team:
                     raise HTTPException(
@@ -212,6 +206,8 @@ def get_alert_configurations(
             # If admin provides team_id without tenant_id, fetch tenant_id for that team
             if team_id and not tenant_id:
                 logger.info(f"[alert_config.list] Admin provided team_id={team_id} without tenant_id, fetching team's tenant")
+                from app.utils import cache_manager
+                # For admin without tenant_id, we need to query DB to get tenant_id from team
                 from app.models.team import Team
                 team = db.query(Team).filter(Team.team_id == team_id).first()
                 if team:
@@ -410,11 +406,8 @@ def update_alert_configuration(
         # Validate team_id if being updated
         team_id_to_validate = getattr(request, 'team_id', None)
         if team_id_to_validate is not None:
-            from app.models.team import Team
-            team = db.query(Team).filter(
-                Team.team_id == team_id_to_validate,
-                Team.tenant_id == config.tenant_id
-            ).first()
+            from app.utils import cache_manager
+            team = cache_manager.get_team_with_cache(db, config.tenant_id, team_id_to_validate)
             
             if not team:
                 raise HTTPException(

@@ -44,7 +44,8 @@ from app.routes import (
     auth_router,  # Add the auth router
     monitoring_router,  # Add monitoring router
     tenant_config_router,  # Add tenant config router
-    push_notifications_router  # Add push notifications router
+    push_notifications_router,  # Add push notifications router
+    dev_testing_router  # Development/testing routes (admin only)
 )
 from app.routes.alert_router import router as alert_router
 from app.routes.alert_config_router import router as alert_config_router
@@ -170,6 +171,9 @@ app.include_router(push_notifications_router, prefix="/api/v1")
 app.include_router(permission_router, prefix="/api/v1/iam")
 app.include_router(policy_router, prefix="/api/v1/iam")
 app.include_router(role_router, prefix="/api/v1/iam")
+
+# Include development/testing routes (admin only)
+app.include_router(dev_testing_router, prefix="/api/v1")
 
 
 
