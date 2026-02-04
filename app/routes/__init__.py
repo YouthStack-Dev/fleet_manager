@@ -22,3 +22,6 @@ from app.routes.audit_log_router import router as audit_log_router
 from app.routes.monitoring_router import router as monitoring_router
 from app.routes.tenant_config_router import router as tenant_config_router
 from app.routes.push_notifications import router as push_notifications_router
+
+# Development/Testing routes (admin only)
+from app.routes.dev_testing_routes import router as dev_testing_router

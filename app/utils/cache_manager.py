@@ -266,3 +266,174 @@ def get_cached_weekoff(employee_id: int) -> Optional[dict]:
 def invalidate_weekoff(employee_id: int):
     """Invalidate weekoff cache when configuration changes"""
     return _invalidate_entity("weekoff", employee_id)
+
+# ============================================================
+# TenantConfig Helper Functions (DRY)
+# ============================================================
+
+def serialize_tenant_config_for_cache(config_obj) -> dict:
+    """
+    Convert TenantConfig object to cache-ready dictionary.
+    Handles time and datetime serialization for JSON compatibility.
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        config_dict = {column.name: getattr(config_obj, column.name) for column in config_obj.__table__.columns}
+        tenant_id = config_dict.get('tenant_id', 'unknown')
+        
+        # Convert time objects to strings
+        if config_dict.get('escort_required_start_time'):
+            config_dict['escort_required_start_time'] = str(config_dict['escort_required_start_time'])
+        if config_dict.get('escort_required_end_time'):
+            config_dict['escort_required_end_time'] = str(config_dict['escort_required_end_time'])
+        
+        # Convert datetime objects to ISO format strings
+        if config_dict.get('created_at'):
+            config_dict['created_at'] = config_dict['created_at'].isoformat()
+        if config_dict.get('updated_at'):
+            config_dict['updated_at'] = config_dict['updated_at'].isoformat()
+        
+        logger.debug(f"✅ Serialized tenant_config for tenant {tenant_id}")
+        return config_dict
+    except Exception as e:
+        logger.error(f"❌ Failed to serialize tenant_config: {str(e)}")
+        raise
+
+def deserialize_tenant_config_from_cache(cached_dict: dict):
+    """
+    Convert cached dictionary back to TenantConfig object.
+    Handles time string parsing back to time objects.
+    """
+    from app.models.tenant_config import TenantConfig
+    from datetime import time as datetime_time
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        tenant_id = cached_dict.get('tenant_id', 'unknown')
+        
+        # Parse time strings back to time objects
+        if cached_dict.get('escort_required_start_time') and isinstance(cached_dict['escort_required_start_time'], str):
+            time_parts = cached_dict['escort_required_start_time'].split(':')
+            cached_dict['escort_required_start_time'] = datetime_time(
+                int(time_parts[0]), 
+                int(time_parts[1]), 
+                int(time_parts[2]) if len(time_parts) > 2 else 0
+            )
+        
+        if cached_dict.get('escort_required_end_time') and isinstance(cached_dict['escort_required_end_time'], str):
+            time_parts = cached_dict['escort_required_end_time'].split(':')
+            cached_dict['escort_required_end_time'] = datetime_time(
+                int(time_parts[0]), 
+                int(time_parts[1]), 
+                int(time_parts[2]) if len(time_parts) > 2 else 0
+            )
+        
+        logger.debug(f"✅ Deserialized tenant_config for tenant {tenant_id}")
+        return TenantConfig(**cached_dict)
+    except Exception as e:
+        logger.error(f"❌ Failed to deserialize tenant_config: {str(e)}")
+        raise
+
+def get_tenant_config_with_cache(db, tenant_id: str):
+    """
+    Get tenant_config with automatic caching.
+    Tries cache first, falls back to DB, and auto-caches on miss.
+    
+    Returns: TenantConfig object or None
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        # Try cache first
+        logger.info(f"🔍 [CACHE CHECK] tenant_config for tenant_id={tenant_id}")
+        cached_config = get_cached_tenant_config(tenant_id)
+        
+        if cached_config:
+            logger.info(f"✅ [CACHE HIT] tenant_config found in Redis | tenant_id={tenant_id}")
+            try:
+                config = deserialize_tenant_config_from_cache(cached_config)
+                logger.info(f"✅ [CACHE HIT COMPLETE] Successfully deserialized | tenant_id={tenant_id}")
+                return config
+            except Exception as deser_error:
+                logger.error(f"❌ [CACHE HIT ERROR] Deserialization failed: {str(deser_error)} | tenant_id={tenant_id}")
+                raise
+        
+        # Cache miss - query database
+        logger.info(f"⚠️ [CACHE MISS] tenant_config not in Redis | tenant_id={tenant_id}")
+        logger.info(f"📊 [CACHE MISS - STEP 1] Querying database... | tenant_id={tenant_id}")
+        from app.models.tenant_config import TenantConfig
+        config = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
+        
+        if not config:
+            logger.warning(f"⚠️ [CACHE MISS - NO DATA] tenant_config not found in DB | tenant_id={tenant_id}")
+            return None
+        
+        logger.info(f"✅ [CACHE MISS - STEP 2] DB query successful | tenant_id={tenant_id}")
+        
+        # Cache it for next time
+        logger.info(f"💾 [CACHE MISS - STEP 3] Serializing config for cache... | tenant_id={tenant_id}")
+        try:
+            config_dict = serialize_tenant_config_for_cache(config)
+            logger.info(f"💾 [CACHE MISS - STEP 4] Writing to Redis... | tenant_id={tenant_id}")
+            cache_tenant_config(tenant_id, config_dict)
+            logger.info(f"✅ [CACHE MISS COMPLETE] Successfully cached to Redis | tenant_id={tenant_id}")
+        except Exception as cache_error:
+            logger.error(f"❌ [CACHE MISS - CACHE FAILED] Could not write to Redis: {str(cache_error)} | tenant_id={tenant_id}")
+        
+        return config
+        
+    except Exception as e:
+        # Fallback to DB if cache fails
+        logger.error(f"❌ [CACHE ERROR] Exception during cache lookup: {str(e)} | tenant_id={tenant_id}")
+        logger.info(f"🔄 [FALLBACK - STEP 1] Querying database directly... | tenant_id={tenant_id}")
+        from app.models.tenant_config import TenantConfig
+        config = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
+        
+        if not config:
+            logger.warning(f"⚠️ [FALLBACK - NO DATA] tenant_config not found in DB | tenant_id={tenant_id}")
+            return None
+        
+        logger.info(f"✅ [FALLBACK - STEP 2] DB query successful | tenant_id={tenant_id}")
+        
+        # Try to cache the DB result for recovery
+        logger.info(f"🔄 [FALLBACK - STEP 3] Attempting to cache for recovery... | tenant_id={tenant_id}")
+        try:
+            config_dict = serialize_tenant_config_for_cache(config)
+            cache_tenant_config(tenant_id, config_dict)
+            logger.info(f"✅ [FALLBACK COMPLETE] Successfully cached after recovery | tenant_id={tenant_id}")
+        except Exception as cache_retry_error:
+            logger.warning(f"⚠️ [FALLBACK - CACHE FAILED] Could not cache after recovery (Redis may be down): {str(cache_retry_error)} | tenant_id={tenant_id}")
+        
+        return config
+
+# TenantConfig caching
+def cache_tenant_config(tenant_id: str, config_data: dict, ttl: int = 3600):
+    """Cache tenant_config for 1 hour (rarely changes)"""
+    return _cache_entity("tenant_config", config_data, ttl, tenant_id)
+
+def get_cached_tenant_config(tenant_id: str) -> Optional[dict]:
+    """Get cached tenant_config"""
+    return _get_cached_entity("tenant_config", tenant_id)
+
+def invalidate_tenant_config(tenant_id: str):
+    """Invalidate tenant_config cache when configuration changes"""
+    return _invalidate_entity("tenant_config", tenant_id)
+
+def refresh_tenant_config(tenant_id: str, config_data: dict, ttl: int = 3600):
+    """Invalidate and refresh tenant_config cache (used after updates)"""
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        logger.debug(f"🔄 Refreshing tenant_config cache for tenant {tenant_id}...")
+        invalidate_tenant_config(tenant_id)
+        result = cache_tenant_config(tenant_id, config_data, ttl)
+        logger.info(f"✅ Successfully refreshed tenant_config cache for tenant {tenant_id}")
+        return result
+    except Exception as e:
+        logger.error(f"❌ Failed to refresh tenant_config cache for tenant {tenant_id}: {str(e)}")
+        raise

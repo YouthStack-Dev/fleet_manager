@@ -1081,8 +1081,13 @@ async def assign_vehicle_to_route(
 
         # Generate OTPs for all bookings in the route
         from app.utils.otp_utils import generate_otp_codes
+        from app.utils import cache_manager
+        
         cutoff = db.query(Cutoff).filter(Cutoff.tenant_id == tenant_id).first()
-        tenant_config = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
+        
+        # Get tenant_config using cache-first helper
+        tenant_config = cache_manager.get_tenant_config_with_cache(db, tenant_id)
+        
         # Check if escort is assigned to this route AND route requires escort
         escort_enabled = route.assigned_escort_id
         route_bookings = db.query(RouteManagementBooking).filter(RouteManagementBooking.route_id == route.route_id).all()

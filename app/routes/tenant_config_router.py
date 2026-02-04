@@ -83,12 +83,23 @@ def get_tenant_config(
     try:
         resolved_tenant_id = resolve_tenant_id(user_data, tenant_id)
 
-        config = tenant_config_crud.get_by_tenant(db, tenant_id=resolved_tenant_id)
+        # Use the DRY helper function with detailed logging
+        from app.utils import cache_manager
+        config = cache_manager.get_tenant_config_with_cache(db, resolved_tenant_id)
+        
+        # If no config exists, create default
         if not config:
-            # Return default config if not exists
+            logger.info(f"📝 Creating default tenant_config for tenant {resolved_tenant_id}")
             config = tenant_config_crud.ensure_config(db, resolved_tenant_id)
+            # Cache the newly created config
+            if config:
+                try:
+                    config_dict = cache_manager.serialize_tenant_config_for_cache(config)
+                    cache_manager.cache_tenant_config(resolved_tenant_id, config_dict)
+                    logger.info(f"✅ Cached newly created tenant_config for tenant {resolved_tenant_id}")
+                except Exception as cache_error:
+                    logger.warning(f"⚠️ Failed to cache new tenant_config: {cache_error}")
 
-        logger.info(f"Retrieved tenant config for tenant {resolved_tenant_id}")
         return config
 
     except HTTPException:
@@ -132,6 +143,15 @@ def update_tenant_config(
         updated_config = tenant_config_crud.update_by_tenant(
             db, tenant_id=resolved_tenant_id, obj_in=config_update
         )
+        
+        # Auto-refresh cache after update
+        try:
+            from app.utils import cache_manager
+            config_dict = cache_manager.serialize_tenant_config_for_cache(updated_config)
+            cache_manager.refresh_tenant_config(resolved_tenant_id, config_dict)
+            logger.info(f"✅ Tenant config cache refreshed for tenant {resolved_tenant_id}")
+        except Exception as cache_error:
+            logger.error(f"⚠️ Failed to refresh tenant config cache: {str(cache_error)}")
 
         # Audit log
         try:
@@ -142,7 +162,6 @@ def update_tenant_config(
                 action="UPDATE",
                 user_data=user_data,
                 description=f"Updated tenant configuration",
-                old_values={},  # Could be enhanced to track old values
                 new_values={
                     "escort_required_start_time": str(config_update.escort_required_start_time) if config_update.escort_required_start_time else None,
                     "escort_required_end_time": str(config_update.escort_required_end_time) if config_update.escort_required_end_time else None,
