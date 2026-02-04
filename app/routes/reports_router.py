@@ -155,8 +155,9 @@ async def export_bookings_report(
         # --- Validate Date Range ---
         validate_date_range(start_date, end_date)
 
-        # --- Validate Tenant ---
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        # --- Validate Tenant (use cache) ---
+        from app.utils import cache_manager
+        tenant = cache_manager.get_tenant_with_cache(db, tenant_id)
         if not tenant:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
@@ -166,12 +167,9 @@ async def export_bookings_report(
                 )
             )
 
-        # --- Validate Shift if provided ---
+        # --- Validate Shift if provided (use cache) ---
         if shift_id:
-            shift = db.query(Shift).filter(
-                Shift.shift_id == shift_id,
-                Shift.tenant_id == tenant_id
-            ).first()
+            shift = cache_manager.get_shift_with_cache(db, shift_id, tenant_id)
             if not shift:
                 raise HTTPException(
                     status_code=http_status.HTTP_404_NOT_FOUND,

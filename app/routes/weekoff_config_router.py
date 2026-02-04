@@ -1,6 +1,7 @@
 from app.models.employee import Employee
 from app.models.team import Team
 from app.models.weekoff_config import WeekoffConfig
+from app.utils import cache_manager
 from app.utils.pagination import paginate_query
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
@@ -338,6 +339,16 @@ def update_weekoff_by_employee(
         db.refresh(db_obj)
         logger.info(f"Committed weekoff update for employee {employee_id}")
 
+        # Invalidate and refresh weekoff cache
+        try:
+            from app.utils.cache_manager import serialize_weekoff_for_cache
+            weekoff_dict = serialize_weekoff_for_cache(db_obj)
+            cache_manager.invalidate_weekoff(employee_id)
+            cache_manager.cache_weekoff(employee_id, weekoff_dict)
+            logger.info(f"✅ Refreshed cache for weekoff employee {employee_id}")
+        except Exception as cache_error:
+            logger.warning(f"⚠️ Failed to refresh weekoff cache: {cache_error}")
+
         # 🔍 Capture new values after update
         new_values = {
             "monday": db_obj.monday,
@@ -447,6 +458,14 @@ def update_weekoff_by_team(
             db.refresh(obj)
         logger.info(f"Committed bulk weekoff update for team {team_id}")
 
+        # Invalidate weekoff cache for all affected employees
+        try:
+            for obj in db_objs:
+                cache_manager.invalidate_weekoff(obj.employee_id)
+            logger.info(f"✅ Invalidated cache for {len(db_objs)} employees in team {team_id}")
+        except Exception as cache_error:
+            logger.warning(f"⚠️ Failed to invalidate weekoff cache: {cache_error}")
+
         # 🔍 Audit Log: Team Weekoff Config Update
         try:
             log_audit(
@@ -549,6 +568,14 @@ def update_weekoff_by_tenant(
         for obj in db_objs:
             db.refresh(obj)
         logger.info(f"Committed bulk weekoff update for tenant {tenant_id}")
+
+        # Invalidate weekoff cache for all affected employees
+        try:
+            for obj in db_objs:
+                cache_manager.invalidate_weekoff(obj.employee_id)
+            logger.info(f"✅ Invalidated cache for {len(db_objs)} employees in tenant {tenant_id}")
+        except Exception as cache_error:
+            logger.warning(f"⚠️ Failed to invalidate weekoff cache: {cache_error}")
 
         # 🔍 Audit Log: Tenant Weekoff Config Update
         try:

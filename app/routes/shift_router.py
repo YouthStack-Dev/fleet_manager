@@ -112,6 +112,15 @@ def create_shift(
         db.commit()
         db.refresh(new_shift)
 
+        # Cache the newly created shift
+        try:
+            from app.utils.cache_manager import serialize_shift_for_cache
+            shift_dict = serialize_shift_for_cache(new_shift)
+            cache_manager.cache_shift(new_shift.shift_id, new_shift.tenant_id, shift_dict)
+            logger.info(f"✅ Cached newly created shift {new_shift.shift_id}")
+        except Exception as cache_error:
+            logger.warning(f"⚠️ Failed to cache new shift: {cache_error}")
+
         # 🔍 Audit Log: Shift Creation
         try:
             shift_data = {
@@ -390,9 +399,15 @@ def update_shift(
         db.commit()
         db.refresh(db_shift)
         
-        # Invalidate shift cache after update
-        cache_manager.invalidate_shift(shift_id, db_shift.tenant_id)
-        logger.info(f"Invalidated cache for shift {shift_id}")
+        # Invalidate and refresh shift cache after update
+        try:
+            from app.utils.cache_manager import serialize_shift_for_cache
+            shift_dict = serialize_shift_for_cache(db_shift)
+            cache_manager.invalidate_shift(shift_id, db_shift.tenant_id)
+            cache_manager.cache_shift(shift_id, db_shift.tenant_id, shift_dict)
+            logger.info(f"✅ Refreshed cache for shift {shift_id}")
+        except Exception as cache_error:
+            logger.warning(f"⚠️ Failed to refresh shift cache: {cache_error}")
 
         # 🔍 Capture new values after update
         new_values = {

@@ -50,11 +50,22 @@ def get_cutoffs(
         if user_type == "admin" and tenant_id is None:
             tenants = tenant_crud.get_all(db)
             for tenant in tenants:
-                cutoff = cutoff_crud.ensure_cutoff(db, tenant_id=tenant.tenant_id)
+                # Use cache for cutoff lookup, fallback to ensure_cutoff if not found
+                cutoff = cache_manager.get_cutoff_with_cache(db, tenant.tenant_id)
+                if cutoff is None:
+                    cutoff = cutoff_crud.ensure_cutoff(db, tenant_id=tenant.tenant_id)
+                    # Cache the newly created cutoff
+                    try:
+                        from app.utils.cache_manager import serialize_cutoff_for_cache
+                        cutoff_dict = serialize_cutoff_for_cache(cutoff)
+                        cache_manager.cache_cutoff(tenant.tenant_id, cutoff_dict)
+                        logger.info(f"✅ Cached newly created cutoff for tenant {tenant.tenant_id}")
+                    except Exception as cache_error:
+                        logger.warning(f"⚠️ Failed to cache new cutoff: {cache_error}")
                 cutoffs_response.append(CutoffOut.model_validate(cutoff, from_attributes=True))
         else:
-            # tenant_id must exist
-            tenant = tenant_crud.get_by_id(db, tenant_id=tenant_id)
+            # tenant_id must exist - use cache for tenant lookup
+            tenant = cache_manager.get_tenant_with_cache(db, tenant_id)
             if not tenant:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -63,7 +74,18 @@ def get_cutoffs(
                         error_code="TENANT_NOT_FOUND",
                     ),
                 )
-            cutoff = cutoff_crud.ensure_cutoff(db, tenant_id=tenant_id)
+            # Use cache for cutoff lookup, fallback to ensure_cutoff if not found
+            cutoff = cache_manager.get_cutoff_with_cache(db, tenant_id)
+            if cutoff is None:
+                cutoff = cutoff_crud.ensure_cutoff(db, tenant_id=tenant_id)
+                # Cache the newly created cutoff
+                try:
+                    from app.utils.cache_manager import serialize_cutoff_for_cache
+                    cutoff_dict = serialize_cutoff_for_cache(cutoff)
+                    cache_manager.cache_cutoff(tenant_id, cutoff_dict)
+                    logger.info(f"✅ Cached newly created cutoff for tenant {tenant_id}")
+                except Exception as cache_error:
+                    logger.warning(f"⚠️ Failed to cache new cutoff: {cache_error}")
             cutoffs_response.append(CutoffOut.model_validate(cutoff, from_attributes=True))
 
         db.commit()  # commit any default created
@@ -131,9 +153,15 @@ def update_cutoff(
         db.commit()
         db.refresh(cutoff)
         
-        # Invalidate cutoff cache after update
-        cache_manager.invalidate_cutoff(tenant_id)
-        logger.info(f"Invalidated cache for cutoff config tenant {tenant_id}")
+        # Invalidate and refresh cutoff cache after update
+        try:
+            from app.utils.cache_manager import serialize_cutoff_for_cache
+            cutoff_dict = serialize_cutoff_for_cache(cutoff)
+            cache_manager.invalidate_cutoff(tenant_id)
+            cache_manager.cache_cutoff(tenant_id, cutoff_dict)
+            logger.info(f"✅ Refreshed cache for cutoff tenant {tenant_id}")
+        except Exception as cache_error:
+            logger.warning(f"⚠️ Failed to refresh cutoff cache: {cache_error}")
 
         # 🔍 Audit Log: Cutoff Update
         try:
