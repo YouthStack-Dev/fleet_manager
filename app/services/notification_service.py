@@ -237,7 +237,7 @@ class NotificationService:
             </html>
             """
             
-            success = self.email_service.send_email(
+            success = await self.email_service.send_email(
                 to_emails=[to_email],
                 subject=subject,
                 html_content=html_body,

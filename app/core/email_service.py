@@ -1,13 +1,14 @@
-import smtplib
+import aiosmtplib
 import ssl
 import time
+import asyncio
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 from typing import Optional, List, Dict, Any, Union
 import logging
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
 
@@ -74,43 +75,54 @@ class EmailService:
         logger.info(f"Email service configured with {self.smtp_server}:{self.smtp_port} using sender: {self.sender_email}")
         return True
     
-    @contextmanager
-    def _create_smtp_connection(self):
-        """Create and return SMTP connection with proper error handling"""
-        server = None
+    @asynccontextmanager
+    async def _create_smtp_connection(self):
+        """Create and return async SMTP connection with proper error handling"""
+        smtp_client = None
         try:
+            # Create async SMTP client
             if self.smtp_use_ssl:
                 # Use SSL connection (port 465)
-                context = ssl.create_default_context()
-                server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port, context=context)
-                logger.debug("Created SMTP_SSL connection")
+                smtp_client = aiosmtplib.SMTP(
+                    hostname=self.smtp_server,
+                    port=self.smtp_port,
+                    use_tls=True
+                )
+                logger.debug("Created async SMTP SSL connection")
             else:
-                # Use regular connection with optional TLS (port 587)
-                server = smtplib.SMTP(self.smtp_server, self.smtp_port)
-                if self.smtp_use_tls:
-                    server.starttls()
-                    logger.debug("Started TLS on SMTP connection")
+                # Use STARTTLS (port 587)
+                smtp_client = aiosmtplib.SMTP(
+                    hostname=self.smtp_server,
+                    port=self.smtp_port,
+                    use_tls=False,
+                    start_tls=self.smtp_use_tls
+                )
+                logger.debug("Created async SMTP connection")
             
-            server.login(self.smtp_username, self.smtp_password)
+            await smtp_client.connect()
+            logger.debug("SMTP connection established")
+            
+            await smtp_client.login(self.smtp_username, self.smtp_password)
             logger.debug("SMTP authentication successful")
-            yield server
             
-        except smtplib.SMTPAuthenticationError as e:
+            yield smtp_client
+            
+        except aiosmtplib.SMTPAuthenticationError as e:
             logger.error(f"SMTP authentication failed: {str(e)}")
             raise
-        except smtplib.SMTPServerDisconnected as e:
+        except aiosmtplib.SMTPServerDisconnected as e:
             logger.error(f"SMTP server disconnected: {str(e)}")
             raise
-        except smtplib.SMTPException as e:
+        except aiosmtplib.SMTPException as e:
             logger.error(f"SMTP error: {str(e)}")
             raise
         except Exception as e:
             logger.error(f"Failed to create SMTP connection: {str(e)}")
             raise
         finally:
-            if server:
+            if smtp_client:
                 try:
-                    server.quit()
+                    await smtp_client.quit()
                     logger.debug("SMTP connection closed")
                 except:
                     pass
@@ -173,7 +185,7 @@ class EmailService:
         
         return msg
     
-    def send_email(
+    async def send_email(
         self,
         to_emails: Union[str, List[str]],
         subject: str,
@@ -186,7 +198,7 @@ class EmailService:
         priority: EmailPriority = EmailPriority.NORMAL
     ) -> bool:
         """
-        Send email with HTML/text content and optional attachments
+        Send email with HTML/text content and optional attachments (async)
         All emails sent from the global admin email address
         
         Args:
@@ -243,14 +255,14 @@ class EmailService:
                     priority=priority
                 )
                 
-                with self._create_smtp_connection() as server:
+                async with self._create_smtp_connection() as smtp_client:
                     all_recipients = to_emails[:]
                     if cc_emails:
                         all_recipients.extend(cc_emails)
                     if bcc_emails:
                         all_recipients.extend(bcc_emails)
                     
-                    server.send_message(msg, to_addrs=all_recipients)
+                    await smtp_client.send_message(msg)
                     
                 self._emails_sent += 1
                 logger.info(f"Email sent successfully to {', '.join(to_emails)} - Subject: {subject}")
@@ -259,7 +271,7 @@ class EmailService:
             except Exception as e:
                 logger.warning(f"Email send attempt {attempt + 1}/{self.retry_attempts} failed: {str(e)}")
                 if attempt < self.retry_attempts - 1:
-                    time.sleep(self.retry_delay)
+                    await asyncio.sleep(self.retry_delay)
                 else:
                     self._emails_failed += 1
                     logger.error(f"Failed to send email after {self.retry_attempts} attempts: {str(e)}")
@@ -267,7 +279,7 @@ class EmailService:
         
         return False
     
-    def send_driver_assignment_email(self, user_email: str, booking_data: Dict[str, Any]) -> bool:
+    async def send_driver_assignment_email(self, user_email: str, booking_data: Dict[str, Any]) -> bool:
         """Send driver assignment notification email"""
         html_content = f"""
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -288,7 +300,7 @@ class EmailService:
         </div>
         """
         
-        return self.send_email(
+        return await self.send_email(
             to_emails=user_email,
             subject=f"Driver Assigned - Booking {booking_data.get('booking_id')}",
             html_content=html_content
@@ -318,7 +330,7 @@ class EmailService:
             return False
 
     # Convenience methods for common email types with hardcoded HTML content
-    def send_welcome_email(self, user_email: str, user_name: str, login_credentials: Dict[str, str]) -> bool:
+    async def send_welcome_email(self, user_email: str, user_name: str, login_credentials: Dict[str, str]) -> bool:
         """Send welcome email to new user"""
         subject = f"Welcome to {self.app_name}"
         
@@ -347,13 +359,13 @@ class EmailService:
         </div>
         """
         
-        return self.send_email(
+        return await self.send_email(
             to_emails=user_email,
             subject=subject,
             html_content=html_content
         )
     
-    def send_tenant_created_email(self, admin_email: str, tenant_data: Dict[str, Any]) -> bool:
+    async def send_tenant_created_email(self, admin_email: str, tenant_data: Dict[str, Any]) -> bool:
         """Send notification when new tenant is created"""
         subject = f"Tenant Created Successfully - {tenant_data.get('name')}"
         
@@ -397,13 +409,13 @@ class EmailService:
         </div>
         """
         
-        return self.send_email(
+        return await self.send_email(
             to_emails=admin_email,
             subject=subject,
             html_content=html_content
         )
     
-    def send_booking_confirmation_email(self, user_email: str, booking_data: Dict[str, Any]) -> bool:
+    async def send_booking_confirmation_email(self, user_email: str, booking_data: Dict[str, Any]) -> bool:
         """Send booking confirmation email"""
         subject = f"Booking Confirmed - {booking_data.get('booking_id')}"
         
@@ -458,13 +470,13 @@ class EmailService:
         </div>
         """
         
-        return self.send_email(
+        return await self.send_email(
             to_emails=user_email,
             subject=subject,
             html_content=html_content
         )
     
-    def send_booking_status_update_email(self, user_email: str, booking_data: Dict[str, Any], old_status: str) -> bool:
+    async def send_booking_status_update_email(self, user_email: str, booking_data: Dict[str, Any], old_status: str) -> bool:
         """Send booking status update email"""
         subject = f"Booking Status Updated - {booking_data.get('booking_id')}"
         
@@ -511,13 +523,13 @@ class EmailService:
         </div>
         """
         
-        return self.send_email(
+        return await self.send_email(
             to_emails=user_email,
             subject=subject,
             html_content=html_content
         )
     
-    def send_password_reset_email(self, user_email: str, reset_token: str, user_name: str) -> bool:
+    async def send_password_reset_email(self, user_email: str, reset_token: str, user_name: str) -> bool:
         """Send password reset email"""
         subject = f"Password Reset Request - {self.app_name}"
         reset_url = f"{settings.FRONTEND_URL}/reset-password?token={reset_token}"
@@ -556,12 +568,13 @@ class EmailService:
         </div>
         """
         
-        return self.send_email(
+        return await self.send_email(
             to_emails=user_email,
             subject=subject,
             html_content=html_content
         )
-    def send_employee_created_email(self, user_email: str, user_name: str, details: Dict[str, Any]) -> bool:
+    
+    async def send_employee_created_email(self, user_email: str, user_name: str, details: Dict[str, Any]) -> bool:
         """Send email when a new employee is created"""
         subject = f"Employee Account Created - {self.app_name}"
 
@@ -603,13 +616,13 @@ class EmailService:
         </div>
         """
 
-        return self.send_email(
+        return await self.send_email(
             to_emails=user_email,
             subject=subject,
             html_content=html_content
         )
 
-    def send_driver_created_email(self, user_email: str, user_name: str, details: Dict[str, Any]) -> bool:
+    async def send_driver_created_email(self, user_email: str, user_name: str, details: Dict[str, Any]) -> bool:
         """Send email when a new driver is created"""
         subject = f"Driver Account Created - {self.app_name}"
 
@@ -652,13 +665,13 @@ class EmailService:
         </div>
         """
 
-        return self.send_email(
+        return await self.send_email(
             to_emails=user_email,
             subject=subject,
             html_content=html_content
         )
 
-    def send_vendor_created_email(self, admin_email: str, vendor_data: Dict[str, Any]) -> bool:
+    async def send_vendor_created_email(self, admin_email: str, vendor_data: Dict[str, Any]) -> bool:
         """Send email when a new vendor is created"""
         subject = f"Vendor Account Created - {self.app_name}"
 
@@ -705,13 +718,13 @@ class EmailService:
         </div>
         """
 
-        return self.send_email(
+        return await self.send_email(
             to_emails=admin_email,
             subject=subject,
             html_content=html_content
         )
 
-    def send_vendor_user_created_email(self, user_email: str, user_name: str, details: Dict[str, Any]) -> bool:
+    async def send_vendor_user_created_email(self, user_email: str, user_name: str, details: Dict[str, Any]) -> bool:
         """Send email when a new vendor user is created"""
         subject = f"Vendor User Account Created - {self.app_name}"
 
@@ -754,7 +767,7 @@ class EmailService:
         </div>
         """
 
-        return self.send_email(
+        return await self.send_email(
             to_emails=user_email,
             subject=subject,
             html_content=html_content

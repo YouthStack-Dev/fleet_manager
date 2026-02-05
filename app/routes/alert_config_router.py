@@ -766,7 +766,7 @@ async def test_notification_configuration(
                                     <p style="color: red; font-weight: bold;">⚠️ THIS IS A TEST - No action required</p>
                                     """
                                     
-                                    result = email_service.send_email(
+                                    result = await email_service.send_email(
                                         to_emails=recipient.get("email"),
                                         subject=subject,
                                         html_content=html_content

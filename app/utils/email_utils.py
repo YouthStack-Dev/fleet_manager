@@ -56,7 +56,7 @@ def send_email_background(
         **kwargs
     )
 
-def _send_email_task(
+async def _send_email_task(
     to_emails: Union[str, List[str]],
     subject: str,
     html_content: Optional[str] = None,
@@ -71,7 +71,7 @@ def _send_email_task(
         email_service = get_email_service()
         
         # Only send regular email since templates are removed
-        success = email_service.send_email(
+        success = await email_service.send_email(
             to_emails=to_emails,
             subject=subject,
             html_content=html_content,

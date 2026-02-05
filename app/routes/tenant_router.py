@@ -313,7 +313,7 @@ def create_tenant(
             ),
         )
 
-def send_tenant_welcome_emails(
+async def send_tenant_welcome_emails(
     tenant_data: dict, 
     admin_email: str, 
     admin_name: str, 
@@ -325,14 +325,14 @@ def send_tenant_welcome_emails(
         sms_service = get_sms_service()
         
         # Send welcome email with login credentials
-        welcome_success = email_service.send_welcome_email(
+        welcome_success = await email_service.send_welcome_email(
             user_email=admin_email,
             user_name=admin_name,
             login_credentials=login_credentials
         )
         
         # Send tenant created notification
-        tenant_success = email_service.send_tenant_created_email(
+        tenant_success = await email_service.send_tenant_created_email(
             admin_email=admin_email,
             tenant_data=tenant_data
         )
@@ -348,7 +348,13 @@ def send_tenant_welcome_emails(
         # Get admin phone from tenant_data if available
         admin_phone = tenant_data.get('admin_phone')
         sms_success = False
-        if admin_phone:
+        sms_skip_reason = None
+        
+        if not admin_phone:
+            sms_skip_reason = "No phone number provided"
+        elif not sms_service.enabled:
+            sms_skip_reason = "SMS service is disabled in configuration"
+        else:
             sms_success = sms_service.send_sms(
                 to_phone=admin_phone,
                 message=sms_message
@@ -364,10 +370,13 @@ def send_tenant_welcome_emails(
         else:
             logger.error(f"Both welcome emails failed for tenant {tenant_data['tenant_id']}")
             
+        # SMS logging with clear reason
         if sms_success:
-            logger.info(f"Tenant creation SMS sent for tenant {tenant_data['tenant_id']}")
-        elif admin_phone:
-            logger.error(f"Tenant creation SMS FAILED for tenant {tenant_data['tenant_id']}")
+            logger.info(f"Tenant creation SMS sent successfully to {admin_phone} for tenant {tenant_data['tenant_id']}")
+        elif sms_skip_reason:
+            logger.info(f"Tenant creation SMS skipped for tenant {tenant_data['tenant_id']}: {sms_skip_reason}")
+        else:
+            logger.error(f"Tenant creation SMS failed for tenant {tenant_data['tenant_id']} - Phone: {admin_phone}")
         
     except Exception as e:
         logger.error(f"Failed to send tenant welcome emails: {str(e)}")

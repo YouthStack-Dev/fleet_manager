@@ -88,6 +88,7 @@ def get_alerts(
     db: Session,
     tenant_id: Optional[str],
     employee_id: Optional[int] = None,
+    team_id: Optional[int] = None,
     booking_id: Optional[int] = None,
     status: Optional[AlertStatusEnum] = None,
     alert_type: Optional[AlertTypeEnum] = None,
@@ -100,6 +101,13 @@ def get_alerts(
 ) -> List[Alert]:
     """Get alerts with filters"""
     query = db.query(Alert)
+    
+    # Join Employee table if team filtering is needed
+    if team_id:
+        from app.models.employee import Employee
+        query = query.join(Employee, Alert.employee_id == Employee.employee_id)
+        query = query.filter(Employee.team_id == team_id)
+    
     if tenant_id:
         query = query.filter(Alert.tenant_id == tenant_id)
     
@@ -132,9 +140,16 @@ def get_alerts(
     return query.limit(limit).offset(offset).all()
 
 
-def get_active_alerts(db: Session, tenant_id: Optional[str], employee_id: Optional[int] = None) -> List[Alert]:
+def get_active_alerts(db: Session, tenant_id: Optional[str], employee_id: Optional[int] = None, team_id: Optional[int] = None) -> List[Alert]:
     """Get active (not closed) alerts"""
     query = db.query(Alert)
+    
+    # Join Employee table if team filtering is needed
+    if team_id:
+        from app.models.employee import Employee
+        query = query.join(Employee, Alert.employee_id == Employee.employee_id)
+        query = query.filter(Employee.team_id == team_id)
+    
     if tenant_id:
         query = query.filter(Alert.tenant_id == tenant_id)
 
