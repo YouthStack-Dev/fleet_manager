@@ -786,7 +786,7 @@ async def request_employee_otp(
         delivery_channel = username_type
         
         # Send OTP asynchronously in background for faster response
-        def send_otp_background():
+        async def send_otp_background():
             """Background task to send OTP without blocking response"""
             if is_email:
                 try:
@@ -805,7 +805,7 @@ async def request_employee_otp(
                     </html>
                     """
                     
-                    otp_sent = email_service.send_email(
+                    otp_sent = await email_service.send_email(
                         to_emails=employee.email,
                         subject=subject,
                         html_content=body

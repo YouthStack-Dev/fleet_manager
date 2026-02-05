@@ -86,14 +86,11 @@ async def send_email_async(recipient: str, subject: str, body: str, **kwargs):
     from app.core.email_service import EmailService
 
     email_service = EmailService()
-    await asyncio.get_event_loop().run_in_executor(
-        None,
-        lambda: email_service.send_email(
-            to_email=recipient,
-            subject=subject,
-            body=body,
-            **kwargs
-        )
+    await email_service.send_email(
+        to_emails=recipient,
+        subject=subject,
+        html_content=body,
+        **kwargs
     )
 
 async def optimize_routes_async(job_id: str, route_data: dict):

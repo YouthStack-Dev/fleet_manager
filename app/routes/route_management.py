@@ -1268,7 +1268,7 @@ Fleet Management Team
                     </html>
                     """
                     
-                    email_sent = email_service.send_email(
+                    email_sent = await email_service.send_email(
                         to_emails=[employee.email],
                         subject=subject,
                         html_content=email_html,

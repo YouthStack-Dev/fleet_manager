@@ -203,6 +203,10 @@ async def trigger_alert(
         
         logger.info(f"[alert.trigger] Alert {alert.alert_id} created successfully")
         
+        # Commit the alert to database before background task
+        db.commit()
+        logger.info(f"[alert.trigger] Alert {alert.alert_id} committed to database")
+        
         # Get configuration (convert alert_type string to enum)
         alert_type_enum = AlertTypeEnum(alert.alert_type) if isinstance(alert.alert_type, str) else alert.alert_type
         config = alert_crud.get_applicable_configuration(
@@ -217,12 +221,13 @@ async def trigger_alert(
             # Continue without notifications
         else:
             # Send notifications in background
+            logger.info(f"[alert.trigger] Configuration found (config_id={config.config_id}), scheduling notification task")
             background_tasks.add_task(
                 send_alert_notifications,
-                db_session=db,
                 alert_id=alert.alert_id,
                 config_id=config.config_id
             )
+            logger.info(f"[alert.trigger] Notification task scheduled for alert {alert.alert_id}")
         
         return ResponseWrapper.success(
             message="Alert triggered successfully. Help is on the way.",
@@ -244,24 +249,53 @@ async def trigger_alert(
 
 @router.get("/active", response_model=dict)
 def get_active_alerts(
+    team_id: Optional[int] = Query(None, description="Filter by team (branch managers only)"),
+    employee_id: Optional[int] = Query(None, description="Filter by employee (branch managers only)"),
     db: Session = Depends(get_db),
     current_employee: dict = Depends(get_current_employee)
 ):
     """
-    Get employee's active alerts
+    Get active alerts
+    
+    - Regular employees: see only their own active alerts
+    - Branch managers (with alert.read permission): see all active alerts in tenant, can filter by team_id or employee_id
     """
     try:
-        employee_id = current_employee.get("employee_id") or current_employee.get("user_id")
+        current_employee_id = current_employee.get("employee_id") or current_employee.get("user_id")
         tenant_id = current_employee.get("tenant_id")
+        user_permissions = current_employee.get("permissions", [])
         
-        # Convert employee_id to int for database comparison
-        employee_id = int(employee_id) if employee_id else None
+        # Convert current_employee_id to int
+        current_employee_id = int(current_employee_id) if current_employee_id else None
+        
+        # Check if user has permission to view all alerts (branch manager)
+        has_read_permission = check_user_permission(user_permissions, "alert", "read")
+        
+        if has_read_permission:
+            # Branch manager: can see all alerts or filter by team_id/employee_id
+            target_team_id = team_id if team_id else None
+            target_employee_id = employee_id if employee_id else None
+            logger.info(f"[alert.active] Branch manager viewing active alerts - tenant={tenant_id}, filter_team_id={target_team_id}, filter_employee_id={target_employee_id}")
+        else:
+            # Regular employee: can only see their own alerts
+            if (employee_id and employee_id != current_employee_id) or team_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail=ResponseWrapper.error(
+                        message="You can only view your own alerts",
+                        error_code="ACCESS_FORBIDDEN"
+                    )
+                )
+            target_team_id = None
+            target_employee_id = current_employee_id
+            logger.info(f"[alert.active] Employee viewing own active alerts - employee_id={target_employee_id}")
         
         # Get active alerts (TRIGGERED or ACKNOWLEDGED)
         alerts = alert_crud.get_active_alerts(
             db=db,
             tenant_id=tenant_id,
-            employee_id=employee_id
+            team_id=target_team_id,
+            employee_id=target_employee_id
         )
         
         return ResponseWrapper.success(
@@ -269,12 +303,96 @@ def get_active_alerts(
             data=[AlertResponse.from_orm(alert).dict() for alert in alerts]
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[alert.active] Error: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=ResponseWrapper.error(
                 message=f"Failed to retrieve active alerts: {str(e)}",
+                error_code="RETRIEVE_FAILED"
+            )
+        )
+
+
+@router.get("/team-alerts", response_model=dict)
+def get_team_alerts(
+    team_id: Optional[int] = Query(None, description="Filter by specific team ID"),
+    employee_id: Optional[int] = Query(None, description="Filter by specific employee ID"),
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    status: Optional[AlertStatusEnum] = None,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_employee: dict = Depends(get_current_employee)
+):
+    """
+    Get all team/tenant alerts (for branch managers and responders)
+    
+    - Branch managers (employees with alert.read permission) can see all alerts in their tenant
+    - Supports filtering by team_id, employee_id, status, and date range
+    - Returns paginated results
+    """
+    try:
+        tenant_id = current_employee.get("tenant_id")
+        user_permissions = current_employee.get("permissions", [])
+        
+        # Check if user has permission to view all alerts (branch manager/responder)
+        has_read_permission = check_user_permission(user_permissions, "alert", "read")
+        
+        if not has_read_permission:
+            raise HTTPException(
+                status_code=403,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to view team alerts",
+                    error_code="ACCESS_FORBIDDEN"
+                )
+            )
+        
+        logger.info(f"[alert.team-alerts] User viewing team alerts - tenant={tenant_id}, filter_team_id={team_id}, filter_employee_id={employee_id}")
+        
+        # Convert dates to datetime for filtering
+        from_datetime = datetime.combine(start_date, datetime.min.time()) if start_date else None
+        to_datetime = datetime.combine(end_date, datetime.max.time()) if end_date else None
+        
+        # Get alerts (all if no filters, or filtered by team/employee)
+        alerts = alert_crud.get_alerts(
+            db=db,
+            tenant_id=tenant_id,
+            team_id=team_id,  # None = all teams, int = specific team
+            employee_id=employee_id,  # None = all employees, int = specific employee
+            status=status,
+            from_date=from_datetime,
+            to_date=to_datetime,
+            limit=limit,
+            offset=offset
+        )
+        
+        # Calculate page number from offset
+        page = (offset // limit) + 1 if limit > 0 else 1
+        
+        response_data = AlertListResponse(
+            alerts=[AlertResponse.from_orm(alert).dict() for alert in alerts],
+            total=len(alerts),
+            page=page,
+            page_size=limit
+        )
+        
+        return ResponseWrapper.success(
+            message=f"Retrieved {len(alerts)} team alert(s)",
+            data=response_data.dict()
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[alert.team-alerts] Error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=ResponseWrapper.error(
+                message=f"Failed to retrieve team alerts: {str(e)}",
                 error_code="RETRIEVE_FAILED"
             )
         )
@@ -291,7 +409,7 @@ def get_my_alerts(
     current_employee: dict = Depends(get_current_employee)
 ):
     """
-    Get employee's alert history with filters
+    Get employee's own alert history with filters
     """
     try:
         employee_id = current_employee.get("employee_id") or current_employee.get("user_id")
@@ -488,6 +606,11 @@ async def acknowledge_alert(
             notes=request.notes
         )
         
+        # Commit changes to database
+        db.commit()
+        db.refresh(alert)
+        logger.info(f"[alert.acknowledge] Changes committed to database")
+        
         logger.info(f"[alert.acknowledge] Alert {alert_id} acknowledged by {responder_name}, response_time={alert.response_time_seconds}s")
         
         # Get configuration for notifications
@@ -506,7 +629,6 @@ async def acknowledge_alert(
             # Send status update notifications
             background_tasks.add_task(
                 send_status_notification,
-                db_session=db,
                 alert_id=alert.alert_id,
                 config_id=config.config_id,
                 new_status=AlertStatusEnum.ACKNOWLEDGED.value
@@ -607,6 +729,11 @@ async def close_alert(
             is_false_alarm=request.is_false_alarm
         )
         
+        # Commit changes to database
+        db.commit()
+        db.refresh(alert)
+        logger.info(f"[alert.close] Changes committed to database")
+        
         logger.info(f"[alert.close] Alert {alert_id} closed by {closed_by_name}, resolution_time={alert.resolution_time_seconds}s")
         
         # Get configuration for notifications
@@ -624,7 +751,6 @@ async def close_alert(
             logger.info(f"[alert.close] Scheduling status notification background task")
             background_tasks.add_task(
                 send_status_notification,
-                db_session=db,
                 alert_id=alert.alert_id,
                 config_id=config.config_id,
                 new_status=alert.status.value
@@ -728,6 +854,12 @@ async def manual_escalate_alert(
             is_auto=False
         )
         
+        # Commit changes to database
+        db.commit()
+        db.refresh(escalation)
+        db.refresh(alert)
+        logger.info(f"[alert.escalate] Changes committed to database")
+        
         logger.info(f"[alert.escalate] Alert {alert_id} manually escalated to level {request.escalation_level}")
         
         # Get configuration for notifications
@@ -745,7 +877,6 @@ async def manual_escalate_alert(
             logger.info(f"[alert.escalate] Scheduling escalation notification background task")
             background_tasks.add_task(
                 send_escalation_notification,
-                db_session=db,
                 alert_id=alert.alert_id,
                 config_id=config.config_id,
                 escalation_level=request.escalation_level
@@ -869,26 +1000,41 @@ def get_alert_timeline(
 
 
 # Background task functions
-async def send_alert_notifications(db_session: Session, alert_id: int, config_id: int):
+async def send_alert_notifications(alert_id: int, config_id: int):
     """Send notifications when alert is triggered"""
+    from app.database.session import SessionLocal
+    
+    db_session = SessionLocal()
     try:
+        logger.info(f"[background.notify] Starting notification for alert_id={alert_id}, config_id={config_id}")
+        
         alert = db_session.query(alert_crud.Alert).filter_by(alert_id=alert_id).first()
         config = db_session.query(alert_crud.AlertConfiguration).filter_by(config_id=config_id).first()
         
+        logger.info(f"[background.notify] Alert found: {alert is not None}, Config found: {config is not None}")
+        
         if alert and config:
+            logger.info(f"[background.notify] Creating NotificationService and sending notification")
             notification_service = NotificationService(db_session)
             await notification_service.notify_alert_triggered(alert, config)
+            logger.info(f"[background.notify] Notification sent successfully for alert {alert_id}")
+        else:
+            logger.warning(f"[background.notify] Cannot send notification - alert={alert is not None}, config={config is not None}")
     except Exception as e:
-        logger.error(f"[background.notify] Error sending notifications: {str(e)}")
+        logger.error(f"[background.notify] Error sending notifications: {str(e)}", exc_info=True)
+    finally:
+        db_session.close()
 
 
 async def send_status_notification(
-    db_session: Session,
     alert_id: int,
     config_id: int,
     new_status: str
 ):
     """Send notification on status change"""
+    from app.database.session import SessionLocal
+    
+    db_session = SessionLocal()
     try:
         alert = db_session.query(alert_crud.Alert).filter_by(alert_id=alert_id).first()
         config = db_session.query(alert_crud.AlertConfiguration).filter_by(config_id=config_id).first()
@@ -898,15 +1044,19 @@ async def send_status_notification(
             await notification_service.notify_alert_status_change(alert, config, new_status)
     except Exception as e:
         logger.error(f"[background.status_notify] Error: {str(e)}")
+    finally:
+        db_session.close()
 
 
 async def send_escalation_notification(
-    db_session: Session,
     alert_id: int,
     config_id: int,
     escalation_level: int
 ):
     """Send notification on escalation"""
+    from app.database.session import SessionLocal
+    
+    db_session = SessionLocal()
     try:
         alert = db_session.query(alert_crud.Alert).filter_by(alert_id=alert_id).first()
         config = db_session.query(alert_crud.AlertConfiguration).filter_by(config_id=config_id).first()
@@ -916,6 +1066,8 @@ async def send_escalation_notification(
             await notification_service.notify_alert_escalated(alert, config, escalation_level)
     except Exception as e:
         logger.error(f"[background.escalate_notify] Error: {str(e)}")
+    finally:
+        db_session.close()
 
 
 
