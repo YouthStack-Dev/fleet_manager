@@ -1023,6 +1023,28 @@ async def assign_vehicle_to_route(
                 ),
             )
 
+        # ✅ Check if vehicle is active
+        if not vehicle.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Cannot assign inactive vehicle to route",
+                    error_code="VEHICLE_INACTIVE",
+                    details={"vehicle_id": vehicle.vehicle_id, "rc_number": vehicle.rc_number},
+                ),
+            )
+
+        # ✅ Check if vehicle has a driver assigned
+        if not vehicle.driver_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Vehicle does not have a driver assigned. Please assign a driver to the vehicle first.",
+                    error_code="VEHICLE_NO_DRIVER",
+                    details={"vehicle_id": vehicle.vehicle_id, "rc_number": vehicle.rc_number},
+                ),
+            )
+
         # ---- Resolve Driver from Vehicle ----
         driver = (
             db.query(Driver)
@@ -1058,11 +1080,58 @@ async def assign_vehicle_to_route(
                 ),
             )
 
+        # ✅ Check if driver is active
+        if not driver.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Cannot assign inactive driver to route",
+                    error_code="DRIVER_INACTIVE",
+                    details={"driver_id": driver.driver_id, "driver_name": driver.name},
+                ),
+            )
+
+        # ✅ Verify bidirectional connection between vehicle and driver
+        if vehicle.driver_id != driver.driver_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Vehicle and driver are not properly connected",
+                    error_code="VEHICLE_DRIVER_MISMATCH",
+                    details={
+                        "vehicle_id": vehicle.vehicle_id,
+                        "vehicle_driver_id": vehicle.driver_id,
+                        "driver_id": driver.driver_id,
+                    },
+                ),
+            )
+
         # --- Normalize gender (optional safeguard) ---
         if hasattr(driver, "gender") and driver.gender:
             valid_enums = {"MALE", "FEMALE", "OTHER"}
             if driver.gender.upper() not in valid_enums:
                 driver.gender = driver.gender.upper()
+
+        # ---- Check if same vehicle/driver already assigned ----
+        is_same_assignment = (
+            route.assigned_vehicle_id == vehicle.vehicle_id and
+            route.assigned_driver_id == driver.driver_id
+        )
+
+        if is_same_assignment:
+            logger.info(
+                f"[assign_vehicle_to_route] Same vehicle/driver already assigned to route {route_id}. Skipping OTP generation and notifications."
+            )
+            return ResponseWrapper.success(
+                data={
+                    "route_id": route.route_id,
+                    "assigned_vendor_id": route.assigned_vendor_id,
+                    "assigned_vehicle_id": route.assigned_vehicle_id,
+                    "assigned_driver_id": route.assigned_driver_id,
+                    "status": route.status.value,
+                },
+                message="Vehicle and driver are already assigned to this route. No changes made.",
+            )
 
         # ---- Apply assignment ----
         route.assigned_vehicle_id = vehicle.vehicle_id
