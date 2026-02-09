@@ -1,5 +1,5 @@
 import random as random
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status, BackgroundTasks
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict
@@ -72,6 +72,196 @@ router = APIRouter(
     prefix="/routes",
     tags=["route-management"]
 )
+
+
+# Background task for sending notifications
+async def send_assignment_notifications_background(
+    booking_data: List[Dict],
+    route_code: str,
+    driver_name: str,
+    driver_phone: str,
+    vehicle_rc_number: str,
+    route_id: int,
+):
+    """
+    Send notifications (Email, SMS, Push) to employees in the background.
+    This prevents blocking the main API response.
+    """
+    from app.core.email_service import EmailService
+    from app.services.unified_notification_service import UnifiedNotificationService
+    from app.services.session_cache import SessionCache
+    from app.services.sms_service import SMSService
+    from app.database.session import SessionLocal
+    
+    db = SessionLocal()
+    
+    try:
+        email_service = EmailService()
+        push_service = UnifiedNotificationService(db, SessionCache())
+        sms_service = SMSService()
+        
+        logger.info(f"[BACKGROUND] Starting notification dispatch for {len(booking_data)} bookings")
+        
+        for data in booking_data:
+            employee_email = data.get("employee_email")
+            employee_phone = data.get("employee_phone")
+            employee_name = data.get("employee_name")
+            employee_id = data.get("employee_id")
+            booking_id = data.get("booking_id")
+            shift_type = data.get("shift_type")
+            shift_time = data.get("shift_time")
+            booking_date = data.get("booking_date")
+            estimated_pickup = data.get("estimated_pickup")
+            boarding_otp = data.get("boarding_otp")
+            deboarding_otp = data.get("deboarding_otp")
+            escort_otp = data.get("escort_otp")
+            
+            otp_details = []
+            if boarding_otp:
+                otp_details.append(f"Boarding OTP: {boarding_otp}")
+            if deboarding_otp:
+                otp_details.append(f"Deboarding OTP: {deboarding_otp}")
+            if escort_otp:
+                otp_details.append(f"Escort OTP: {escort_otp}")
+            
+            otp_message = "\n".join(otp_details) if otp_details else "No OTP required"
+            
+            subject = f"Driver Assigned - Route {route_code}"
+            message_body = f"""
+Hello {employee_name},
+
+Your driver has been assigned for your {shift_type} shift on {booking_date}.
+
+Route Details:
+- Route Code: {route_code}
+- Shift Time: {shift_time}
+- Driver: {driver_name} ({driver_phone})
+- Vehicle: {vehicle_rc_number}
+
+Your OTP Codes:
+{otp_message}
+
+Please share these OTPs with the driver at the designated times.
+
+Estimated Pickup: {estimated_pickup or 'TBD'}
+
+Thank you,
+Fleet Management Team
+            """.strip()
+            
+            # 1. Send Email
+            try:
+                if employee_email:
+                    email_html = f"""
+                    <html>
+                        <body style="font-family: Arial, sans-serif;">
+                            <h2 style="color: #2c5aa0;">🚗 Driver Assigned</h2>
+                            <p>Hello <strong>{employee_name}</strong>,</p>
+                            <p>Your driver has been assigned for your <strong>{shift_type}</strong> shift on <strong>{booking_date}</strong>.</p>
+                            
+                            <div style="background-color: #f0f8ff; padding: 15px; border-left: 4px solid #2c5aa0; margin: 20px 0;">
+                                <h3 style="margin-top: 0;">Route Details</h3>
+                                <ul style="list-style: none; padding-left: 0;">
+                                    <li>📍 <strong>Route Code:</strong> {route_code}</li>
+                                    <li>🕐 <strong>Shift Time:</strong> {shift_time}</li>
+                                    <li>👤 <strong>Driver:</strong> {driver_name} ({driver_phone})</li>
+                                    <li>🚙 <strong>Vehicle:</strong> {vehicle_rc_number}</li>
+                                    <li>⏰ <strong>Estimated Pickup:</strong> {estimated_pickup or 'TBD'}</li>
+                                </ul>
+                            </div>
+                            
+                            <div style="background-color: #fff3cd; padding: 15px; border-left: 4px solid #ffc107; margin: 20px 0;">
+                                <h3 style="margin-top: 0;">🔐 Your OTP Codes</h3>
+                                <p style="font-size: 16px; line-height: 1.8;">
+                                    {'<br>'.join(otp_details) if otp_details else 'No OTP required'}
+                                </p>
+                                <p style="color: #856404; font-size: 14px;">
+                                    <em>Please share these OTPs with the driver at the designated times.</em>
+                                </p>
+                            </div>
+                            
+                            <p>Thank you,<br><strong>Fleet Management Team</strong></p>
+                        </body>
+                    </html>
+                    """
+                    
+                    email_sent = await email_service.send_email(
+                        to_emails=[employee_email],
+                        subject=subject,
+                        html_content=email_html,
+                        text_content=message_body
+                    )
+                    
+                    if email_sent:
+                        logger.info(f"[BACKGROUND] Email sent to {employee_email} for booking {booking_id}")
+                    else:
+                        logger.warning(f"[BACKGROUND] Failed to send email to {employee_email}")
+                else:
+                    logger.warning(f"[BACKGROUND] No email found for employee {employee_id}")
+            except Exception as e:
+                logger.error(f"[BACKGROUND] Error sending email: {e}")
+            
+            # 2. Send SMS
+            try:
+                if employee_phone:
+                    sms_message = f"Driver Assigned! Route: {route_code}, Driver: {driver_name} ({driver_phone}), Vehicle: {vehicle_rc_number}. "
+                    
+                    if otp_details:
+                        sms_message += f"OTPs: {' | '.join(otp_details)}. "
+                    
+                    sms_message += f"Pickup: {estimated_pickup or 'TBD'}. Check email for details."
+                    
+                    sms_sent = sms_service.send_sms(
+                        to_phone=employee_phone,
+                        message=sms_message
+                    )
+                    
+                    if sms_sent:
+                        logger.info(f"[BACKGROUND] SMS sent to {employee_phone} for booking {booking_id}")
+                    else:
+                        logger.warning(f"[BACKGROUND] Failed to send SMS to {employee_phone}")
+                else:
+                    logger.warning(f"[BACKGROUND] No phone found for employee {employee_id}")
+            except Exception as e:
+                logger.error(f"[BACKGROUND] Error sending SMS: {e}")
+            
+            # 3. Send Push Notification
+            try:
+                push_result = push_service.send_to_user(
+                    user_type="employee",
+                    user_id=employee_id,
+                    title=subject,
+                    body=f"Driver {driver_name} assigned. Vehicle: {vehicle_rc_number}. Check your OTPs.",
+                    data={
+                        "type": "driver_assignment",
+                        "route_id": str(route_id),
+                        "route_code": route_code,
+                        "booking_id": str(booking_id),
+                        "driver_name": driver_name,
+                        "driver_phone": driver_phone,
+                        "vehicle_number": vehicle_rc_number,
+                        "estimated_pickup": estimated_pickup or "",
+                        "boarding_otp": str(boarding_otp) if boarding_otp else "",
+                        "deboarding_otp": str(deboarding_otp) if deboarding_otp else "",
+                        "escort_otp": str(escort_otp) if escort_otp else "",
+                    },
+                    priority="high"
+                )
+                
+                if push_result.get("success"):
+                    logger.info(f"[BACKGROUND] Push notification sent to employee {employee_id}")
+                else:
+                    logger.warning(f"[BACKGROUND] Push notification failed: {push_result.get('error', 'Unknown')}")
+            except Exception as e:
+                logger.error(f"[BACKGROUND] Error sending push notification: {e}")
+        
+        logger.info(f"[BACKGROUND] Notification dispatch completed for route {route_id}")
+        
+    except Exception as e:
+        logger.error(f"[BACKGROUND] Error in notification background task: {e}")
+    finally:
+        db.close()
+
 
 class RequestItem(BaseModel):
     booking_ids: List[int]  # Changed from bookings to booking_ids
@@ -925,6 +1115,7 @@ async def assign_vendor_to_route(
 @router.put("/assign-vehicle", status_code=status.HTTP_200_OK)
 async def assign_vehicle_to_route(
     request: Request,
+    background_tasks: BackgroundTasks,
     route_id: int = Query(..., description="Route ID"),
     vehicle_id: int = Query(..., description="Vehicle ID to assign"),
     db: Session = Depends(get_db),
@@ -1167,9 +1358,10 @@ async def assign_vehicle_to_route(
         except Exception as audit_error:
             logger.error(f"Failed to create audit log for vehicle/driver assignment: {str(audit_error)}")
 
-        # Generate OTPs for all bookings in the route
+        # Generate OTPs and send notifications for all bookings in the route
         from app.utils.otp_utils import generate_otp_codes
         from app.utils import cache_manager
+        from app.models.employee import Employee
         
         cutoff = cache_manager.get_cutoff_with_cache(db, tenant_id)
         
@@ -1178,22 +1370,52 @@ async def assign_vehicle_to_route(
         
         # Check if escort is assigned to this route AND route requires escort
         escort_enabled = route.assigned_escort_id
-        route_bookings = db.query(RouteManagementBooking).filter(RouteManagementBooking.route_id == route.route_id).all()
+        
+        # ✅ OPTIMIZATION: Fetch all route bookings with related data in one query using eager loading
+        route_bookings = (
+            db.query(RouteManagementBooking)
+            .join(Booking, Booking.booking_id == RouteManagementBooking.booking_id)
+            .join(Employee, Employee.employee_id == Booking.employee_id)
+            .filter(RouteManagementBooking.route_id == route.route_id)
+            .all()
+        )
+
+        if not route_bookings:
+            logger.info(f"[assign_vehicle_to_route] No bookings found for route {route_id}")
+            return ResponseWrapper.success(
+                data={
+                    "route_id": route.route_id,
+                    "assigned_vendor_id": route.assigned_vendor_id,
+                    "assigned_vehicle_id": route.assigned_vehicle_id,
+                    "assigned_driver_id": route.assigned_driver_id,
+                    "status": route.status.value,
+                },
+                message="Vehicle and driver assigned successfully. No bookings to notify.",
+            )
+
+        # ✅ OPTIMIZATION: Fetch all bookings and employees at once (batch query)
+        booking_ids = [rb.booking_id for rb in route_bookings]
+        bookings_dict = {b.booking_id: b for b in db.query(Booking).filter(Booking.booking_id.in_(booking_ids)).all()}
+        employee_ids = [bookings_dict[bid].employee_id for bid in booking_ids if bid in bookings_dict]
+        employees_dict = {e.employee_id: e for e in db.query(Employee).filter(Employee.employee_id.in_(employee_ids)).all()}
 
         logger.info(f"[assign_vehicle_to_route] Starting OTP generation for route {route_id} with {len(route_bookings)} bookings")
 
+        # Prepare batch updates for OTPs
+        otp_updates = []
+        
         for rb in route_bookings:
-            booking = db.query(Booking).filter(Booking.booking_id == rb.booking_id).first()
+            booking = bookings_dict.get(rb.booking_id)
+            if not booking:
+                logger.warning(f"[assign_vehicle_to_route] Booking {rb.booking_id} not found in batch")
+                continue
+                
             # Recalculate OTP count and purposes at assignment time
             shift = cache_manager.get_shift_with_cache(db, booking.shift_id, booking.tenant_id)
             required_otp_count = get_required_otp_count(booking.booking_type, shift.log_type.value if shift else "IN", tenant_config, escort_enabled)
 
-            logger.info(f"[assign_vehicle_to_route] Booking {rb.booking_id}: shift_type={shift.log_type.value if shift else 'IN'}, escort_enabled={bool(escort_enabled)}, required_otp_count={required_otp_count}")
-
             # Generate OTPs based on required count
             otp_codes = generate_otp_codes(required_otp_count)
-
-            logger.info(f"[assign_vehicle_to_route] Generated {len(otp_codes)} OTP codes for booking {rb.booking_id}: {otp_codes}")
 
             # Determine which OTP fields to assign based on configuration
             required_otps = []
@@ -1214,8 +1436,6 @@ async def assign_vehicle_to_route(
             if escort_enabled:
                 required_otps.append('escort')
 
-            logger.info(f"[assign_vehicle_to_route] Required OTP types for booking {rb.booking_id}: {required_otps}")
-
             # Assign OTP codes to required fields in order
             assignments = {}
             for i, otp_type in enumerate(required_otps):
@@ -1224,192 +1444,61 @@ async def assign_vehicle_to_route(
                 else:
                     assignments[otp_type] = None
 
-            logger.info(f"[assign_vehicle_to_route] OTP assignments for booking {rb.booking_id}: {assignments}")
+            # Update booking OTPs
+            booking.boarding_otp = assignments.get('boarding')
+            booking.deboarding_otp = assignments.get('deboarding')
+            booking.escort_otp = assignments.get('escort')
 
-            # Set all fields (None for not required)
-            db.query(Booking).filter(Booking.booking_id == rb.booking_id).update(
-                {
-                    Booking.boarding_otp: assignments.get('boarding'),
-                    Booking.deboarding_otp: assignments.get('deboarding'),
-                    Booking.escort_otp: assignments.get('escort'),
-                },
-                synchronize_session=False
-            )
-
+        # ✅ OPTIMIZATION: Commit all OTP updates at once
         db.commit()
 
         logger.info(f"[assign_vehicle_to_route] OTP generation completed for route {route_id}")
 
-        # Send notifications (SMS, Email, Push) to employees with their OTPs
-        from app.core.email_service import EmailService
-        from app.services.unified_notification_service import UnifiedNotificationService
-        from app.services.session_cache import SessionCache
-        from app.services.sms_service import SMSService
-        from app.models.employee import Employee
-        
-        email_service = EmailService()
-        push_service = UnifiedNotificationService(db, SessionCache())
-        sms_service = SMSService()
-        
-        logger.info(f"[assign_vehicle_to_route] Starting notification dispatch for {len(route_bookings)} bookings")
+        # ✅ OPTIMIZATION: Prepare notification data for background task
+        notification_data = []
         
         for rb in route_bookings:
-            booking = db.query(Booking).filter(Booking.booking_id == rb.booking_id).first()
-            employee = db.query(Employee).filter(Employee.employee_id == booking.employee_id).first()
+            booking = bookings_dict.get(rb.booking_id)
+            employee = employees_dict.get(booking.employee_id) if booking else None
             
-            if not employee:
-                logger.warning(f"[assign_vehicle_to_route] Employee not found for booking {rb.booking_id}")
+            if not booking or not employee:
+                logger.warning(f"[assign_vehicle_to_route] Booking or employee not found for route booking {rb.route_booking_id}")
                 continue
             
-            # Prepare OTP message
-            shift = cache_manager.get_shift_with_cache(db, tenant_id, booking.shift_id)
+            # Prepare shift data
+            shift = cache_manager.get_shift_with_cache(db, booking.shift_id, booking.tenant_id)
             shift_time = get_shift_time(shift) if shift else None
             shift_time_str = shift_time.strftime('%H:%M') if shift_time else 'N/A'
             shift_type = get_shift_log_type(shift) if shift else 'IN'
             
-            otp_details = []
-            if booking.boarding_otp:
-                otp_details.append(f"Boarding OTP: {booking.boarding_otp}")
-            if booking.deboarding_otp:
-                otp_details.append(f"Deboarding OTP: {booking.deboarding_otp}")
-            if booking.escort_otp:
-                otp_details.append(f"Escort OTP: {booking.escort_otp}")
-            
-            otp_message = "\n".join(otp_details) if otp_details else "No OTP required"
-            
-            # Build notification content
-            subject = f"Driver Assigned - Route {route.route_code}"
-            message_body = f"""
-Hello {employee.name},
-
-Your driver has been assigned for your {shift_type} shift on {booking.booking_date}.
-
-Route Details:
-- Route Code: {route.route_code}
-- Shift Time: {shift_time}
-- Driver: {driver.name} ({driver.phone})
-- Vehicle: {vehicle.rc_number}
-
-Your OTP Codes:
-{otp_message}
-
-Please share these OTPs with the driver at the designated times.
-
-Estimated Pickup: {rb.estimated_pick_up_time or 'TBD'}
-
-Thank you,
-Fleet Management Team
-            """.strip()
-            
-            # 1. Send Email
-            try:
-                if employee.email:
-                    email_html = f"""
-                    <html>
-                        <body style="font-family: Arial, sans-serif;">
-                            <h2 style="color: #2c5aa0;">🚗 Driver Assigned</h2>
-                            <p>Hello <strong>{employee.name}</strong>,</p>
-                            <p>Your driver has been assigned for your <strong>{shift_type}</strong> shift on <strong>{booking.booking_date}</strong>.</p>
-                            
-                            <div style="background-color: #f0f8ff; padding: 15px; border-left: 4px solid #2c5aa0; margin: 20px 0;">
-                                <h3 style="margin-top: 0;">Route Details</h3>
-                                <ul style="list-style: none; padding-left: 0;">
-                                    <li>📍 <strong>Route Code:</strong> {route.route_code}</li>
-                                    <li>🕐 <strong>Shift Time:</strong> {shift_time}</li>
-                                    <li>👤 <strong>Driver:</strong> {driver.name} ({driver.phone})</li>
-                                    <li>🚙 <strong>Vehicle:</strong> {vehicle.rc_number}</li>
-                                    <li>⏰ <strong>Estimated Pickup:</strong> {rb.estimated_pick_up_time or 'TBD'}</li>
-                                </ul>
-                            </div>
-                            
-                            <div style="background-color: #fff3cd; padding: 15px; border-left: 4px solid #ffc107; margin: 20px 0;">
-                                <h3 style="margin-top: 0;">🔐 Your OTP Codes</h3>
-                                <p style="font-size: 16px; line-height: 1.8;">
-                                    {'<br>'.join(otp_details) if otp_details else 'No OTP required'}
-                                </p>
-                                <p style="color: #856404; font-size: 14px;">
-                                    <em>Please share these OTPs with the driver at the designated times.</em>
-                                </p>
-                            </div>
-                            
-                            <p>Thank you,<br><strong>Fleet Management Team</strong></p>
-                        </body>
-                    </html>
-                    """
-                    
-                    email_sent = await email_service.send_email(
-                        to_emails=[employee.email],
-                        subject=subject,
-                        html_content=email_html,
-                        text_content=message_body
-                    )
-                    
-                    if email_sent:
-                        logger.info(f"[assign_vehicle_to_route] Email sent to {employee.email} for booking {rb.booking_id}")
-                    else:
-                        logger.warning(f"[assign_vehicle_to_route] Failed to send email to {employee.email}")
-                else:
-                    logger.warning(f"[assign_vehicle_to_route] No email found for employee {employee.employee_id}")
-            except Exception as e:
-                logger.error(f"[assign_vehicle_to_route] Error sending email: {e}")
-            
-            # 2. Send SMS
-            try:
-                if employee.phone:
-                    sms_message = f"Driver Assigned! Route: {route.route_code}, Driver: {driver.name} ({driver.phone}), Vehicle: {vehicle.rc_number}. "
-                    
-                    # Add OTPs to SMS
-                    if otp_details:
-                        sms_message += f"OTPs: {' | '.join(otp_details)}. "
-                    
-                    sms_message += f"Pickup: {rb.estimated_pick_up_time or 'TBD'}. Check email for details."
-                    
-                    sms_sent = sms_service.send_sms(
-                        to_phone=employee.phone,
-                        message=sms_message
-                    )
-                    
-                    if sms_sent:
-                        logger.info(f"[assign_vehicle_to_route] SMS sent to {employee.phone} for booking {rb.booking_id}")
-                    else:
-                        logger.warning(f"[assign_vehicle_to_route] Failed to send SMS to {employee.phone}")
-                else:
-                    logger.warning(f"[assign_vehicle_to_route] No phone found for employee {employee.employee_id}")
-            except Exception as e:
-                logger.error(f"[assign_vehicle_to_route] Error sending SMS: {e}")
-            
-            # 3. Send Push Notification
-            try:
-                push_result = push_service.send_to_user(
-                    user_type="employee",
-                    user_id=employee.employee_id,
-                    title=subject,
-                    body=f"Driver {driver.name} assigned. Vehicle: {vehicle.rc_number}. Check your OTPs.",
-                    data={
-                        "type": "driver_assignment",
-                        "route_id": str(route.route_id),
-                        "route_code": route.route_code,
-                        "booking_id": str(booking.booking_id),
-                        "driver_name": driver.name,
-                        "driver_phone": driver.phone,
-                        "vehicle_number": vehicle.rc_number,
-                        "estimated_pickup": rb.estimated_pick_up_time or "",
-                        "boarding_otp": str(booking.boarding_otp) if booking.boarding_otp else "",
-                        "deboarding_otp": str(booking.deboarding_otp) if booking.deboarding_otp else "",
-                        "escort_otp": str(booking.escort_otp) if booking.escort_otp else "",
-                    },
-                    priority="high"
-                )
-                
-                if push_result.get("success"):
-                    logger.info(f"[assign_vehicle_to_route] Push notification sent to employee {employee.employee_id}")
-                else:
-                    logger.warning(f"[assign_vehicle_to_route] Push notification failed: {push_result.get('error', 'Unknown')}")
-            except Exception as e:
-                logger.error(f"[assign_vehicle_to_route] Error sending push notification: {e}")
+            notification_data.append({
+                "employee_email": employee.email,
+                "employee_phone": employee.phone,
+                "employee_name": employee.name,
+                "employee_id": employee.employee_id,
+                "booking_id": booking.booking_id,
+                "shift_type": shift_type,
+                "shift_time": shift_time_str,
+                "booking_date": str(booking.booking_date),
+                "estimated_pickup": rb.estimated_pick_up_time,
+                "boarding_otp": booking.boarding_otp,
+                "deboarding_otp": booking.deboarding_otp,
+                "escort_otp": booking.escort_otp,
+            })
         
-        logger.info(f"[assign_vehicle_to_route] Notification dispatch completed for route {route_id}")
-
+        # ✅ OPTIMIZATION: Add notification sending to background tasks
+        if notification_data:
+            background_tasks.add_task(
+                send_assignment_notifications_background,
+                booking_data=notification_data,
+                route_code=route.route_code,
+                driver_name=driver.name,
+                driver_phone=driver.phone,
+                vehicle_rc_number=vehicle.rc_number,
+                route_id=route.route_id,
+            )
+            logger.info(f"[assign_vehicle_to_route] {len(notification_data)} notifications queued for background processing")
+        
         logger.info(
             f"[assign_vehicle_to_route] Vehicle={vehicle_id} (Driver={driver.driver_id}) assigned to Route={route_id} (Tenant={tenant_id})"
         )
