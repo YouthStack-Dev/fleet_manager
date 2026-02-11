@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, ConfigDict
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime, date
 from enum import Enum
 
@@ -190,6 +190,9 @@ class DriverUpdate(BaseModel):
 
     # System flags
     is_active: Optional[bool] = True
+    
+    # Android device management
+    active_android_id: Optional[str] = None
 
 
 # ---------- RESPONSE ----------
@@ -197,8 +200,12 @@ class DriverResponse(DriverBase):
     driver_id: int
     created_at: datetime
     updated_at: datetime
+    
+    # Android device management
+    active_android_id: Optional[str] = None
+    android_id_history: List[Dict[str, Any]] = []
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, use_enum_values=True)
 
 
 class DriverPaginationResponse(BaseModel):

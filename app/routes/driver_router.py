@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from app.models.vendor import Vendor
 from app.utils.validition import validate_future_dates
 from common_utils.auth.utils import hash_password
@@ -656,6 +656,9 @@ async def update_driver(
     eye_file: Optional[UploadFile] = None,
     induction_file: Optional[UploadFile] = None,
 
+    # Android device management
+    active_android_id: Optional[str] = Form(None),
+
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["driver.update"]))
 ):
@@ -797,6 +800,7 @@ async def update_driver(
             "medical_expiry_date": medical_expiry_date,
             "training_expiry_date": training_expiry_date,
             "eye_expiry_date": eye_expiry_date,
+            "active_android_id": active_android_id,  # Device management
         }
 
         for field, value in update_fields.items():
@@ -974,3 +978,4 @@ def toggle_driver_active(
     except Exception as e:
         db.rollback()
         raise handle_http_error(e)
+

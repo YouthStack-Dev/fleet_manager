@@ -6,6 +6,7 @@ import sys
 import json
 import random
 import asyncio
+import datetime
 from app.crud.vendor_user import vendor_user_crud
 from app.models.admin import Admin
 from app.models.driver import Driver
@@ -2513,24 +2514,539 @@ async def get_current_user_profile(
         )
 
 
-@router.post("/driver/new/login")
-async def driver_login_initial(
-    license_number: str = Body(...),
-    password: str = Body(...),
+
+# ===================================================
+# DRIVER DEVICE-BASED AUTHENTICATION
+# Simple android_id based auth - no passwords
+# ===================================================
+
+def add_device_to_history(driver: Driver, android_id: str, device_info: dict, db: Session):
+    """
+    Add device to history if not already present (unique only).
+    Updates last_attempt if device already exists.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+    
+    history = driver.android_id_history or []
+    
+    # Find existing entry
+    existing_entry = next((item for item in history if item.get("android_id") == android_id), None)
+    
+    now = datetime.datetime.utcnow().isoformat()
+    
+    if existing_entry:
+        # Update existing entry - just update last_attempt
+        existing_entry["last_attempt"] = now
+        existing_entry["attempt_count"] = existing_entry.get("attempt_count", 0) + 1
+        logger.debug(f"[DRIVER AUTH] Updated existing device in history - Android ID: {android_id[:8]}...{android_id[-4:]}, Attempt count: {existing_entry['attempt_count']}")
+    else:
+        # Add new unique entry
+        new_entry = {
+            "android_id": android_id,
+            "device_model": device_info.get("device_model"),
+            "os_version": device_info.get("os_version"),
+            "app_version": device_info.get("app_version"),
+            "first_attempt": now,
+            "last_attempt": now,
+            "attempt_count": 1,  
+        }
+        history.append(new_entry)
+        logger.info(f"💾 [DRIVER AUTH] Added NEW device to history - Android ID: {android_id[:8]}...{android_id[-4:]}, Driver ID: {driver.driver_id}, Device: {device_info.get('device_model')}")
+    
+    driver.android_id_history = history
+    
+    # CRITICAL: Mark JSONB column as modified so SQLAlchemy detects the change
+    flag_modified(driver, "android_id_history")
+    
+    db.commit()
+    db.refresh(driver)
+    logger.debug(f"[DRIVER AUTH] Device history saved to database for driver {driver.driver_id}")
+
+
+def get_active_device_info(driver: Driver) -> dict:
+    """Get information about currently active device"""
+    if not driver.active_android_id or not driver.android_id_history:
+        return None
+
+    active_entry = next(
+        (item for item in driver.android_id_history if item.get("android_id") == driver.active_android_id),
+        None
+    )
+
+    if active_entry:
+        return {
+            "android_id": active_entry.get("android_id"),
+            "device_model": active_entry.get("device_model"),
+            "os_version": active_entry.get("os_version"),
+            "app_version": active_entry.get("app_version"),
+            "activated_at": active_entry.get("last_attempt"),  # When it became active
+            "status": "active"
+        }
+
+    return None
+
+
+@router.post("/driver/device/verify")
+async def verify_driver_device(
+    dl_number: str = Body(...),
+    android_id: str = Body(...),
+    device_model: Optional[str] = Body(None),
+    os_version: Optional[str] = Body(None),
+    app_version: Optional[str] = Body(None),
     db: Session = Depends(get_db)
 ):
     """
-    Driver login step 1: Authenticate with license number and password.
-    Returns available vendor/tenant accounts where the password matches.
+    Verify if driver's device is authorized to login.
     
-    IMPORTANT: A driver may have the same license number across multiple vendors
-    with different passwords. This endpoint validates the password against ALL
-    driver records and only returns accounts where the password matches.
+    Logic:
+    1. Find driver by license number
+    2. Check if android_id matches active_android_id
+    3. If yes -> return tenant list
+    4. If no -> add to history and block
     """
     try:
-        license_number = license_number.strip()
-        password = password.strip()
-        logger.info(f"Driver login attempt via DL={license_number}")
+        logger.info(f"🚗 [DRIVER AUTH] Device verification attempt - DL: {dl_number}, Android ID: {android_id[:8]}...{android_id[-4:]}, Device: {device_model or 'Unknown'}")
+        
+        # Find ALL drivers with this license number (multi-vendor support)
+        drivers = db.query(Driver).filter(
+            Driver.license_number == dl_number
+        ).all()
+        
+        if not drivers:
+            logger.warning(f"❌ [DRIVER AUTH] Driver not found with license number: {dl_number}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    "Driver not found with this license number",
+                    "DRIVER_NOT_FOUND"
+                )
+            )
+        
+        logger.debug(f"[DRIVER AUTH] Found {len(drivers)} driver record(s) with license {dl_number}")
+        
+        # Track device attempt for all driver records
+        device_info = {
+            "device_model": device_model,
+            "os_version": os_version,
+            "app_version": app_version
+        }
+        
+        # Check if Android ID is active for ANY of these driver records
+        active_drivers = []
+        pending_drivers = []
+        
+        for driver in drivers:
+            logger.debug(f"[DRIVER AUTH] Checking driver ID={driver.driver_id}, Name={driver.name}, Vendor={driver.vendor_id}")
+            
+            # Add device to history for this driver record
+            add_device_to_history(driver, android_id, device_info, db)
+            
+            # Get tenant info
+            tenant = db.query(Tenant).filter(
+                Tenant.tenant_id == driver.vendor.tenant_id
+            ).first()
+            
+            if not tenant:
+                logger.error(f"❌ [DRIVER AUTH] Tenant not found for driver {driver.driver_id} - tenant_id: {driver.vendor.tenant_id}")
+                continue
+            
+            # Check if this device is active for this driver record
+            if driver.active_android_id == android_id:
+                logger.info(f"✅ [DRIVER AUTH] Device ACTIVE for driver {driver.driver_id} - Vendor: {driver.vendor.name}, Tenant: {tenant.name}")
+                active_drivers.append({
+                    "driver_id": driver.driver_id,
+                    "vendor_id": driver.vendor.vendor_id,
+                    "vendor_name": driver.vendor.name,
+                    "tenant_id": tenant.tenant_id,
+                    "tenant_name": tenant.name,
+                    "status": "approved",
+                    "device_active": True
+                })
+            else:
+                logger.debug(f"⚠️ [DRIVER AUTH] Device NOT ACTIVE for driver {driver.driver_id} - Vendor: {driver.vendor.name}")
+                pending_drivers.append({
+                    "driver_id": driver.driver_id,
+                    "vendor_id": driver.vendor.vendor_id,
+                    "vendor_name": driver.vendor.name,
+                    "tenant_id": tenant.tenant_id,
+                    "tenant_name": tenant.name,
+                    "status": "pending_approval",
+                    "device_active": False
+                })
+        
+        # Determine overall status and message
+        if active_drivers:
+            # Additional security: Check if this Android ID is used by OTHER license holders
+            other_license_drivers = db.query(Driver).filter(
+                Driver.active_android_id == android_id,
+                Driver.license_number != dl_number
+            ).all()
+            
+            if other_license_drivers:
+                logger.warning(f"🚨 [DRIVER AUTH] SECURITY VIOLATION - Android ID {android_id[:8]}...{android_id[-4:]} is active for different license numbers")
+                message = "Device authorization conflict detected. Please contact your administrator."
+                status_text = "security_violation"
+                # Clear active drivers due to security violation
+                active_drivers = []
+                all_vendors = pending_drivers
+            else:
+                message = f"Device authorized. You have access to {len(active_drivers)} vendor(s). Please select one to continue."
+                status_text = "approved"
+                all_vendors = active_drivers + pending_drivers
+        else:
+            message = "Your device is currently not active for any vendor. Please contact your administrator to activate this device."
+            status_text = "pending_approval"
+            all_vendors = pending_drivers
+        
+        logger.info(f"✓ [DRIVER AUTH] Device verification complete - Status: {status_text}, Active vendors: {len(active_drivers)}, Total vendors: {len(all_vendors)}")
+        
+        return ResponseWrapper.success(
+            message=message,
+            data={
+                "status": status_text,
+                "active_vendor_count": len(active_drivers),
+                "total_vendor_count": len(all_vendors),
+                "vendors": all_vendors
+            }
+        )
+        
+    except HTTPException as e:
+        logger.error(f"❌ [DRIVER AUTH] Device verification failed - DL: {dl_number}, Error: {e.detail}")
+        raise
+    except SQLAlchemyError as e:
+        logger.error(f"❌ [DRIVER AUTH] Database error during device verification - DL: {dl_number}, Error: {str(e)}")
+        db.rollback()
+        raise handle_db_error(e)
+    except Exception as e:
+        logger.error(f"❌ [DRIVER AUTH] Unexpected error during device verification - DL: {dl_number}, Error: {str(e)}", exc_info=True)
+        db.rollback()
+        raise handle_http_error(e)
+
+
+@router.post("/driver/select-tenant")
+async def driver_select_tenant(
+    dl_number: str = Body(...),
+    android_id: str = Body(...),
+    tenant_id: str = Body(...),
+    vendor_id: int = Body(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Issue JWT tokens after tenant/vendor selection.
+    
+    Validates:
+    1. Driver exists for the specific vendor/tenant combination
+    2. Android ID matches active device
+    3. Driver belongs to selected tenant and vendor
+    """
+    try:
+        logger.info(f"🔐 [DRIVER LOGIN] Tenant/Vendor selection - DL: {dl_number}, Tenant: {tenant_id}, Vendor: {vendor_id}, Device: {android_id[:8]}...{android_id[-4:]}")
+        
+        # Find driver for the specific vendor AND license number
+        driver = db.query(Driver).filter(
+            Driver.license_number == dl_number,
+            Driver.vendor_id == vendor_id
+        ).first()
+        
+        if not driver:
+            logger.warning(f"❌ [DRIVER LOGIN] Driver not found - DL: {dl_number}, Vendor: {vendor_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error("Driver not found for the selected vendor", "DRIVER_NOT_FOUND")
+            )
+        
+        logger.debug(f"[DRIVER LOGIN] Driver found: {driver.name} (ID: {driver.driver_id}), Active Device: {driver.active_android_id[:8] if driver.active_android_id else 'None'}")
+        
+        # Verify device is still active
+        if driver.active_android_id != android_id:
+            logger.warning(f"❌ [DRIVER LOGIN] Login BLOCKED - Driver: {driver.name} (ID: {driver.driver_id}), Reason: Device not activated, Requested: {android_id[:8]}...{android_id[-4:]}, Active: {driver.active_android_id[:8] if driver.active_android_id else 'None'}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    "Your device is not activated. Please contact your administrator to activate this device before logging in.",
+                    "DEVICE_NOT_AUTHORIZED"
+                )
+            )
+        
+        # Additional security: Ensure Android ID is not active for any other driver with different license
+        other_active_driver = db.query(Driver).filter(
+            Driver.active_android_id == android_id,
+            Driver.license_number != dl_number
+        ).first()
+        
+        if other_active_driver:
+            logger.warning(f"🚨 [DRIVER LOGIN] SECURITY VIOLATION - Android ID {android_id[:8]}...{android_id[-4:]} is active for different license holders during login")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    "Device authorization conflict detected. Please contact your administrator.",
+                    "DEVICE_CONFLICT"
+                )
+            )
+        
+        # Verify driver's vendor belongs to selected tenant
+        if driver.vendor.tenant_id != tenant_id:
+            logger.warning(f"❌ [DRIVER LOGIN] Login BLOCKED - Driver: {driver.name} (ID: {driver.driver_id}), Reason: Tenant mismatch, Requested: {tenant_id}, Vendor's Tenant: {driver.vendor.tenant_id}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    "Vendor does not belong to selected tenant",
+                    "INVALID_TENANT"
+                )
+            )
+        
+        logger.debug(f"[DRIVER LOGIN] Fetching roles and permissions for driver {driver.driver_id} in tenant {tenant_id}")
+        
+        # Get roles and permissions
+        driver_with_roles, roles, all_permissions = driver_crud.get_driver_roles_and_permissions(
+            db,
+            driver_id=driver.driver_id,
+            tenant_id=tenant_id
+        )
+        
+        if not driver_with_roles:
+            logger.error(f"❌ [DRIVER LOGIN] Failed to fetch roles for driver {driver.driver_id}")
+            raise HTTPException(
+                status_code=500,
+                detail=ResponseWrapper.error("Failed to fetch roles", "ROLE_FETCH_ERROR")
+            )
+        
+        logger.debug(f"[DRIVER LOGIN] Roles and permissions retrieved - Roles: {roles}, Permissions: {len(all_permissions)} modules")
+        
+        # Generate tokens
+        current_time = int(time.time())
+        expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
+        opaque_token = secrets.token_hex(16)
+        
+        token_payload = {
+            "user_id": str(driver.driver_id),
+            "tenant_id": str(driver.tenant_id),
+            "vendor_id": str(driver.vendor_id),
+            "opaque_token": opaque_token,
+            "roles": roles,
+            "permissions": all_permissions,
+            "user_type": "driver",
+            "android_id": android_id,  # Store device info
+            "iat": current_time,
+            "exp": expiry_time,
+        }
+        
+        # Single session enforcement
+        oauth_accessor = Oauth2AsAccessor()
+        ttl = expiry_time - current_time
+        
+        session_key = f"driver_session:{driver.driver_id}"
+        meta_prefix = "opaque_token_metadata:"
+        basic_prefix = "opaque_token:"
+        
+        try:
+            if oauth_accessor.use_redis:
+                r = oauth_accessor.redis_manager.client
+                
+                # Delete previous active session
+                old_token = r.get(session_key)
+                if old_token:
+                    old_token = old_token.decode() if isinstance(old_token, bytes) else old_token
+                    r.delete(f"{meta_prefix}{old_token}")
+                    r.delete(f"{basic_prefix}{old_token}")
+                    r.delete(old_token)
+                
+                # Store new session token
+                stored = oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl)
+                r.setex(session_key, ttl, opaque_token)
+                
+                if not stored:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=ResponseWrapper.error(
+                            "Failed to store authentication token",
+                            "TOKEN_STORE_FAILED"
+                        )
+                    )
+        
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=ResponseWrapper.error("Login failed (session error)", "SESSION_ERROR", {"error": str(e)})
+            )
+        
+        # Create access and refresh tokens
+        access_token = create_access_token(
+            user_id=str(driver.driver_id),
+            tenant_id=tenant_id,
+            vendor_id=str(driver.vendor_id),
+            opaque_token=opaque_token,
+            user_type="driver"
+        )
+        
+        refresh_token = create_refresh_token(
+            user_id=str(driver.driver_id),
+            user_type="driver"
+        )
+        
+        # Get tenant info
+        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        
+        logger.info(f"✅ [DRIVER LOGIN] Login SUCCESSFUL - Driver: {driver.name} (ID: {driver.driver_id}), Email: {driver.email}, Tenant: {tenant.name if tenant else tenant_id}, Vendor: {driver.vendor_id}, Device: {android_id[:8]}...{android_id[-4:]}, Roles: {roles}, Permissions: {len(all_permissions)} modules")
+        
+        return ResponseWrapper.success(
+            message="Driver login successful",
+            data={
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "token_type": "bearer",
+                "expires_in": 900,  # 15 minutes
+                "user": {
+                    "driver": DriverResponse.model_validate(driver),
+                    "tenant": TenantResponse.model_validate(tenant) if tenant else None,
+                    "roles": roles,
+                    "permissions": all_permissions,
+                }
+            }
+        )
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as e:
+        db.rollback()
+        raise handle_db_error(e)
+    except Exception as e:
+        db.rollback()
+        raise handle_http_error(e)
+
+
+@router.post("/driver/refresh")
+async def driver_refresh_token(
+    refresh_token: str = Body(..., embed=True, alias="refresh_token"),
+    db: Session = Depends(get_db)
+):
+    """
+    Refresh access token using refresh token.
+    
+    Validates:
+    1. Refresh token is valid
+    2. Driver still exists
+    3. Device is still active
+    """
+    try:
+        logger.info(f"🔄 [DRIVER REFRESH] Token refresh attempt")
+        
+        # Decode refresh token
+        payload = jwt.decode(refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        
+        driver_id = int(payload.get("user_id"))
+        user_type = payload.get("user_type")
+        
+        logger.debug(f"[DRIVER REFRESH] Token decoded - Driver ID: {driver_id}, User Type: {user_type}")
+        
+        if user_type != "driver":
+            logger.warning(f"❌ [DRIVER REFRESH] Invalid user type: {user_type}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error("Invalid token type", "INVALID_TOKEN")
+            )
+        
+        # Verify driver exists
+        driver = db.query(Driver).filter(Driver.driver_id == driver_id).first()
+        
+        if not driver:
+            logger.warning(f"❌ [DRIVER REFRESH] Driver not found: ID {driver_id}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error("Driver not found", "DRIVER_NOT_FOUND")
+            )
+        
+        logger.debug(f"[DRIVER REFRESH] Driver verified: {driver.name} (ID: {driver.driver_id})")
+        
+        # Get android_id from stored session or from refresh token
+        oauth_accessor = Oauth2AsAccessor()
+        session_key = f"driver_session:{driver.driver_id}"
+        
+        android_id = None
+        if oauth_accessor.use_redis:
+            r = oauth_accessor.redis_manager.client
+            opaque_token = r.get(session_key)
+            if opaque_token:
+                opaque_token = opaque_token.decode() if isinstance(opaque_token, bytes) else opaque_token
+                meta_data = oauth_accessor.get_cached_oauth2_token(opaque_token, metadata=True)
+                if meta_data:
+                    android_id = meta_data.get("android_id")
+                    logger.debug(f"[DRIVER REFRESH] Retrieved Android ID from session: {android_id[:8] if android_id else 'None'}...{android_id[-4:] if android_id else ''}")
+                else:
+                    logger.warning(f"[DRIVER REFRESH] No metadata found for opaque token in Redis")
+        
+        # Verify device is still active (if we have android_id)
+        if android_id and driver.active_android_id != android_id:
+            logger.warning(f"❌ [DRIVER REFRESH] Device no longer authorized - Driver: {driver.driver_id}, Session Device: {android_id[:8] if android_id else 'Unknown'}, Active Device: {driver.active_android_id[:8] if driver.active_android_id else 'None'}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error(
+                    "Device no longer authorized",
+                    "DEVICE_NOT_AUTHORIZED"
+                )
+            )
+        
+        # Additional security: Ensure Android ID is not active for DIFFERENT license holders (same person, multiple vendors is OK)
+        if android_id:
+            other_license_driver = db.query(Driver).filter(
+                Driver.active_android_id == android_id,
+                Driver.license_number != driver.license_number  # Different license holder = security violation
+            ).first()
+            
+            if other_license_driver:
+                logger.warning(f"🚨 [DRIVER REFRESH] SECURITY VIOLATION - Android ID {android_id[:8]}...{android_id[-4:]} is active for different license holders: {driver.license_number} and {other_license_driver.license_number}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=ResponseWrapper.error(
+                        "Device authorization conflict detected. Please contact your administrator.",
+                        "DEVICE_CONFLICT"
+                    )
+                )
+        
+        logger.debug(f"[DRIVER REFRESH] Generating new access token for driver {driver.driver_id}")
+        
+        # Issue new access token
+        access_token = create_access_token(
+            user_id=str(driver.driver_id),
+            tenant_id=driver.tenant_id,
+            vendor_id=str(driver.vendor_id),
+            user_type="driver"
+        )
+        
+        logger.info(f"✅ [DRIVER REFRESH] Token refreshed successfully - Driver: {driver.name} (ID: {driver.driver_id}), Tenant: {driver.tenant_id}")
+        
+        return ResponseWrapper.success(
+            message="Token refreshed successfully",
+            data={
+                "access_token": access_token,
+                "refresh_token": refresh_token,  # Return same refresh token
+                "token_type": "bearer",
+                "expires_in": 900
+            }
+        )
+        
+    except jwt.ExpiredSignatureError:
+        logger.warning(f"❌ [DRIVER REFRESH] Refresh token expired")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ResponseWrapper.error("Refresh token expired. Please login again.", "TOKEN_EXPIRED")
+        )
+    except jwt.InvalidTokenError as e:
+        logger.warning(f"❌ [DRIVER REFRESH] Invalid refresh token: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ResponseWrapper.error("Invalid refresh token", "INVALID_TOKEN")
+        )
+    except HTTPException as e:
+        logger.error(f"❌ [DRIVER REFRESH] Refresh failed - Error: {e.detail}")
+        raise
+    except Exception as e:
+        logger.error(f"❌ [DRIVER REFRESH] Unexpected error during token refresh: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=ResponseWrapper.error("Token refresh failed", "REFRESH_FAILED")
+        )
 
         # Fetch all driver entries with same DL
         drivers = (
@@ -2619,434 +3135,3 @@ async def driver_login_initial(
     except Exception as e:
         db.rollback()
         raise handle_http_error(e)
-
-
-@router.post("/driver/login/confirm")
-async def driver_login_confirm(
-    temp_token: str = Body(...),
-    tenant_id: str = Body(...),
-    vendor_id: int = Body(...),
-    db: Session = Depends(get_db)
-):
-    try:
-        # =====================================================
-        # 1. Decode temp token
-        # =====================================================
-        try:
-            temp_payload = jwt.decode(temp_token, SECRET_KEY, algorithms=[ALGORITHM])
-            if temp_payload.get("type") != "driver_temp_login":
-                raise ValueError("Invalid token type")
-            license_number = temp_payload["license_number"]
-        except Exception:
-            raise HTTPException(
-                status_code=401,
-                detail=ResponseWrapper.error("Invalid or expired temporary token", "INVALID_TEMP_TOKEN")
-            )
-
-        # =====================================================
-        # 2. Validate temp token from Redis (ONE-TIME USE)
-        # =====================================================
-        redis_client = Oauth2AsAccessor().redis_manager.client
-        temp_key = f"temp_driver_login:{license_number}"
-        saved_temp = redis_client.get(temp_key)
-
-        if not saved_temp:
-            raise HTTPException(
-                status_code=401,
-                detail=ResponseWrapper.error(
-                    "Temporary token expired or already used",
-                    "TEMP_TOKEN_INVALID"
-                )
-            )
-
-        # ✔ Normalize type (bytes → str)
-        if isinstance(saved_temp, bytes):
-            saved_temp = saved_temp.decode()
-        else:
-            saved_temp = str(saved_temp)
-
-        # Compare stored temp token with input token
-        if saved_temp != temp_token:
-            raise HTTPException(
-                status_code=401,
-                detail=ResponseWrapper.error(
-                    "Temporary token mismatch",
-                    "TEMP_TOKEN_INVALID"
-                )
-            )
-
-        # ✔ DELETE TEMP TOKEN NOW — cannot reuse
-        redis_client.delete(temp_key)
-
-
-        # =====================================================
-        # 3. Fetch EXACT driver row for selected vendor/tenant
-        # =====================================================
-        driver = (
-            db.query(Driver)
-            .join(Vendor, Vendor.vendor_id == Driver.vendor_id)
-            .join(Tenant, Tenant.tenant_id == Vendor.tenant_id)
-            .filter(
-                Driver.license_number == license_number,
-                Vendor.vendor_id == vendor_id,
-                Tenant.tenant_id == tenant_id
-            )
-            .first()
-        )
-
-        if not driver:
-            raise HTTPException(
-                status_code=404,
-                detail=ResponseWrapper.error("Invalid selection", "INVALID_ACCOUNT")
-            )
-
-        vendor = driver.vendor
-        tenant = vendor.tenant
-
-        # =====================================================
-        # 4. Active checks
-        # =====================================================
-        if not driver.is_active or not vendor.is_active or not tenant.is_active:
-            raise HTTPException(
-                status_code=403,
-                detail=ResponseWrapper.error("Account inactive", "ACCOUNT_INACTIVE")
-            )
-
-        # =====================================================
-        # 5. Roles + permissions
-        # =====================================================
-        driver_with_roles, roles, all_permissions = driver_crud.get_driver_roles_and_permissions(
-            db,
-            driver_id=driver.driver_id,
-            tenant_id=tenant.tenant_id
-        )
-
-        if not driver_with_roles:
-            raise HTTPException(
-                status_code=500,
-                detail=ResponseWrapper.error("Failed to fetch roles", "ROLE_FETCH_ERROR")
-            )
-
-        # =====================================================
-        # 6. Generate final JWT + Opaque token
-        # =====================================================
-        current_time = int(time.time())
-        expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
-        opaque_token = secrets.token_hex(16)
-
-        token_payload = {
-            "user_id": str(driver.driver_id),
-            "tenant_id": str(tenant.tenant_id),
-            "vendor_id": str(vendor.vendor_id),
-            "opaque_token": opaque_token,
-            "roles": roles,
-            "permissions": all_permissions,
-            "user_type": "driver",
-            "iat": current_time,
-            "exp": expiry_time,
-        }
-
-        # =====================================================
-        # 7. SINGLE SESSION ENFORCEMENT
-        # =====================================================
-        oauth_accessor = Oauth2AsAccessor()
-        ttl = expiry_time - current_time
-
-        session_key = f"driver_session:{driver.driver_id}"
-        meta_prefix = "opaque_token_metadata:"
-        basic_prefix = "opaque_token:"
-
-        try:
-            if oauth_accessor.use_redis:
-                r = oauth_accessor.redis_manager.client
-
-                # Delete previous active session
-                old_token = r.get(session_key)
-                if old_token:
-                    old_token = old_token.decode() if isinstance(old_token, bytes) else old_token
-                    r.delete(f"{meta_prefix}{old_token}")
-                    r.delete(f"{basic_prefix}{old_token}")
-                    r.delete(old_token)
-
-                # Store new session token
-                stored = oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl)
-                r.setex(session_key, ttl, opaque_token)
-
-                if not stored:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=ResponseWrapper.error(
-                            "Failed to store authentication token",
-                            "TOKEN_STORE_FAILED"
-                        )
-                    )
-
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=ResponseWrapper.error("Login failed (session error)", "SESSION_ERROR", {"error": str(e)})
-            )
-
-        # =====================================================
-        # 8. Final Access/Refresh JWT generation
-        # =====================================================
-        access_token = create_access_token(
-            user_id=str(driver.driver_id),
-            tenant_id=str(tenant.tenant_id),
-            vendor_id=str(vendor.vendor_id),
-            opaque_token=opaque_token,
-            user_type="driver"
-        )
-
-        refresh_token = create_refresh_token(
-            user_id=str(driver.driver_id),
-            user_type="driver"
-        )
-
-        # =====================================================
-        # 9. Response
-        # =====================================================
-        return ResponseWrapper.success(
-            message="Driver login successful",
-            data={
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-                "token_type": "bearer",
-                "user": {
-                    "driver": DriverResponse.model_validate(driver),
-                    "tenant": TenantResponse.model_validate(tenant),
-                    "roles": roles,
-                    "permissions": all_permissions,
-                },
-            }
-        )
-
-    except HTTPException:
-        db.rollback()
-        raise
-    except SQLAlchemyError as e:
-        db.rollback()
-        raise handle_db_error(e)
-    except Exception as e:
-        db.rollback()
-        raise handle_http_error(e)
-
-
-@router.post("/driver/switch-company")
-async def driver_switch_company(
-    tenant_id: str = Body(...),
-    vendor_id: int = Body(...),
-    db: Session = Depends(get_db),
-    token_data: dict = Depends(validate_bearer_token())
-):
-    """
-    Allow an authenticated driver to switch to another company.
-    Requires current valid access token + new company selection.
-    Invalidates old token and generates new one for selected company.
-    """
-    try:
-        # =====================================================
-        # 1. Extract driver info from current token
-        # =====================================================
-        current_driver_id = int(token_data.get("user_id"))
-        current_tenant_id = token_data.get("tenant_id")
-        current_vendor_id = token_data.get("vendor_id")
-        user_type = token_data.get("user_type")
-
-        if user_type != "driver":
-            raise HTTPException(
-                status_code=403,
-                detail=ResponseWrapper.error("Only drivers can switch companies", "INVALID_USER_TYPE")
-            )
-
-        logger.info(f"Driver {current_driver_id} switching from company {current_vendor_id} to {vendor_id}")
-
-        # =====================================================
-        # 2. Fetch current driver to get license number
-        # =====================================================
-        current_driver = db.query(Driver).filter(
-            Driver.driver_id == current_driver_id
-        ).first()
-
-        if not current_driver:
-            raise HTTPException(
-                status_code=404,
-                detail=ResponseWrapper.error("Driver not found", "DRIVER_NOT_FOUND")
-            )
-
-        license_number = current_driver.license_number
-
-        # =====================================================
-        # 3. Fetch target driver record for new company
-        # =====================================================
-        driver = (
-            db.query(Driver)
-            .join(Vendor, Vendor.vendor_id == Driver.vendor_id)
-            .join(Tenant, Tenant.tenant_id == Vendor.tenant_id)
-            .filter(
-                Driver.license_number == license_number,
-                Vendor.vendor_id == vendor_id,
-                Tenant.tenant_id == tenant_id
-            )
-            .first()
-        )
-
-        if not driver:
-            raise HTTPException(
-                status_code=404,
-                detail=ResponseWrapper.error("Invalid company selection", "INVALID_ACCOUNT")
-            )
-
-        vendor = driver.vendor
-        tenant = vendor.tenant
-
-        # =====================================================
-        # 4. Active checks
-        # =====================================================
-        if not driver.is_active or not vendor.is_active or not tenant.is_active:
-            raise HTTPException(
-                status_code=403,
-                detail=ResponseWrapper.error("Account inactive", "ACCOUNT_INACTIVE")
-            )
-
-        # =====================================================
-        # 5. Roles + permissions for new company
-        # =====================================================
-        driver_with_roles, roles, all_permissions = driver_crud.get_driver_roles_and_permissions(
-            db,
-            driver_id=driver.driver_id,
-            tenant_id=tenant.tenant_id
-        )
-
-        if not driver_with_roles:
-            raise HTTPException(
-                status_code=500,
-                detail=ResponseWrapper.error("Failed to fetch roles", "ROLE_FETCH_ERROR")
-            )
-
-        # =====================================================
-        # 6. Generate NEW token for new company
-        # =====================================================
-        current_time = int(time.time())
-        expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
-        opaque_token = secrets.token_hex(16)
-
-        token_payload = {
-            "user_id": str(driver.driver_id),
-            "tenant_id": str(tenant.tenant_id),
-            "vendor_id": str(vendor.vendor_id),
-            "opaque_token": opaque_token,
-            "roles": roles,
-            "permissions": all_permissions,
-            "user_type": "driver",
-            "iat": current_time,
-            "exp": expiry_time,
-        }
-
-        # =====================================================
-        # 7. SINGLE SESSION ENFORCEMENT - Delete old session
-        # =====================================================
-        oauth_accessor = Oauth2AsAccessor()
-        ttl = expiry_time - current_time
-
-        session_key = f"driver_session:{driver.driver_id}"
-        meta_prefix = "opaque_token_metadata:"
-        basic_prefix = "opaque_token:"
-
-        try:
-            if oauth_accessor.use_redis:
-                r = oauth_accessor.redis_manager.client
-
-                # Delete previous active session from OLD company
-                old_token = r.get(session_key)
-                if old_token:
-                    old_token = old_token.decode() if isinstance(old_token, bytes) else old_token
-                    r.delete(f"{meta_prefix}{old_token}")
-                    r.delete(f"{basic_prefix}{old_token}")
-                    r.delete(old_token)
-                    logger.info(f"Invalidated previous session for driver {driver.driver_id}")
-
-                # Store new session token for NEW company
-                stored = oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl)
-                r.setex(session_key, ttl, opaque_token)
-
-                if not stored:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=ResponseWrapper.error(
-                            "Failed to store authentication token",
-                            "TOKEN_STORE_FAILED"
-                        )
-                    )
-
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=ResponseWrapper.error("Switch failed (session error)", "SESSION_ERROR", {"error": str(e)})
-            )
-
-        # =====================================================
-        # 8. UPDATE last-used company to new selection
-        # =====================================================
-        try:
-            last_company_key = f"driver_last_company:{license_number}"
-            last_company_value = f"{vendor.vendor_id}:{tenant.tenant_id}"
-            redis_client = oauth_accessor.redis_manager.client
-            redis_client.setex(last_company_key, 30 * 24 * 3600, last_company_value)
-            logger.info(f"Updated last company for driver {license_number}: {last_company_value}")
-        except Exception as e:
-            logger.warning(f"Failed to update last company for driver {license_number}: {e}")
-
-        # =====================================================
-        # 9. Generate NEW access/refresh tokens
-        # =====================================================
-        access_token = create_access_token(
-            user_id=str(driver.driver_id),
-            tenant_id=str(tenant.tenant_id),
-            vendor_id=str(vendor.vendor_id),
-            opaque_token=opaque_token,
-            user_type="driver"
-        )
-
-        refresh_token = create_refresh_token(
-            user_id=str(driver.driver_id),
-            user_type="driver"
-        )
-
-        # =====================================================
-        # 10. Response
-        # =====================================================
-        logger.info(f"🔄 Driver {driver.driver_id} switched to company {vendor.vendor_id} ({tenant.tenant_id})")
-        
-        return ResponseWrapper.success(
-            message="Company switched successfully",
-            data={
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-                "token_type": "bearer",
-                "user": {
-                    "driver": DriverResponse.model_validate(driver),
-                    "tenant": TenantResponse.model_validate(tenant),
-                    "roles": roles,
-                    "permissions": all_permissions,
-                },
-            }
-        )
-
-    except HTTPException:
-        db.rollback()
-        raise
-    except SQLAlchemyError as e:
-        db.rollback()
-        raise handle_db_error(e)
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Company switch failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=ResponseWrapper.error(
-                message="Company switch failed due to server error",
-                error_code="SERVER_ERROR",
-                details={"error": str(e)}
-            )
-        )

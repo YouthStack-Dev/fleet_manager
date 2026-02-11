@@ -1,6 +1,7 @@
 from sqlalchemy import (
     Column, Integer, String, Boolean, DateTime, Date, Text, ForeignKey, Enum, func, UniqueConstraint
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from app.database.session import Base
 from enum import Enum as PyEnum
@@ -92,6 +93,12 @@ class Driver(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+    # Android device management
+    # Note: No unique constraint - same Android ID can be used by same license holder across multiple vendors
+    # Application-level security prevents different license holders from using the same Android ID
+    active_android_id = Column(String(255), nullable=True, index=True)
+    android_id_history = Column(JSONB, nullable=False, default=list, server_default='[]')
 
     # Relationships
     tenant = relationship("Tenant", back_populates="drivers")
