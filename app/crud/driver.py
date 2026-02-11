@@ -276,6 +276,28 @@ class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
 
         return driver, roles, all_permissions
 
+    def get_unique_android_ids(self, driver: Driver) -> List[Dict[str, Any]]:
+        """
+        Extract unique android_ids from driver's android_id_history.
+        Returns list of device info with android_id, device_model, and last_attempt.
+        """
+        if not driver.android_id_history:
+            return []
+        
+        # Return all unique entries (history already maintains uniqueness)
+        return [
+            {
+                "android_id": entry.get("android_id"),
+                "device_model": entry.get("device_model"),
+                "os_version": entry.get("os_version"),
+                "first_attempt": entry.get("first_attempt"),
+                "last_attempt": entry.get("last_attempt"),
+                "attempt_count": entry.get("attempt_count", 0),
+                "status": "active" if driver.active_android_id == entry.get("android_id") else "inactive"
+            }
+            for entry in driver.android_id_history
+        ]
+
 
 
 driver_crud = CRUDDriver(Driver)
