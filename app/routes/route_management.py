@@ -50,6 +50,38 @@ logger = get_logger("route_management")
 logger.info("🚀 Route Management module initialized")
 
 # Helper functions for shift data extraction (from cached format)
+def safe_get_enum_value(obj, attr_name):
+    """
+    Safely get enum value from either SQLAlchemy object or dict.
+    Handles both cached (dict with string values) and fresh DB objects (with Enum attributes).
+    
+    Args:
+        obj: Either a dict or SQLAlchemy model instance
+        attr_name: The attribute name (e.g., 'log_type', 'status')
+    
+    Returns:
+        String value of the enum or None
+    """
+    if obj is None:
+        return None
+    
+    if isinstance(obj, dict):
+        # Already a dict (from cache), value is already a string
+        return obj.get(attr_name)
+    
+    # It's an object, get the attribute
+    attr = getattr(obj, attr_name, None)
+    if attr is None:
+        return None
+    
+    # Check if it has .value (is an Enum) or is already a string
+    if hasattr(attr, 'value'):
+        return attr.value
+    
+    # Already a string or other primitive
+    return str(attr) if attr else None
+
+
 def get_shift_time(shift):
     """Extract shift_time from shift dict (cached format) or Shift object"""
     if isinstance(shift, dict):
@@ -63,9 +95,8 @@ def get_shift_time(shift):
 
 def get_shift_log_type(shift):
     """Extract log_type from shift dict (cached format) or Shift object"""
-    if isinstance(shift, dict):
-        return shift.get("log_type")
-    return shift.log_type.value if hasattr(shift, "log_type") and shift.log_type else None
+    return safe_get_enum_value(shift, "log_type")
+
 logger.debug("📝 Debug logging is active")
 
 router = APIRouter(
@@ -355,7 +386,7 @@ def get_bookings_by_ids(booking_ids: List[int], db: Session) -> List[Dict]:
             "drop_latitude": booking.drop_latitude,
             "drop_longitude": booking.drop_longitude,
             "drop_location": booking.drop_location,
-            "status": booking.status.value if booking.status else None,
+            "status": safe_get_enum_value(booking, "status"),
             "reason": booking.reason,
             "is_active": getattr(booking, 'is_active', True),
             "created_at": booking.created_at,
@@ -403,7 +434,7 @@ def get_booking_by_id(booking_id: int, db: Session) -> Optional[Dict]:
         "drop_latitude": booking.drop_latitude,
         "drop_longitude": booking.drop_longitude,
         "drop_location": booking.drop_location,
-        "status": booking.status.value if booking.status else None,
+        "status": safe_get_enum_value(booking, "status"),
         "reason": booking.reason,
         "is_active": getattr(booking, 'is_active', True),
         "created_at": booking.created_at,
@@ -786,6 +817,57 @@ async def get_all_routes(
                 "No routes found"
             )
 
+        # --- DATA INTEGRITY CHECK: Validate all shifts exist before processing ---
+        logger.info(f"[get_all_routes] Validating data integrity for {len(routes)} routes...")
+        unique_shift_ids = {r.shift_id for r in routes}
+        existing_shifts = db.query(Shift.shift_id).filter(
+            Shift.shift_id.in_(unique_shift_ids),
+            Shift.tenant_id == tenant_id
+        ).all()
+        existing_shift_ids = {s.shift_id for s in existing_shifts}
+        missing_shift_ids = unique_shift_ids - existing_shift_ids
+        
+        if missing_shift_ids:
+            # Data integrity violation - routes reference non-existent shifts
+            routes_with_missing_shifts = [
+                f"route_id={r.route_id}(shift_id={r.shift_id})" 
+                for r in routes if r.shift_id in missing_shift_ids
+            ]
+            error_msg = (
+                f"Data integrity error: Found {len(routes_with_missing_shifts)} route(s) "
+                f"referencing non-existent shift(s) {sorted(missing_shift_ids)}. "
+                f"This indicates database corruption or incomplete data migration. "
+                f"Affected routes: {', '.join(routes_with_missing_shifts[:5])}"
+                f"{' and more...' if len(routes_with_missing_shifts) > 5 else ''}"
+            )
+            logger.error(f"❌ [DATA INTEGRITY ERROR] {error_msg}")
+            logger.error(
+                f"   [ROOT CAUSE] Shifts {missing_shift_ids} do not exist in 'shifts' table "
+                f"for tenant_id={tenant_id} but are referenced by routes in 'route_management' table."
+            )
+            logger.error(
+                f"   [SOLUTION REQUIRED] Run data cleanup: "
+                f"1) Check if shifts were deleted, 2) Re-create missing shifts, "
+                f"3) Or delete orphaned routes. See docs/ROUTES_ERROR_DEBUG.md"
+            )
+            
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error(
+                    message="Data integrity error: Routes reference non-existent shifts",
+                    error_code="DATA_INTEGRITY_VIOLATION",
+                    details={
+                        "missing_shift_ids": sorted(missing_shift_ids),
+                        "affected_routes_count": len(routes_with_missing_shifts),
+                        "affected_routes_sample": routes_with_missing_shifts[:5],
+                        "solution": "Contact administrator to fix database integrity. See logs for details.",
+                        "documentation": "docs/ROUTES_ERROR_DEBUG.md"
+                    }
+                )
+            )
+        
+        logger.info(f"✅ [get_all_routes] Data integrity check passed - all shifts exist")
+
         # --- Collect IDs ---
         driver_ids = {r.assigned_driver_id for r in routes if r.assigned_driver_id}
         vehicle_ids = {r.assigned_vehicle_id for r in routes if r.assigned_vehicle_id}
@@ -847,20 +929,52 @@ async def get_all_routes(
 
             shift_id_key = route.shift_id
             if shift_id_key not in shifts:
+                # Get shift from cache/DB - should ALWAYS succeed due to integrity check above
                 s = get_shift_with_cache(db, tenant_id, shift_id_key)
                 if s:
-                    shifts[shift_id_key] = {
-                        "shift_id": s.shift_id,
-                        "log_type": s.log_type.value,
-                        "shift_time": s.shift_time.strftime("%H:%M:%S"),
-                        "routes": []
-                    }
+                    # Safe extraction: handle both dict (from cache) and object (from DB)
+                    if isinstance(s, dict):
+                        # Already a dict from cache
+                        shifts[shift_id_key] = {
+                            "shift_id": s.get("shift_id"),
+                            "log_type": s.get("log_type"),
+                            "shift_time": s.get("shift_time"),
+                            "routes": []
+                        }
+                    else:
+                        # SQLAlchemy object from DB
+                        shifts[shift_id_key] = {
+                            "shift_id": s.shift_id,
+                            "log_type": safe_get_enum_value(s, "log_type"),
+                            "shift_time": s.shift_time.strftime("%H:%M:%S") if s.shift_time else None,
+                            "routes": []
+                        }
+                else:
+                    # This should NEVER happen due to integrity check, but fail explicitly if it does
+                    logger.critical(
+                        f"❌ [CRITICAL ERROR] Shift {shift_id_key} passed integrity check but "
+                        f"get_shift_with_cache returned None! This indicates a race condition or "
+                        f"concurrent deletion. tenant_id={tenant_id}, shift_id={shift_id_key}"
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=ResponseWrapper.error(
+                            message=f"Critical: Shift {shift_id_key} disappeared during processing",
+                            error_code="SHIFT_RACE_CONDITION",
+                            details={
+                                "shift_id": shift_id_key,
+                                "tenant_id": tenant_id,
+                                "cause": "Shift existed during validation but not during retrieval",
+                                "solution": "Retry the request. If persists, check for concurrent deletions."
+                            }
+                        )
+                    )
 
             shifts[shift_id_key]["routes"].append({
                 "tenant": tenant_details,
                 "route_id": route.route_id,
                 "route_code": route.route_code,
-                "status": route.status.value,
+                "status": safe_get_enum_value(route, "status"),
                 "escort_required": route.escort_required,
                 "driver": driver_map.get(route.assigned_driver_id),
                 "vehicle": vehicle_map.get(route.assigned_vehicle_id),
@@ -887,6 +1001,33 @@ async def get_all_routes(
     except HTTPException:
         raise
     except Exception as e:
+        # Comprehensive error logging with diagnostic context
+        logger.error("="*80)
+        logger.error(f"❌ [ROUTES ENDPOINT FAILURE] Unexpected exception occurred")
+        logger.error("="*80)
+        logger.error(f"Error Type: {type(e).__name__}")
+        logger.error(f"Error Message: {str(e)}")
+        logger.error(f"Request Context:")
+        logger.error(f"  - tenant_id: {tenant_id}")
+        logger.error(f"  - shift_id: {shift_id}")
+        logger.error(f"  - booking_date: {booking_date}")
+        logger.error(f"  - status_filter: {status}")
+        logger.error(f"  - user_type: {user_data.get('user_type')}")
+        logger.error(f"  - user_id: {user_data.get('user_id')}")
+        logger.error(f"Stack Trace:", exc_info=True)
+        logger.error("="*80)
+        
+        # Provide diagnostic hints based on error type
+        if "shift" in str(e).lower():
+            logger.error("[DIAGNOSTIC] Error involves 'shift' - check shift table integrity")
+        if "booking" in str(e).lower():
+            logger.error("[DIAGNOSTIC] Error involves 'booking' - check booking relationships")
+        if "foreign key" in str(e).lower():
+            logger.error("[DIAGNOSTIC] Foreign key violation - check referential integrity")
+        
+        logger.error("[SOLUTION] See docs/ROUTES_ERROR_DEBUG.md for troubleshooting steps")
+        logger.error("="*80)
+        
         return handle_db_error(e)
 
 @router.get("/unrouted", status_code=status.HTTP_200_OK)
@@ -1084,7 +1225,7 @@ async def assign_vendor_to_route(
                     "route_code": route.route_code,
                     "assigned_vendor_id": vendor_id,
                     "vendor_name": vendor.name,
-                    "status": route.status.value
+                    "status": safe_get_enum_value(route, "status")
                 },
                 request=request
             )
@@ -1318,7 +1459,7 @@ async def assign_vehicle_to_route(
                     "assigned_vendor_id": route.assigned_vendor_id,
                     "assigned_vehicle_id": route.assigned_vehicle_id,
                     "assigned_driver_id": route.assigned_driver_id,
-                    "status": route.status.value,
+                    "status": safe_get_enum_value(route, "status"),
                 },
                 message="Vehicle and driver are already assigned to this route. No changes made.",
             )
@@ -1350,7 +1491,7 @@ async def assign_vehicle_to_route(
                     "vehicle_rc_number": vehicle.rc_number,
                     "assigned_driver_id": driver.driver_id,
                     "driver_name": driver.name,
-                    "status": route.status.value
+                    "status": safe_get_enum_value(route, "status")
                 },
                 request=request
             )
@@ -1387,7 +1528,7 @@ async def assign_vehicle_to_route(
                     "assigned_vendor_id": route.assigned_vendor_id,
                     "assigned_vehicle_id": route.assigned_vehicle_id,
                     "assigned_driver_id": route.assigned_driver_id,
-                    "status": route.status.value,
+                    "status": safe_get_enum_value(route, "status"),
                 },
                 message="Vehicle and driver assigned successfully. No bookings to notify.",
             )
@@ -1411,7 +1552,8 @@ async def assign_vehicle_to_route(
                 
             # Recalculate OTP count and purposes at assignment time
             shift = get_shift_with_cache(db, booking.shift_id, booking.tenant_id)
-            required_otp_count = get_required_otp_count(booking.booking_type, shift.log_type.value if shift else "IN", tenant_config, escort_enabled)
+            shift_log_type = safe_get_enum_value(shift, "log_type") if shift else "IN"
+            required_otp_count = get_required_otp_count(booking.booking_type, shift_log_type, tenant_config, escort_enabled)
 
             # Generate OTPs based on required count
             otp_codes = generate_otp_codes(required_otp_count)
@@ -1420,12 +1562,12 @@ async def assign_vehicle_to_route(
             required_otps = []
 
             # Check shift type and add required OTPs
-            if shift.log_type.value == "IN":  # Login shift
+            if shift_log_type == "IN":  # Login shift
                 if tenant_config and tenant_config.login_boarding_otp:
                     required_otps.append('boarding')
                 if tenant_config and tenant_config.login_deboarding_otp:
                     required_otps.append('deboarding')
-            elif shift.log_type.value == "OUT":  # Logout shift
+            elif shift_log_type == "OUT":  # Logout shift
                 if tenant_config and tenant_config.logout_boarding_otp:
                     required_otps.append('boarding')
                 if tenant_config and tenant_config.logout_deboarding_otp:
@@ -1508,7 +1650,7 @@ async def assign_vehicle_to_route(
                 "assigned_vendor_id": route.assigned_vendor_id,
                 "assigned_vehicle_id": route.assigned_vehicle_id,
                 "assigned_driver_id": route.assigned_driver_id,
-                "status": route.status.value,
+                "status": safe_get_enum_value(route, "status"),
             },
             message="Vehicle and driver assigned successfully",
         )
@@ -1676,7 +1818,7 @@ async def get_route_by_id(
             "route_id": route.route_id,
             "shift_id": route.shift_id,
             "route_code": route.route_code,
-            "status": route.status.value,
+            "status": safe_get_enum_value(route, "status"),
             "escort_required": route.escort_required,
             "driver": {"id": driver.driver_id, "name": driver.name, "phone": driver.phone} if driver else None,
             "vehicle": {"id": vehicle.vehicle_id, "rc_number": vehicle.rc_number} if vehicle else None,
@@ -1798,7 +1940,7 @@ async def merge_routes(
         # --- Which route generation to call? ---
         from app.services.optimal_roiute_generation import generate_optimal_route, generate_drop_route
 
-        shift_type = shift.log_type.value if hasattr(shift.log_type, "value") else shift.log_type
+        shift_type = safe_get_enum_value(shift, "log_type")
 
         if shift_type == "IN":
             optimized = generate_optimal_route(
@@ -2054,7 +2196,7 @@ async def update_route(
         
         # figure out the shift type (use cache)
         shift = get_shift_with_cache(db, route.shift_id, route.tenant_id)
-        shift_type = shift.log_type.value if hasattr(shift.log_type, "value") else shift.log_type
+        shift_type = safe_get_enum_value(shift, "log_type")
         logger.debug(f"Shift type for route {route_id} is {shift_type}")
 
         all_booking_ids = []

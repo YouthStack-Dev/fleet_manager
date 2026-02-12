@@ -356,6 +356,11 @@ def get_shift_with_cache(db, tenant_id: str, shift_id: int):
     Returns dict with serialized time values for consistency.
     
     Returns: dict or None
+    
+    ROOT CAUSE DIAGNOSTICS:
+    - Cache miss -> queries database
+    - Returns None ONLY if shift doesn't exist in database
+    - Not a caching problem if None is returned - it's a data problem
     """
     from app.core.logging_config import get_logger
     logger = get_logger(__name__)
@@ -372,32 +377,55 @@ def get_shift_with_cache(db, tenant_id: str, shift_id: int):
                 return shift
             except Exception as deser_error:
                 logger.error(f"❌ [CACHE HIT ERROR] Deserialization failed: {str(deser_error)} | tenant_id={tenant_id}, shift_id={shift_id}")
-                raise
+                logger.warning(f"[FALLBACK] Will query database due to cache corruption")
+                # Fall through to database query
         
-        logger.info(f"⚠️ [CACHE MISS] shift not in Redis | tenant_id={tenant_id}, shift_id={shift_id}")
-        logger.info(f"📊 [CACHE MISS - STEP 1] Querying database... | tenant_id={tenant_id}, shift_id={shift_id}")
+        logger.info(f"⚠️ [CACHE MISS] shift not in Redis, querying database | tenant_id={tenant_id}, shift_id={shift_id}")
+        logger.info(f"📊 [DATABASE QUERY] SELECT * FROM shifts WHERE shift_id={shift_id} AND tenant_id='{tenant_id}'")
         from app.models.shift import Shift
         shift = db.query(Shift).filter(Shift.shift_id == shift_id, Shift.tenant_id == tenant_id).first()
         
         if not shift:
-            logger.warning(f"⚠️ [CACHE MISS - NO DATA] shift not found in DB | tenant_id={tenant_id}, shift_id={shift_id}")
+            # ROOT CAUSE: Shift does not exist in database
+            logger.error("="*80)
+            logger.error(f"❌ [ROOT CAUSE] SHIFT DOES NOT EXIST IN DATABASE")
+            logger.error(f"   shift_id: {shift_id}")
+            logger.error(f"   tenant_id: {tenant_id}")
+            logger.error(f"   Query executed: SELECT * FROM shifts WHERE shift_id={shift_id} AND tenant_id='{tenant_id}'")
+            logger.error(f"   Result: No rows found")
+            logger.error(f"")
+            logger.error(f"   This is NOT a caching problem. This is a DATA INTEGRITY problem.")
+            logger.error(f"   The shift_id {shift_id} is referenced somewhere but doesn't exist in the shifts table.")
+            logger.error(f"")
+            logger.error(f"   POSSIBLE CAUSES:")
+            logger.error(f"   1. Shift was deleted but routes/bookings still reference it")
+            logger.error(f"   2. Incomplete data migration")
+            logger.error(f"   3. Missing foreign key constraints allowing orphaned references")
+            logger.error(f"   4. shift_id is incorrect or belongs to different tenant")
+            logger.error(f"")
+            logger.error(f"   SOLUTIONS:")
+            logger.error(f"   1. Check if shift exists: SELECT * FROM shifts WHERE shift_id={shift_id}")
+            logger.error(f"   2. Check what references it: SELECT * FROM route_management WHERE shift_id={shift_id}")
+            logger.error(f"   3. Either create the missing shift or remove orphaned references")
+            logger.error(f"   4. See: docs/ROUTES_ERROR_DEBUG.md")
+            logger.error("="*80)
             return None
         
-        logger.info(f"✅ [CACHE MISS - STEP 2] DB query successful | tenant_id={tenant_id}, shift_id={shift_id}")
-        logger.info(f"💾 [CACHE MISS - STEP 3] Serializing for cache... | tenant_id={tenant_id}, shift_id={shift_id}")
+        logger.info(f"✅ [DATABASE QUERY SUCCESS] Shift found in database | tenant_id={tenant_id}, shift_id={shift_id}")
+        logger.info(f"💾 [CACHING] Serializing and caching shift for future requests...")
         try:
             shift_dict = serialize_shift_for_cache(shift)
-            logger.info(f"💾 [CACHE MISS - STEP 4] Writing to Redis... | tenant_id={tenant_id}, shift_id={shift_id}")
             cache_shift(shift_id, tenant_id, shift_dict)
-            logger.info(f"✅ [CACHE MISS COMPLETE] Successfully cached to Redis | tenant_id={tenant_id}, shift_id={shift_id}")
+            logger.info(f"✅ [CACHE WRITE SUCCESS] Shift cached to Redis | tenant_id={tenant_id}, shift_id={shift_id}")
         except Exception as cache_error:
-            logger.error(f"❌ [CACHE MISS - CACHE FAILED] Could not write to Redis: {str(cache_error)} | tenant_id={tenant_id}, shift_id={shift_id}")
+            logger.error(f"❌ [CACHE WRITE FAILED] Could not write to Redis: {str(cache_error)} | tenant_id={tenant_id}, shift_id={shift_id}")
+            logger.warning(f"   This is not critical - will work from database, just slower")
         
         return shift
         
     except Exception as e:
         logger.error(f"❌ [CACHE ERROR] Exception during cache lookup: {str(e)} | tenant_id={tenant_id}, shift_id={shift_id}")
-        logger.info(f"🔄 [FALLBACK - STEP 1] Querying database directly... | tenant_id={tenant_id}, shift_id={shift_id}")
+        logger.info(f"🔄 [FALLBACK] Attempting direct database query... | tenant_id={tenant_id}, shift_id={shift_id}")
         from app.models.shift import Shift
         shift = db.query(Shift).filter(Shift.shift_id == shift_id, Shift.tenant_id == tenant_id).first()
         
