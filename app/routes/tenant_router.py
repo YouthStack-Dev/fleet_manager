@@ -18,7 +18,7 @@ from app.schemas.team import TeamCreate, TeamUpdate, TeamResponse, TeamPaginatio
 from app.utils.pagination import paginate_query
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_db_error, handle_http_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
-from app.utils import cache_manager
+from app.utils.cache_manager import get_tenant_with_cache, cache_tenant, invalidate_tenant
 from app.core.logging_config import get_logger
 from app.core.email_service import get_email_service, get_sms_service
 
@@ -262,7 +262,7 @@ def create_tenant(
         try:
             from app.utils.cache_manager import serialize_tenant_for_cache
             tenant_dict = serialize_tenant_for_cache(new_tenant)
-            cache_manager.cache_tenant(new_tenant.tenant_id, tenant_dict)
+            cache_tenant(new_tenant.tenant_id, tenant_dict)
             logger.info(f"✅ Cached newly created tenant {new_tenant.tenant_id}")
         except Exception as cache_error:
             logger.warning(f"⚠️ Failed to cache new tenant: {cache_error}")
@@ -503,7 +503,7 @@ def read_tenant(
         # 👑 Admin/SuperAdmin → tenant_id is taken directly from path param
 
         # Use cache-first approach
-        db_tenant = cache_manager.get_tenant_with_cache(db, tenant_id)
+        db_tenant = get_tenant_with_cache(db, tenant_id)
 
         if not db_tenant:
             logger.warning(f"Tenant fetch failed - not found: {tenant_id}")
@@ -664,8 +664,8 @@ def update_tenant(
         try:
             from app.utils.cache_manager import serialize_tenant_for_cache
             tenant_dict = serialize_tenant_for_cache(db_tenant)
-            cache_manager.invalidate_tenant(tenant_id)
-            cache_manager.cache_tenant(tenant_id, tenant_dict)
+            invalidate_tenant(tenant_id)
+            cache_tenant(tenant_id, tenant_dict)
             logger.info(f"✅ Refreshed cache for tenant {tenant_id}")
         except Exception as cache_error:
             logger.warning(f"⚠️ Failed to refresh tenant cache: {cache_error}")
@@ -798,7 +798,7 @@ def delete_tenant(
     
     # Invalidate tenant cache after deletion
     try:
-        cache_manager.invalidate_tenant(tenant_id)
+        invalidate_tenant(tenant_id)
         logger.info(f"✅ Invalidated cache for deleted tenant {tenant_id}")
     except Exception as cache_error:
         logger.warning(f"⚠️ Failed to invalidate tenant cache: {cache_error}")

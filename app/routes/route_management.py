@@ -25,7 +25,7 @@ from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger, setup_logging
 from app.utils.response_utils import ResponseWrapper, handle_db_error
 from app.utils.audit_helper import log_audit
-from app.utils.cache_manager import cached, cache_manager
+from app.utils.cache_manager import cached, cache_manager, get_tenant_with_cache, get_shift_with_cache, get_cutoff_with_cache, get_tenant_config_with_cache
 from app.utils.task_manager import run_background_task
 from common_utils import datetime_to_minutes, get_current_ist_time
 
@@ -735,8 +735,7 @@ async def get_all_routes(
         logger.info(f"[get_all_routes] resolved tenant: {tenant_id}")
 
         # ---------- Validate Tenant ----------
-        from app.utils import cache_manager
-        tenant = cache_manager.get_tenant_with_cache(db, tenant_id)
+        tenant = get_tenant_with_cache(db, tenant_id)
         if not tenant:
             raise HTTPException(
                 status_code=404,
@@ -848,7 +847,7 @@ async def get_all_routes(
 
             shift_id_key = route.shift_id
             if shift_id_key not in shifts:
-                s = cache_manager.get_shift_with_cache(db, tenant_id, shift_id_key)
+                s = get_shift_with_cache(db, tenant_id, shift_id_key)
                 if s:
                     shifts[shift_id_key] = {
                         "shift_id": s.shift_id,
@@ -930,7 +929,7 @@ async def get_unrouted_bookings(
         logger.info(f"[unrouted_bookings] Effective tenant resolved: {tenant_id}")
 
         # ---- Validate tenant exists (use cache) ----
-        tenant = cache_manager.get_tenant_with_cache(db, tenant_id)
+        tenant = get_tenant_with_cache(db, tenant_id)
         if not tenant:
             raise HTTPException(
                 status_code=404,
@@ -1363,10 +1362,10 @@ async def assign_vehicle_to_route(
         from app.utils import cache_manager
         from app.models.employee import Employee
         
-        cutoff = cache_manager.get_cutoff_with_cache(db, tenant_id)
+        cutoff = get_cutoff_with_cache(db, tenant_id)
         
         # Get tenant_config using cache-first helper
-        tenant_config = cache_manager.get_tenant_config_with_cache(db, tenant_id)
+        tenant_config = get_tenant_config_with_cache(db, tenant_id)
         
         # Check if escort is assigned to this route AND route requires escort
         escort_enabled = route.assigned_escort_id
@@ -1411,7 +1410,7 @@ async def assign_vehicle_to_route(
                 continue
                 
             # Recalculate OTP count and purposes at assignment time
-            shift = cache_manager.get_shift_with_cache(db, booking.shift_id, booking.tenant_id)
+            shift = get_shift_with_cache(db, booking.shift_id, booking.tenant_id)
             required_otp_count = get_required_otp_count(booking.booking_type, shift.log_type.value if shift else "IN", tenant_config, escort_enabled)
 
             # Generate OTPs based on required count
@@ -1466,7 +1465,7 @@ async def assign_vehicle_to_route(
                 continue
             
             # Prepare shift data
-            shift = cache_manager.get_shift_with_cache(db, booking.shift_id, booking.tenant_id)
+            shift = get_shift_with_cache(db, booking.shift_id, booking.tenant_id)
             shift_time = get_shift_time(shift) if shift else None
             shift_time_str = shift_time.strftime('%H:%M') if shift_time else 'N/A'
             shift_type = get_shift_log_type(shift) if shift else 'IN'
@@ -1566,7 +1565,7 @@ async def get_route_by_id(
         logger.info(f"[get_route_by_id] tenant={tenant_id}, route_id={route_id}")
 
         # Validate tenant exists (use cache)
-        tenant = cache_manager.get_tenant_with_cache(db, tenant_id)
+        tenant = get_tenant_with_cache(db, tenant_id)
         if not tenant:
             raise HTTPException(
                 status_code=404,
@@ -1790,7 +1789,7 @@ async def merge_routes(
         # --- Pull full booking objects ---
         bookings = get_bookings_by_ids(all_booking_ids, db)
 
-        shift = cache_manager.get_shift_with_cache(db, shift_id, tenant_id)
+        shift = get_shift_with_cache(db, shift_id, tenant_id)
         if not shift:
             raise HTTPException(
                 404, ResponseWrapper.error("Shift not found", "SHIFT_NOT_FOUND")
@@ -1979,7 +1978,7 @@ async def update_route(
         logger.info(f"Updating route {route_id} with operation '{update_request.operation}' for {len(update_request.booking_ids)} bookings, user: {user_data.get('user_id', 'unknown')}")
 
         # Validate tenant exists (use cache)
-        tenant = cache_manager.get_tenant_with_cache(db, tenant_id)
+        tenant = get_tenant_with_cache(db, tenant_id)
         if not tenant:
             logger.warning(f"Tenant {tenant_id} not found")
             raise HTTPException(
@@ -2054,7 +2053,7 @@ async def update_route(
         logger.debug(f"Fetched request bookings: {request_bookings}")
         
         # figure out the shift type (use cache)
-        shift = cache_manager.get_shift_with_cache(db, route.shift_id, route.tenant_id)
+        shift = get_shift_with_cache(db, route.shift_id, route.tenant_id)
         shift_type = shift.log_type.value if hasattr(shift.log_type, "value") else shift.log_type
         logger.debug(f"Shift type for route {route_id} is {shift_type}")
 
@@ -2518,7 +2517,7 @@ async def bulk_delete_routes(
             )
 
         # --- Validate Tenant (use cache) ---
-        tenant = cache_manager.get_tenant_with_cache(db, tenant_id)
+        tenant = get_tenant_with_cache(db, tenant_id)
         if not tenant:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
