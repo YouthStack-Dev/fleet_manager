@@ -20,7 +20,7 @@ from app.utils.pagination import paginate_query
 from common_utils.auth.permission_checker import PermissionChecker
 from common_utils.auth.token_validation import validate_bearer_token
 from common_utils import get_current_ist_time
-from app.utils import cache_manager
+from app.utils.cache_manager import get_tenant_with_cache, get_shift_with_cache, get_weekoff_with_cache, get_cutoff_with_cache
 from app.schemas.base import BaseResponse, PaginatedResponse
 from app.utils.response_utils import ResponseWrapper, handle_http_error, validate_pagination_params, handle_db_error
 from sqlalchemy.exc import SQLAlchemyError
@@ -177,7 +177,7 @@ def create_booking(
             )
 
         # --- Shift validation (with caching) ---
-        shift = cache_manager.get_shift_with_cache(db, tenant_id, booking.shift_id)
+        shift = get_shift_with_cache(db, tenant_id, booking.shift_id)
         if not shift:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -185,13 +185,13 @@ def create_booking(
             )
 
         # --- Tenant lookup (with caching) ---
-        tenant = cache_manager.get_tenant_with_cache(db, tenant_id)
+        tenant = get_tenant_with_cache(db, tenant_id)
         if not tenant:
             raise HTTPException(status_code=404, detail="Tenant not found")
 
         # --- Weekoff & Cutoff configs (with caching) ---
-        weekoff_config = cache_manager.get_weekoff_with_cache(db, employee.employee_id)
-        cutoff = cache_manager.get_cutoff_with_cache(db, tenant_id)
+        weekoff_config = get_weekoff_with_cache(db, employee.employee_id)
+        cutoff = get_cutoff_with_cache(db, tenant_id)
 
         # Collect booking data for bulk insert
         bookings_to_create = []
@@ -542,7 +542,7 @@ def get_bookings(
         if route_obj_dict:
             shift_ids = [r.shift_id for r in route_obj_dict.values() if r.shift_id]
             for shift_id in shift_ids:
-                shift_data = cache_manager.get_shift_with_cache(db, tenant_id or effective_tenant_id, shift_id)
+                shift_data = get_shift_with_cache(db, tenant_id or effective_tenant_id, shift_id)
                 if shift_data:
                     shifts_dict[shift_id] = shift_data
 
@@ -634,7 +634,7 @@ def get_bookings(
 
                 shift_details = None
                 if route.shift_id:
-                    shift_data = cache_manager.get_shift_with_cache(db, tenant_id, route.shift_id)
+                    shift_data = get_shift_with_cache(db, tenant_id, route.shift_id)
                     if shift_data:
                         shift_details = shift_data
                     elif route.shift_id in shifts_dict:
@@ -802,7 +802,7 @@ def get_bookings_by_employee(
         if route_obj_dict:
             shift_ids = [r.shift_id for r in route_obj_dict.values() if r.shift_id]
             for shift_id in shift_ids:
-                shift_data = cache_manager.get_shift_with_cache(db, tenant_id, shift_id)
+                shift_data = get_shift_with_cache(db, tenant_id, shift_id)
                 if shift_data:
                     shifts_dict[shift_id] = shift_data
 
@@ -891,7 +891,7 @@ def get_bookings_by_employee(
 
                 shift_details = None
                 if route.shift_id:
-                    shift_data = cache_manager.get_shift_with_cache(db, tenant_id, route.shift_id)
+                    shift_data = get_shift_with_cache(db, tenant_id, route.shift_id)
                     if shift_data:
                         shift_details = shift_data
                     elif route.shift_id in shifts_dict:
@@ -1028,7 +1028,7 @@ def get_booking_by_id(
 
                 shift_details = None
                 if route.shift_id:
-                    shift_route = cache_manager.get_shift_with_cache(db, tenant_id, route.shift_id)
+                    shift_route = get_shift_with_cache(db, tenant_id, route.shift_id)
                     if shift_route:
                         shift_details = shift_route
 
@@ -1190,7 +1190,7 @@ async def update_booking(
         if request.shift_id is not None:
             # Validate shift exists
             logger.info(f"[booking.update] Validating shift_id={request.shift_id}")
-            shift = cache_manager.get_shift_with_cache(db, tenant_id, request.shift_id)
+            shift = get_shift_with_cache(db, tenant_id, request.shift_id)
             if not shift:
                 logger.error(f"[booking.update] FAILED - Shift not found: shift_id={request.shift_id}")
                 raise HTTPException(
@@ -1206,7 +1206,7 @@ async def update_booking(
             shift_log_type = get_shift_log_type(shift)
             logger.info(f"[booking.update] Shift found: shift_id={shift.get('shift_id') if isinstance(shift, dict) else shift.shift_id}, shift_time={shift_time}, log_type={shift_log_type}")
             # Cutoff validation for the new shift
-            cutoff = cache_manager.get_cutoff_with_cache(db, tenant_id)
+            cutoff = get_cutoff_with_cache(db, tenant_id)
             cutoff_interval = None
             if cutoff:
                 if booking.booking_type == "adhoc":
@@ -1390,7 +1390,7 @@ def cancel_booking(
             )
 
         # --- Cancellation cutoff validation ---
-        cutoff = cache_manager.get_cutoff_with_cache(db, tenant_id)
+        cutoff = get_cutoff_with_cache(db, tenant_id)
         cancel_cutoff_interval = None
         if booking.shift and booking.shift.log_type == "IN":
             cancel_cutoff_interval = cutoff.cancel_login_cutoff if cutoff else None
