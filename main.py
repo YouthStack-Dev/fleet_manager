@@ -123,14 +123,18 @@ app.add_middleware(
 
 # Add monitoring middleware
 from app.middleware import ErrorTrackingMiddleware, RequestTrackingMiddleware
+from app.middleware.url_validation import URLValidationMiddleware
 
-# Request tracking should be first to capture all requests
+# URL validation should be FIRST to catch malformed URLs early
+app.add_middleware(URLValidationMiddleware)
+
+# Request tracking should be second to capture all requests
 app.add_middleware(RequestTrackingMiddleware)
 
-# Error tracking should be second to catch all errors
+# Error tracking should be third to catch all errors
 app.add_middleware(ErrorTrackingMiddleware)
 
-logger.info("✅ Monitoring middleware enabled (request tracking + error tracking)")
+logger.info("✅ Monitoring middleware enabled (URL validation + request tracking + error tracking)")
 
 # Include routers
 app.include_router(audit_log_router, prefix="/api/v1")
