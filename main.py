@@ -112,16 +112,7 @@ instrumentator.instrument(app).expose(app, endpoint="/metrics", include_in_schem
 
 logger.info("✅ Prometheus metrics enabled at /metrics")
 
-# Set up CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Add monitoring middleware
+# Add monitoring middleware FIRST (they will execute in reverse order)
 from app.middleware import ErrorTrackingMiddleware, RequestTrackingMiddleware
 from app.middleware.url_validation import URLValidationMiddleware
 
@@ -135,6 +126,33 @@ app.add_middleware(RequestTrackingMiddleware)
 app.add_middleware(ErrorTrackingMiddleware)
 
 logger.info("✅ Monitoring middleware enabled (URL validation + request tracking + error tracking)")
+
+# Set up CORS middleware LAST so it executes FIRST (middleware executes in reverse order)
+# Configure allowed origins from environment
+# In production, this should be restricted to specific domains
+allowed_origins = os.getenv("CORS_ORIGINS", "*").split(",")
+if allowed_origins == ["*"]:
+    # If using wildcard, expand to include common patterns
+    allowed_origins = [
+        "*",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "https://test.euronext.gocab.tech",
+        "https://euronext.gocab.tech",
+        "https://api.gocab.tech",
+    ]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,  # Cache preflight requests for 1 hour
+)
+
+logger.info(f"✅ CORS enabled for origins: {allowed_origins}")
 
 # Include routers
 app.include_router(audit_log_router, prefix="/api/v1")
