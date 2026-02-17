@@ -4,9 +4,23 @@ import os
 from typing import Optional
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from contextvars import ContextVar
 
 # India Standard Time for logging
 IST = ZoneInfo("Asia/Kolkata")
+
+# Context variable to store request ID across async context
+request_id_ctx: ContextVar[Optional[str]] = ContextVar('request_id', default=None)
+
+
+class RequestContextFilter(logging.Filter):
+    """Filter to add request ID to all log records"""
+    
+    def filter(self, record):
+        # Add request ID from context if available
+        record.request_id = request_id_ctx.get() or "--------"
+        return True
+
 
 class ColoredFormatter(logging.Formatter):
     """Custom formatter to add colors to log levels and use IST timestamps"""
@@ -113,10 +127,10 @@ def setup_logging(
     if log_level is None:
         log_level = os.getenv("LOG_LEVEL", "DEBUG").upper()
     
-    # Enhanced format string with more structure
+    # Enhanced format string with more structure and Request ID
     if format_string is None:
         format_string = (
-            '%(asctime)s │ %(name)-20s │ %(levelname)-8s │ '
+            '%(asctime)s │ [%(request_id)s] │ %(name)-20s │ %(levelname)-8s │ '
             '[%(filename)s:%(lineno)d] │ %(funcName)s() │\n'
             '  ➤ %(message)s'
         )
@@ -143,6 +157,10 @@ def setup_logging(
         # Create console handler
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(numeric_level)
+        
+        # Add request context filter
+        request_filter = RequestContextFilter()
+        console_handler.addFilter(request_filter)
         
         # Create colored formatter
         formatter = ColoredFormatter(format_string, use_colors=use_colors)

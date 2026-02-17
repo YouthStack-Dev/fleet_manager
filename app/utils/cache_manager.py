@@ -1148,5 +1148,383 @@ def refresh_tenant_config(tenant_id: str, config_data: dict, ttl: int = 3600):
         logger.error(f"❌ Failed to refresh tenant_config cache for tenant {tenant_id}: {str(e)}")
         raise
 
+# ============================================================
+# Driver Caching - Multi-Level Cache Strategy
+# ============================================================
+
+def serialize_driver_for_cache(driver_obj) -> dict:
+    """
+    Convert Driver object to cacheable dictionary.
+    Handles date serialization for JSON compatibility.
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+
+    try:
+        driver_dict = {c.name: getattr(driver_obj, c.name) for c in driver_obj.__table__.columns}
+
+        # Convert date to ISO string for JSON serialization
+        date_fields = ['date_of_birth', 'date_of_joining', 'license_expiry_date', 
+                       'badge_expiry_date', 'bg_expiry_date', 'police_expiry_date',
+                       'medical_expiry_date', 'training_expiry_date', 'eye_expiry_date', 'induction_date']
+        for field in date_fields:
+            if driver_dict.get(field) is not None:
+                driver_dict[field] = driver_dict[field].isoformat()
+
+        # Convert datetime to ISO string for JSON serialization
+        datetime_fields = ['created_at', 'updated_at']
+        for field in datetime_fields:
+            if driver_dict.get(field) is not None:
+                driver_dict[field] = driver_dict[field].isoformat()
+
+        # Convert enum to value for JSON serialization
+        if 'gender' in driver_dict and driver_dict['gender'] is not None:
+            driver_dict['gender'] = driver_dict['gender'].value if hasattr(driver_dict['gender'], 'value') else driver_dict['gender']
+        
+        enum_fields = ['bg_verify_status', 'police_verify_status', 'medical_verify_status', 
+                      'training_verify_status', 'eye_verify_status']
+        for field in enum_fields:
+            if driver_dict.get(field) is not None:
+                driver_dict[field] = driver_dict[field].value if hasattr(driver_dict[field], 'value') else driver_dict[field]
+
+        logger.debug(f"✅ Serialized driver {driver_dict.get('driver_id', 'unknown')} for cache")
+        return driver_dict
+    except Exception as e:
+        logger.error(f"❌ Failed to serialize driver for cache: {str(e)}")
+        raise
+
+def deserialize_driver_from_cache(cached_dict: dict):
+    """
+    Convert cached dictionary back to Driver object.
+    Handles ISO string back to date/datetime.
+    """
+    from app.models.driver import Driver
+    from datetime import datetime, date
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+
+    try:
+        driver_id = cached_dict.get('driver_id', 'unknown')
+
+        # Convert ISO string back to date
+        date_fields = ['date_of_birth', 'date_of_joining', 'license_expiry_date', 
+                       'badge_expiry_date', 'bg_expiry_date', 'police_expiry_date',
+                       'medical_expiry_date', 'training_expiry_date', 'eye_expiry_date', 'induction_date']
+        for field in date_fields:
+            if cached_dict.get(field) and isinstance(cached_dict[field], str):
+                cached_dict[field] = date.fromisoformat(cached_dict[field])
+
+        # Convert ISO string back to datetime
+        datetime_fields = ['created_at', 'updated_at']
+        for field in datetime_fields:
+            if cached_dict.get(field) and isinstance(cached_dict[field], str):
+                cached_dict[field] = datetime.fromisoformat(cached_dict[field])
+
+        logger.debug(f"✅ Deserialized driver {driver_id} from cache")
+        return Driver(**cached_dict)
+    except Exception as e:
+        logger.error(f"❌ Failed to deserialize driver from cache: {str(e)}")
+        raise
+
+# Driver caching - Individual driver by ID
+def cache_driver(driver_id: int, driver_data: dict, ttl: int = 300):
+    """Cache driver data for 5 minutes"""
+    return _cache_entity("driver", driver_data, ttl, driver_id)
+
+def get_cached_driver(driver_id: int) -> Optional[dict]:
+    """Get cached driver data"""
+    return _get_cached_entity("driver", driver_id)
+
+def invalidate_driver(driver_id: int):
+    """Invalidate driver cache when data changes"""
+    return _invalidate_entity("driver", driver_id)
+
+# Driver caching - License mapping (for multi-vendor support)
+def cache_driver_license(license_number: str, driver_ids: list, ttl: int = 300):
+    """Cache license → driver_ids mapping for 5 minutes"""
+    return _cache_entity("driver_license", driver_ids, ttl, license_number)
+
+def get_cached_driver_license(license_number: str) -> Optional[list]:
+    """Get cached driver IDs for license number"""
+    return _get_cached_entity("driver_license", license_number)
+
+def invalidate_driver_license(license_number: str):
+    """Invalidate license cache when driver data changes"""
+    return _invalidate_entity("driver_license", license_number)
+
+# Driver caching - Android ID mapping (for device authorization)
+def cache_driver_android(android_id: str, driver_id: int, ttl: int = 300):
+    """Cache android_id → driver_id mapping for 5 minutes"""
+    return _cache_entity("driver_android", driver_id, ttl, android_id)
+
+def get_cached_driver_android(android_id: str) -> Optional[int]:
+    """Get cached driver ID for android_id"""
+    return _get_cached_entity("driver_android", android_id)
+
+def invalidate_driver_android(android_id: str):
+    """Invalidate android_id cache (critical for device authorization)"""
+    return _invalidate_entity("driver_android", android_id)
+
+# Driver caching - Vendor list
+def cache_driver_vendor(vendor_id: int, driver_ids: list, ttl: int = 600):
+    """Cache vendor driver list for 10 minutes"""
+    return _cache_entity("driver_vendor", driver_ids, ttl, vendor_id)
+
+def get_cached_driver_vendor(vendor_id: int) -> Optional[list]:
+    """Get cached driver IDs for vendor"""
+    return _get_cached_entity("driver_vendor", vendor_id)
+
+def invalidate_driver_vendor(vendor_id: int):
+    """Invalidate vendor driver list cache"""
+    return _invalidate_entity("driver_vendor", vendor_id)
+
+# Driver caching - Tenant list
+def cache_driver_tenant(tenant_id: str, driver_ids: list, ttl: int = 900):
+    """Cache tenant driver list for 15 minutes"""
+    return _cache_entity("driver_tenant", driver_ids, ttl, tenant_id)
+
+def get_cached_driver_tenant(tenant_id: str) -> Optional[list]:
+    """Get cached driver IDs for tenant"""
+    return _get_cached_entity("driver_tenant", tenant_id)
+
+def invalidate_driver_tenant(tenant_id: str):
+    """Invalidate tenant driver list cache"""
+    return _invalidate_entity("driver_tenant", tenant_id)
+
+# ============================================================
+# Driver Helper Functions with Cache + DB Fallback
+# ============================================================
+
+def get_driver_with_cache(db, driver_id: int):
+    """
+    Get driver with automatic caching.
+    Tries cache first, falls back to DB, and auto-caches on miss.
+    
+    Returns: Driver dict or None
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        logger.info(f"🔍 [CACHE CHECK] Looking for driver_id={driver_id} in Redis")
+        cached_driver = get_cached_driver(driver_id)
+        
+        if cached_driver:
+            logger.info(f"✅ [CACHE HIT] Driver found in Redis | driver_id={driver_id} | No DB query needed")
+            return cached_driver
+        
+        logger.info(f"⚠️ [CACHE MISS] Driver_id={driver_id} not in Redis | Reason: Key doesn't exist or expired | Querying database...")
+        from app.models.driver import Driver
+        driver = db.query(Driver).filter(Driver.driver_id == driver_id).first()
+        
+        if not driver:
+            logger.warning(f"❌ [DATABASE] Driver not found | driver_id={driver_id} | Reason: Record doesn't exist")
+            return None
+        
+        logger.info(f"✅ [DATABASE QUERY SUCCESS] Driver found in DB | driver_id={driver_id} | Now caching for future requests...")
+        try:
+            driver_dict = serialize_driver_for_cache(driver)
+            cache_driver(driver_id, driver_dict)
+            logger.info(f"💾 [CACHE STORED] Driver cached successfully | driver_id={driver_id} | TTL=300s")
+            return driver_dict
+        except Exception as cache_error:
+            logger.error(f"⚠️ [CACHE STORE FAILED] Failed to cache driver | driver_id={driver_id} | Reason: {str(cache_error)} | Returning data anyway")
+            return serialize_driver_for_cache(driver)
+        
+    except Exception as e:
+        logger.error(f"❌ [CACHE ERROR] Exception during cache operation | driver_id={driver_id} | Error: {str(e)}")
+        logger.info(f"🔄 [FALLBACK] Attempting direct database query without cache...")
+        try:
+            from app.models.driver import Driver
+            driver = db.query(Driver).filter(Driver.driver_id == driver_id).first()
+            
+            if not driver:
+                logger.warning(f"❌ [FALLBACK FAILED] Driver not found in database | driver_id={driver_id}")
+                return None
+            
+            logger.info(f"✅ [FALLBACK SUCCESS] Driver found via direct DB query | driver_id={driver_id}")
+            return serialize_driver_for_cache(driver)
+        except Exception as fallback_error:
+            logger.error(f"❌ [FALLBACK ERROR] Database query failed | driver_id={driver_id} | Error: {str(fallback_error)}")
+            return None
+
+def get_drivers_by_license_with_cache(db, license_number: str):
+    """
+    Get all drivers with license number (multi-vendor support).
+    Tries cache first, falls back to DB, and auto-caches on miss.
+    
+    Returns: List of driver dicts
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        logger.info(f"🔍 [CACHE CHECK] Looking for license={license_number} mapping in Redis")
+        cached_driver_ids = get_cached_driver_license(license_number)
+        
+        if cached_driver_ids:
+            logger.info(f"✅ [CACHE HIT] License mapping found | license={license_number} | {len(cached_driver_ids)} driver(s) | No DB query needed")
+            # Get each driver from cache
+            drivers = []
+            for driver_id in cached_driver_ids:
+                driver_data = get_driver_with_cache(db, driver_id)
+                if driver_data:
+                    drivers.append(driver_data)
+            logger.info(f"✅ [CACHE COMPLETE] Retrieved all {len(drivers)} driver(s) for license={license_number}")
+            return drivers
+        
+        logger.info(f"⚠️ [CACHE MISS] License mapping not in Redis | license={license_number} | Reason: Key doesn't exist or expired | Querying database...")
+        from app.models.driver import Driver
+        drivers = db.query(Driver).filter(Driver.license_number == license_number).all()
+        
+        if not drivers:
+            logger.warning(f"❌ [DATABASE] No drivers found | license={license_number} | Reason: No records with this license")
+            return []
+        
+        logger.info(f"✅ [DATABASE QUERY SUCCESS] Found {len(drivers)} driver(s) in DB | license={license_number} | Now caching...")
+        
+        driver_ids = []
+        driver_dicts = []
+        failed_cache_count = 0
+        
+        for driver in drivers:
+            try:
+                driver_dict = serialize_driver_for_cache(driver)
+                cache_driver(driver.driver_id, driver_dict)
+                driver_ids.append(driver.driver_id)
+                driver_dicts.append(driver_dict)
+            except Exception as cache_error:
+                failed_cache_count += 1
+                logger.error(f"⚠️ [CACHE STORE FAILED] Driver {driver.driver_id} not cached | Reason: {str(cache_error)}")
+        
+        # Cache license → driver_ids mapping
+        if driver_ids:
+            try:
+                cache_driver_license(license_number, driver_ids)
+                logger.info(f"💾 [CACHE STORED] License mapping cached | license={license_number} | {len(driver_ids)} driver(s) | TTL=300s | Failed={failed_cache_count}")
+            except Exception as mapping_error:
+                logger.error(f"⚠️ [CACHE STORE FAILED] License mapping not cached | license={license_number} | Reason: {str(mapping_error)}")
+        
+        return driver_dicts
+        
+    except Exception as e:
+        logger.error(f"❌ [CACHE ERROR] Exception during license lookup | license={license_number} | Error: {str(e)}")
+        logger.info(f"🔄 [FALLBACK] Querying database directly without cache...")
+        try:
+            from app.models.driver import Driver
+            drivers = db.query(Driver).filter(Driver.license_number == license_number).all()
+            logger.info(f"✅ [FALLBACK SUCCESS] Found {len(drivers)} driver(s) via direct DB query | license={license_number}")
+            return [serialize_driver_for_cache(d) for d in drivers]
+        except Exception as fallback_error:
+            logger.error(f"❌ [FALLBACK ERROR] Database query failed | license={license_number} | Error: {str(fallback_error)}")
+            return []
+
+def get_driver_by_android_id_with_cache(db, android_id: str):
+    """
+    Get driver by active_android_id (for device authorization).
+    Tries cache first, falls back to DB, and auto-caches on miss.
+    
+    Returns: Driver dict or None
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        logger.info(f"🔍 [CACHE CHECK] Looking for android_id={android_id[:8]}...{android_id[-4:]} mapping in Redis")
+        cached_driver_id = get_cached_driver_android(android_id)
+        
+        if cached_driver_id:
+            logger.info(f"✅ [CACHE HIT] Android ID mapped to driver_id={cached_driver_id} | android_id={android_id[:8]}...{android_id[-4:]} | No DB query needed")
+            return get_driver_with_cache(db, cached_driver_id)
+        
+        logger.info(f"⚠️ [CACHE MISS] Android ID mapping not in Redis | android_id={android_id[:8]}...{android_id[-4:]} | Reason: Key doesn't exist or expired | Querying database...")
+        from app.models.driver import Driver
+        driver = db.query(Driver).filter(Driver.active_android_id == android_id).first()
+        
+        if not driver:
+            logger.warning(f"❌ [DATABASE] No driver found | android_id={android_id[:8]}...{android_id[-4:]} | Reason: No driver has this device active")
+            return None
+        
+        logger.info(f"✅ [DATABASE QUERY SUCCESS] Driver found in DB | driver_id={driver.driver_id} | android_id={android_id[:8]}...{android_id[-4:]} | Now caching...")
+        
+        try:
+            driver_dict = serialize_driver_for_cache(driver)
+            cache_driver(driver.driver_id, driver_dict)
+            cache_driver_android(android_id, driver.driver_id)
+            logger.info(f"💾 [CACHE STORED] Android ID mapping cached | driver_id={driver.driver_id} → android_id={android_id[:8]}...{android_id[-4:]} | TTL=300s")
+            return driver_dict
+        except Exception as cache_error:
+            logger.error(f"⚠️ [CACHE STORE FAILED] Android ID mapping not cached | driver_id={driver.driver_id} | Reason: {str(cache_error)} | Returning data anyway")
+            return serialize_driver_for_cache(driver)
+        
+    except Exception as e:
+        logger.error(f"❌ [CACHE ERROR] Exception during android_id lookup: {str(e)} | android_id={android_id[:8]}...")
+        logger.info(f"🔄 [FALLBACK] Querying database directly...")
+        from app.models.driver import Driver
+        driver = db.query(Driver).filter(Driver.active_android_id == android_id).first()
+        
+        if not driver:
+            return None
+        
+        try:
+            return serialize_driver_for_cache(driver)
+        except:
+            return None
+
+def invalidate_driver_complete(driver_id: int, old_data: Optional[dict] = None, new_data: Optional[dict] = None):
+    """
+    Complete driver cache invalidation - handles all related caches.
+    
+    ⚡ CRITICAL: Use this for android_id changes to invalidate both old and new android_id caches.
+    
+    Args:
+        driver_id: Driver ID to invalidate
+        old_data: Old driver data (before update) - should include old android_id, license_number
+        new_data: New driver data (after update) - should include new android_id, license_number
+    
+    Returns: Success boolean
+    """
+    from app.core.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        # Always invalidate driver cache
+        invalidate_driver(driver_id)
+        logger.info(f"🗑️ [CACHE INVALIDATE] Driver ID={driver_id}")
+        
+        # Invalidate old android_id if it changed
+        if old_data and old_data.get('active_android_id'):
+            if not new_data or old_data.get('active_android_id') != new_data.get('active_android_id'):
+                invalidate_driver_android(old_data['active_android_id'])
+                logger.info(f"⚡ [ANDROID CHANGE] Invalidated old Android ID: {old_data['active_android_id'][:8]}...")
+        
+        # Invalidate new android_id
+        if new_data and new_data.get('active_android_id'):
+            invalidate_driver_android(new_data['active_android_id'])
+            logger.info(f"⚡ [ANDROID CHANGE] Invalidated new Android ID: {new_data['active_android_id'][:8]}...")
+        
+        # Invalidate old license if it changed
+        if old_data and old_data.get('license_number'):
+            if not new_data or old_data.get('license_number') != new_data.get('license_number'):
+                invalidate_driver_license(old_data['license_number'])
+                logger.info(f"🗑️ [LICENSE CHANGE] Invalidated old license: {old_data['license_number']}")
+        
+        # Invalidate current license
+        data = new_data or old_data
+        if data:
+            if data.get('license_number'):
+                invalidate_driver_license(data['license_number'])
+            if data.get('vendor_id'):
+                invalidate_driver_vendor(data['vendor_id'])
+            if data.get('tenant_id'):
+                invalidate_driver_tenant(data['tenant_id'])
+        
+        logger.info(f"✅ [CACHE INVALIDATE COMPLETE] Driver ID={driver_id}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ [CACHE INVALIDATE ERROR] Failed to invalidate driver caches: {str(e)} | driver_id={driver_id}")
+        return False
+
 # Export the cache instance as cache_manager for backward compatibility
 cache_manager = cache

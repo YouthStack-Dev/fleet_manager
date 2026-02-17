@@ -9,7 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
-from app.core.logging_config import get_logger
+from app.core.logging_config import get_logger, request_id_ctx
 from app.utils.cache_manager import cache
 
 logger = get_logger(__name__)
@@ -158,11 +158,28 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
     """Middleware to track all requests"""
     
     async def dispatch(self, request: Request, call_next):
-        # Generate unique request ID
-        request_id = str(uuid.uuid4())
+        # Generate unique request ID (short format for logs)
+        request_id = str(uuid.uuid4())[:8]  # Use first 8 chars for readability
         request.state.request_id = request_id
         
-        # Add request ID to response headers
+        # Set request ID in context for all logs
+        request_id_ctx.set(request_id)
+        
+        # Extract user info for logging (if available from token)
+        user_info = ""
+        if hasattr(request.state, "user"):
+            user_id = getattr(request.state.user, "user_id", "?")
+            user_type = getattr(request.state.user, "user_type", "?")
+            tenant_id = getattr(request.state.user, "tenant_id", "?")
+            user_info = f" | User: {user_id} ({user_type}) | Tenant: {tenant_id}"
+        
+        # 🚀 LOG REQUEST START with clear separator
+        logger.info(
+            f"\n{'='*100}\n"
+            f"🚀 [REQUEST START] {request.method} {request.url.path} | ReqID: {request_id}{user_info}\n"
+            f"{'='*100}"
+        )
+        
         start_time = time.time()
         
         try:
@@ -175,6 +192,15 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
             
             # Log request
             request_tracker.log_request(request, response, response_time, request_id)
+            
+            # ✅ LOG REQUEST END with status
+            status_emoji = "✅" if response.status_code < 400 else "❌"
+            logger.info(
+                f"{'='*100}\n"
+                f"{status_emoji} [REQUEST END] {request.method} {request.url.path} | ReqID: {request_id} | "
+                f"Duration: {response_time*1000:.2f}ms | Status: {response.status_code}\n"
+                f"{'='*100}\n"
+            )
             
             return response
             
@@ -190,6 +216,14 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
             )
             
             request_tracker.log_request(request, error_response, response_time, request_id)
+            
+            # ❌ LOG REQUEST END with error
+            logger.error(
+                f"{'='*100}\n"
+                f"❌ [REQUEST END - ERROR] {request.method} {request.url.path} | ReqID: {request_id} | "
+                f"Duration: {response_time*1000:.2f}ms | Error: {str(e)}\n"
+                f"{'='*100}\n"
+            )
             
             # Re-raise the exception
             raise
