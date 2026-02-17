@@ -45,6 +45,7 @@ from app.core.logging_config import get_logger
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from app.core.email_service import EmailService
 from app.services.sms_service import SMSService
+from app.utils.cache_manager import get_drivers_by_license_with_cache, get_driver_by_android_id_with_cache
 from common_utils.auth.utils import (
     create_access_token, create_refresh_token, 
     verify_token, hash_password, verify_password
@@ -2607,12 +2608,11 @@ async def verify_driver_device(
     try:
         logger.info(f"🚗 [DRIVER AUTH] Device verification attempt - DL: {dl_number}, Android ID: {android_id[:8]}...{android_id[-4:]}, Device: {device_model or 'Unknown'}")
         
-        # Find ALL drivers with this license number (multi-vendor support)
-        drivers = db.query(Driver).filter(
-            Driver.license_number == dl_number
-        ).all()
+        # 🚀 TRY CACHE FIRST - drivers by license number
+        drivers_data = get_drivers_by_license_with_cache(db, dl_number)
+        logger.info(f"📊 [DRIVER AUTH] Cache operation completed | Found {len(drivers_data)} driver(s) for license {dl_number}")
         
-        if not drivers:
+        if not drivers_data:
             logger.warning(f"❌ [DRIVER AUTH] Driver not found with license number: {dl_number}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -2622,7 +2622,7 @@ async def verify_driver_device(
                 )
             )
         
-        logger.debug(f"[DRIVER AUTH] Found {len(drivers)} driver record(s) with license {dl_number}")
+        logger.debug(f"[DRIVER AUTH] Found {len(drivers_data)} driver record(s) with license {dl_number}")
         
         # Track device attempt for all driver records
         device_info = {
@@ -2635,40 +2635,45 @@ async def verify_driver_device(
         active_drivers = []
         pending_drivers = []
         
-        for driver in drivers:
-            logger.debug(f"[DRIVER AUTH] Checking driver ID={driver.driver_id}, Name={driver.name}, Vendor={driver.vendor_id}")
+        for driver_data in drivers_data:
+            logger.debug(f"[DRIVER AUTH] Checking driver ID={driver_data['driver_id']}, Name={driver_data['name']}, Vendor={driver_data['vendor_id']}")
+            
+            # Get full driver object for device history update (still need DB for this)
+            driver = db.query(Driver).filter(Driver.driver_id == driver_data['driver_id']).first()
+            if not driver:
+                continue
             
             # Add device to history for this driver record
             add_device_to_history(driver, android_id, device_info, db)
             
             # Get tenant info
             tenant = db.query(Tenant).filter(
-                Tenant.tenant_id == driver.vendor.tenant_id
+                Tenant.tenant_id == driver_data['tenant_id']
             ).first()
             
             if not tenant:
-                logger.error(f"❌ [DRIVER AUTH] Tenant not found for driver {driver.driver_id} - tenant_id: {driver.vendor.tenant_id}")
+                logger.error(f"❌ [DRIVER AUTH] Tenant not found for driver {driver_data['driver_id']} - tenant_id: {driver_data['tenant_id']}")
                 continue
             
             # Check if this device is active for this driver record
-            if driver.active_android_id == android_id:
-                logger.info(f"✅ [DRIVER AUTH] Device ACTIVE for driver {driver.driver_id} - Vendor: {driver.vendor.name}, Tenant: {tenant.name}")
+            if driver_data.get('active_android_id') == android_id:
+                logger.info(f"✅ [DRIVER AUTH] Device ACTIVE for driver {driver_data['driver_id']} - Vendor: {driver_data.get('vendor_id')}, Tenant: {tenant.name}")
                 active_drivers.append({
-                    "driver_id": driver.driver_id,
-                    "vendor_id": driver.vendor.vendor_id,
-                    "vendor_name": driver.vendor.name,
-                    "tenant_id": tenant.tenant_id,
+                    "driver_id": driver_data['driver_id'],
+                    "vendor_id": driver_data['vendor_id'],
+                    "vendor_name": driver.vendor.name if driver.vendor else "Unknown",
+                    "tenant_id": driver_data['tenant_id'],
                     "tenant_name": tenant.name,
                     "status": "approved",
                     "device_active": True
                 })
             else:
-                logger.debug(f"⚠️ [DRIVER AUTH] Device NOT ACTIVE for driver {driver.driver_id} - Vendor: {driver.vendor.name}")
+                logger.debug(f"⚠️ [DRIVER AUTH] Device NOT ACTIVE for driver {driver_data['driver_id']}")
                 pending_drivers.append({
-                    "driver_id": driver.driver_id,
-                    "vendor_id": driver.vendor.vendor_id,
-                    "vendor_name": driver.vendor.name,
-                    "tenant_id": tenant.tenant_id,
+                    "driver_id": driver_data['driver_id'],
+                    "vendor_id": driver_data['vendor_id'],
+                    "vendor_name": driver.vendor.name if driver.vendor else "Unknown",
+                    "tenant_id": driver_data['tenant_id'],
                     "tenant_name": tenant.name,
                     "status": "pending_approval",
                     "device_active": False
@@ -2677,12 +2682,11 @@ async def verify_driver_device(
         # Determine overall status and message
         if active_drivers:
             # Additional security: Check if this Android ID is used by OTHER license holders
-            other_license_drivers = db.query(Driver).filter(
-                Driver.active_android_id == android_id,
-                Driver.license_number != dl_number
-            ).all()
+            # 🚀 USE CACHE for this check
+            other_driver_data = get_driver_by_android_id_with_cache(db, android_id)
+            logger.info(f"🔐 [DRIVER AUTH] Security check via cache | android_id={android_id[:8]}...{android_id[-4:]} | Found: {bool(other_driver_data)} | License match: {other_driver_data.get('license_number') == dl_number if other_driver_data else 'N/A'}")
             
-            if other_license_drivers:
+            if other_driver_data and other_driver_data.get('license_number') != dl_number:
                 logger.warning(f"🚨 [DRIVER AUTH] SECURITY VIOLATION - Android ID {android_id[:8]}...{android_id[-4:]} is active for different license numbers")
                 message = "Device authorization conflict detected. Please contact your administrator."
                 status_text = "security_violation"
@@ -2742,24 +2746,25 @@ async def driver_select_tenant(
     try:
         logger.info(f"🔐 [DRIVER LOGIN] Tenant/Vendor selection - DL: {dl_number}, Tenant: {tenant_id}, Vendor: {vendor_id}, Device: {android_id[:8]}...{android_id[-4:]}")
         
-        # Find driver for the specific vendor AND license number
-        driver = db.query(Driver).filter(
-            Driver.license_number == dl_number,
-            Driver.vendor_id == vendor_id
-        ).first()
+        # 🚀 TRY CACHE FIRST - get drivers by license
+        drivers_data = get_drivers_by_license_with_cache(db, dl_number)
+        logger.info(f"📊 [DRIVER LOGIN] Cache operation completed | Found {len(drivers_data)} driver(s) for license {dl_number}")
         
-        if not driver:
+        # Find driver for the specific vendor
+        driver_data = next((d for d in drivers_data if d['vendor_id'] == vendor_id), None)
+        
+        if not driver_data:
             logger.warning(f"❌ [DRIVER LOGIN] Driver not found - DL: {dl_number}, Vendor: {vendor_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error("Driver not found for the selected vendor", "DRIVER_NOT_FOUND")
             )
         
-        logger.debug(f"[DRIVER LOGIN] Driver found: {driver.name} (ID: {driver.driver_id}), Active Device: {driver.active_android_id[:8] if driver.active_android_id else 'None'}")
+        logger.debug(f"[DRIVER LOGIN] Driver found: {driver_data['name']} (ID: {driver_data['driver_id']}), Active Device: {driver_data.get('active_android_id', '')[:8] if driver_data.get('active_android_id') else 'None'}")
         
         # Verify device is still active
-        if driver.active_android_id != android_id:
-            logger.warning(f"❌ [DRIVER LOGIN] Login BLOCKED - Driver: {driver.name} (ID: {driver.driver_id}), Reason: Device not activated, Requested: {android_id[:8]}...{android_id[-4:]}, Active: {driver.active_android_id[:8] if driver.active_android_id else 'None'}")
+        if driver_data.get('active_android_id') != android_id:
+            logger.warning(f"❌ [DRIVER LOGIN] Login BLOCKED - Driver: {driver_data['name']} (ID: {driver_data['driver_id']}), Reason: Device not activated, Requested: {android_id[:8]}...{android_id[-4:]}, Active: {driver_data.get('active_android_id', '')[:8] if driver_data.get('active_android_id') else 'None'}")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
@@ -2769,12 +2774,10 @@ async def driver_select_tenant(
             )
         
         # Additional security: Ensure Android ID is not active for any other driver with different license
-        other_active_driver = db.query(Driver).filter(
-            Driver.active_android_id == android_id,
-            Driver.license_number != dl_number
-        ).first()
+        # 🚀 USE CACHE for this check
+        other_driver_data = get_driver_by_android_id_with_cache(db, android_id)
         
-        if other_active_driver:
+        if other_driver_data and other_driver_data.get('license_number') != dl_number:
             logger.warning(f"🚨 [DRIVER LOGIN] SECURITY VIOLATION - Android ID {android_id[:8]}...{android_id[-4:]} is active for different license holders during login")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -2785,8 +2788,8 @@ async def driver_select_tenant(
             )
         
         # Verify driver's vendor belongs to selected tenant
-        if driver.vendor.tenant_id != tenant_id:
-            logger.warning(f"❌ [DRIVER LOGIN] Login BLOCKED - Driver: {driver.name} (ID: {driver.driver_id}), Reason: Tenant mismatch, Requested: {tenant_id}, Vendor's Tenant: {driver.vendor.tenant_id}")
+        if driver_data.get('tenant_id') != tenant_id:
+            logger.warning(f"❌ [DRIVER LOGIN] Login BLOCKED - Driver: {driver_data['name']} (ID: {driver_data['driver_id']}), Reason: Tenant mismatch, Requested: {tenant_id}, Driver's Tenant: {driver_data.get('tenant_id')}")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
@@ -2795,7 +2798,15 @@ async def driver_select_tenant(
                 )
             )
         
-        logger.debug(f"[DRIVER LOGIN] Fetching roles and permissions for driver {driver.driver_id} in tenant {tenant_id}")
+        logger.debug(f"[DRIVER LOGIN] Fetching roles and permissions for driver {driver_data['driver_id']} in tenant {tenant_id}")
+        
+        # Get full driver object for roles/permissions (still need DB for this)
+        driver = db.query(Driver).filter(Driver.driver_id == driver_data['driver_id']).first()
+        if not driver:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error("Driver not found", "DRIVER_NOT_FOUND")
+            )
         
         # Get roles and permissions
         driver_with_roles, roles, all_permissions = driver_crud.get_driver_roles_and_permissions(

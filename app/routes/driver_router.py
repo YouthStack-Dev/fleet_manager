@@ -22,6 +22,11 @@ from app.firebase.driver_location import push_driver_location_to_firebase
 from fastapi.encoders import jsonable_encoder
 from app.utils.audit_helper import log_audit
 from app.core.email_service import get_email_service, get_sms_service
+from app.utils.cache_manager import (
+    invalidate_driver, invalidate_driver_vendor, invalidate_driver_tenant, 
+    invalidate_driver_license, invalidate_driver_complete, serialize_driver_for_cache,
+    get_driver_with_cache, get_cached_driver_vendor, cache_driver_vendor, deserialize_driver_from_cache
+)
 logger = get_logger(__name__)
 router = APIRouter(prefix="/drivers", tags=["drivers"])
 
@@ -297,6 +302,27 @@ async def create_driver(
         db.commit()
         db.refresh(db_obj)
 
+        # 🚀 INVALIDATE CACHE - New driver created
+        logger.info(f"🗑️ [CACHE INVALIDATE] Starting cache invalidation for new driver | driver_id={db_obj.driver_id} | vendor_id={vendor_id}")
+        try:
+            # Invalidate vendor and tenant lists since we added a new driver
+            invalidate_driver_vendor(vendor_id)
+            logger.info(f"✅ [CACHE INVALIDATE] Vendor list cache cleared | vendor_id={vendor_id}")
+            
+            if db_obj.vendor and db_obj.vendor.tenant_id:
+                invalidate_driver_tenant(db_obj.vendor.tenant_id)
+                logger.info(f"✅ [CACHE INVALIDATE] Tenant list cache cleared | tenant_id={db_obj.vendor.tenant_id}")
+            
+            # Cache license mapping for future lookups
+            if db_obj.license_number:
+                invalidate_driver_license(db_obj.license_number)
+                logger.info(f"✅ [CACHE INVALIDATE] License mapping cache cleared | license={db_obj.license_number}")
+            
+            logger.info(f"✅ [CACHE INVALIDATE COMPLETE] All caches invalidated for new driver {db_obj.driver_id}")
+        except Exception as cache_error:
+            logger.error(f"❌ [CACHE INVALIDATE FAILED] Cache invalidation error | driver={driver_code} | Reason: {str(cache_error)} | Operation continues anyway")
+            # Continue - don't fail the entire operation if cache invalidation fails
+
         # --- Push driver location to Firebase ---
         try:
             # Get vendor with tenant relationship
@@ -459,23 +485,30 @@ def get_driver(
             f"by user={user_data.get('user_id')}"
         )
 
-        # 3️⃣ Fetch driver within vendor scope
-        driver = driver_crud.get_by_id_and_vendor(
-            db=db,
-            driver_id=driver_id,
-            vendor_id=vendor_id
-        )
-
-        if not driver:
-            logger.warning(f"[GET DRIVER] Driver {driver_id} not found for vendor {vendor_id}")
+        # 3️⃣ 🚀 TRY CACHE FIRST - Get driver from cache
+        driver_data = get_driver_with_cache(db, driver_id)
+        
+        if not driver_data:
+            logger.warning(f"[GET DRIVER] Driver {driver_id} not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error("Driver not found", "DRIVER_NOT_FOUND")
+            )
+        
+        # Verify driver belongs to the resolved vendor (security check)
+        if driver_data.get('vendor_id') != vendor_id:
+            logger.warning(f"[GET DRIVER] Driver {driver_id} does not belong to vendor {vendor_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error("Driver not found", "DRIVER_NOT_FOUND")
             )
 
-        logger.info(f"[GET DRIVER] Driver fetched: driver_id={driver.driver_id}")
+        logger.info(f"📊 [GET DRIVER] Driver fetched via cache | driver_id={driver_id}")
+        
+        # Convert dict to Driver object for response validation
+        driver_obj = deserialize_driver_from_cache(driver_data)
         return ResponseWrapper.success(
-            data={"driver": DriverResponse.model_validate(driver, from_attributes=True)}
+            data={"driver": DriverResponse.model_validate(driver_obj, from_attributes=True)}
         )
 
     except HTTPException:
@@ -531,6 +564,37 @@ def get_drivers(
             f"type={user_data.get('user_type')} "
             f"fetching drivers for vendor_id={resolved_vendor_id}"
         )
+        
+        # --------------------------------------
+        # 🚀 CACHE STRATEGY: Use cache only for simple queries (no filters)
+        # If filters are applied, query DB directly for accuracy
+        # --------------------------------------
+        use_cache = not any([active_only is not None, license_number, search])
+        
+        if use_cache:
+            logger.info(f"🔍 [CACHE CHECK] Attempting to fetch vendor drivers from cache | vendor_id={resolved_vendor_id}")
+            cached_driver_ids = get_cached_driver_vendor(resolved_vendor_id)
+            
+            if cached_driver_ids:
+                logger.info(f"✅ [CACHE HIT] Found {len(cached_driver_ids)} driver ID(s) in vendor cache | vendor_id={resolved_vendor_id}")
+                
+                # Fetch each driver from cache
+                driver_list = []
+                for driver_id in cached_driver_ids:
+                    driver_data = get_driver_with_cache(db, driver_id)
+                    if driver_data:
+                        driver_obj = deserialize_driver_from_cache(driver_data)
+                        driver_list.append(DriverResponse.model_validate(driver_obj, from_attributes=True))
+                
+                logger.info(f"📊 [GET DRIVERS] Fetched {len(driver_list)} driver(s) from cache | vendor_id={resolved_vendor_id}")
+                
+                return ResponseWrapper.success(
+                    data=DriverPaginationResponse(total=len(driver_list), items=driver_list).dict()
+                )
+            else:
+                logger.info(f"⚠️ [CACHE MISS] Vendor drivers not cached, querying DB | vendor_id={resolved_vendor_id}")
+        else:
+            logger.info(f"🔄 [CACHE SKIP] Filters applied, querying DB directly | vendor_id={resolved_vendor_id} | active_only={active_only} | license={license_number} | search={search}")
 
         # --------------------------------------
         # 3️⃣ Employee user special filtering (tenant-wide)
@@ -594,6 +658,21 @@ def get_drivers(
             DriverResponse.model_validate(d, from_attributes=True)
             for d in drivers
         ]
+        
+        # 💾 Cache vendor driver list if no filters were applied
+        if use_cache and drivers:
+            try:
+                driver_ids = [d.driver_id for d in drivers]
+                cache_driver_vendor(resolved_vendor_id, driver_ids)
+                logger.info(f"💾 [CACHE STORED] Vendor driver list cached | vendor_id={resolved_vendor_id} | {len(driver_ids)} driver(s) | TTL=600s")
+                
+                # Also cache individual drivers
+                for driver in drivers:
+                    driver_dict = serialize_driver_for_cache(driver)
+                    from app.utils.cache_manager import cache_driver
+                    cache_driver(driver.driver_id, driver_dict)
+            except Exception as cache_error:
+                logger.error(f"⚠️ [CACHE STORE FAILED] Failed to cache vendor drivers | vendor_id={resolved_vendor_id} | Reason: {str(cache_error)}")
 
         return ResponseWrapper.success(
             data=DriverPaginationResponse(total=len(driver_list), items=driver_list).dict()
@@ -720,6 +799,10 @@ async def update_driver(
         # ------------------------------------------------------
         # 🔍 Capture old values before update
         # ------------------------------------------------------
+        # Save old android_id and license for cache invalidation
+        old_android_id = db_obj.active_android_id
+        old_license = db_obj.license_number
+        
         old_values = {}
         update_params = {
             "name": name, "code": code, "email": email, "phone": phone,
@@ -828,6 +911,42 @@ async def update_driver(
         # ------------------------------------------------------
         db.commit()
         db.refresh(db_obj)
+
+        # 🚀 INVALIDATE CACHE - Driver updated (CRITICAL for android_id changes)
+        android_changed = old_android_id != db_obj.active_android_id
+        license_changed = old_license != db_obj.license_number
+        logger.info(f"🗑️ [CACHE INVALIDATE] Starting complete cache invalidation | driver_id={driver_id} | android_changed={android_changed} | license_changed={license_changed}")
+        
+        try:
+            # Prepare old and new data for complete invalidation
+            old_data = {
+                "driver_id": driver_id,
+                "active_android_id": old_android_id,
+                "license_number": old_license,
+                "vendor_id": db_obj.vendor_id,
+                "tenant_id": db_obj.tenant_id
+            }
+            
+            new_data = {
+                "driver_id": driver_id,
+                "active_android_id": db_obj.active_android_id,
+                "license_number": db_obj.license_number,
+                "vendor_id": db_obj.vendor_id,
+                "tenant_id": db_obj.tenant_id
+            }
+            
+            # Complete cache invalidation (handles android_id changes properly)
+            invalidate_driver_complete(driver_id, old_data, new_data)
+            
+            logger.info(f"✅ [CACHE INVALIDATE COMPLETE] All driver caches cleared | driver_id={driver_id}")
+            if android_changed:
+                logger.info(f"⚡ [CRITICAL] Android ID cache invalidated INSTANTLY | Old: {old_android_id[:8] if old_android_id else 'None'}...{old_android_id[-4:] if old_android_id else ''} → New: {db_obj.active_android_id[:8] if db_obj.active_android_id else 'None'}...{db_obj.active_android_id[-4:] if db_obj.active_android_id else ''} | Device auth will use new ID immediately")
+            if license_changed:
+                logger.info(f"⚡ [CRITICAL] License cache invalidated INSTANTLY | Old: {old_license} → New: {db_obj.license_number} | Auth lookups will use new license immediately")
+                
+        except Exception as cache_error:
+            logger.error(f"❌ [CACHE INVALIDATE FAILED] Cache invalidation error | driver_id={driver_id} | Reason: {str(cache_error)} | WARNING: Stale cache may persist for up to 5 minutes")
+            # Continue - don't fail the entire operation if cache invalidation fails
 
         # ------------------------------------------------------
         # 🔍 Capture new values after update
@@ -938,6 +1057,38 @@ def toggle_driver_active(
         db.flush()
         db.commit()
         db.refresh(driver)
+
+        # 🚀 INVALIDATE CACHE - Driver status changed
+        status_change = "activated" if driver.is_active else "deactivated"
+        logger.info(f"🗑️ [CACHE INVALIDATE] Starting cache invalidation for status toggle | driver_id={driver.driver_id} | status={status_change}")
+        
+        try:
+            driver_data = {
+                "driver_id": driver.driver_id,
+                "license_number": driver.license_number,
+                "active_android_id": driver.active_android_id,
+                "vendor_id": driver.vendor_id,
+                "tenant_id": driver.tenant_id
+            }
+            
+            invalidate_driver(driver.driver_id)
+            logger.info(f"✅ [CACHE INVALIDATE] Driver cache cleared | driver_id={driver.driver_id}")
+            
+            if driver.license_number:
+                invalidate_driver_license(driver.license_number)
+                logger.info(f"✅ [CACHE INVALIDATE] License mapping cleared | license={driver.license_number}")
+            
+            if driver.vendor_id:
+                invalidate_driver_vendor(driver.vendor_id)
+                logger.info(f"✅ [CACHE INVALIDATE] Vendor list cleared | vendor_id={driver.vendor_id}")
+            
+            if driver.tenant_id:
+                invalidate_driver_tenant(driver.tenant_id)
+                logger.info(f"✅ [CACHE INVALIDATE] Tenant list cleared | tenant_id={driver.tenant_id}")
+            
+            logger.info(f"✅ [CACHE INVALIDATE COMPLETE] All caches cleared for status change | driver_id={driver.driver_id} | new_status={status_change}")
+        except Exception as cache_error:
+            logger.error(f"❌ [CACHE INVALIDATE FAILED] Cache invalidation error | driver_id={driver.driver_id} | Reason: {str(cache_error)} | WARNING: Stale cache may persist")
 
         status_str = "activated" if driver.is_active else "deactivated"
 
