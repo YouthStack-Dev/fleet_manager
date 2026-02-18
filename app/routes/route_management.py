@@ -1922,13 +1922,41 @@ async def merge_routes(
         logger.info(f"[MERGE] Step 3: Collecting bookings from routes...")
         all_booking_ids = []
         shift_id = None
-        route_details = []
 
         for idx, r in enumerate(routes):
             logger.debug(f"[MERGE]   Route {idx+1}/{len(routes)}: ID={r.route_id}, Shift={r.shift_id}, Status={r.status}")
             
             if shift_id and r.shift_id != shift_id:
-              Step 4: Load full booking objects ---
+                logger.error(f"[MERGE] ❌ FAILED: Shift mismatch - Route {r.route_id} has shift {r.shift_id}, expected {shift_id}")
+                raise HTTPException(
+                    400,
+                    ResponseWrapper.error(
+                        "All routes must belong to same shift",
+                        "SHIFT_MISMATCH"
+                    )
+                )
+            shift_id = r.shift_id
+
+            rbs = db.query(RouteManagementBooking).filter(
+                RouteManagementBooking.route_id == r.route_id
+            ).all()
+
+            route_booking_ids = [b.booking_id for b in rbs]
+            all_booking_ids.extend(route_booking_ids)
+            logger.info(f"[MERGE]   Route {r.route_id}: {len(route_booking_ids)} bookings - {route_booking_ids}")
+
+        all_booking_ids = list(dict.fromkeys(all_booking_ids))  # unique preserve order
+        logger.info(f"[MERGE] ✓ Step 3: Collected {len(all_booking_ids)} unique bookings from {len(routes)} routes")
+        logger.debug(f"[MERGE] Booking IDs: {all_booking_ids}")
+
+        if not all_booking_ids:
+            logger.error(f"[MERGE] ❌ FAILED: No bookings found in selected routes")
+            raise HTTPException(
+                400,
+                ResponseWrapper.error("No bookings in selected routes", "EMPTY_ROUTE_LIST")
+            )
+
+        # --- Step 4: Load full booking objects ---
         logger.info(f"[MERGE] Step 4: Loading full booking details...")
         try:
             bookings = get_bookings_by_ids(all_booking_ids, db)
@@ -1950,35 +1978,11 @@ async def merge_routes(
         logger.info(f"[MERGE] ✓ Step 5: Shift loaded - Type: {shift_type}, Time: {shift.shift_time}")
 
         # --- Step 6: Validate office location consistency ---
-        logger.info(f"[MERGE] Step 6: Validating office location consistency...(
-                RouteManagementBooking.route_id == r.route_id
-            ).all()
-
-            route_booking_ids = [b.booking_id for b in rbs]
-            all_booking_ids.extend(route_booking_ids)
-            
-            route_details.append({
-                "route_id": r.route_id,
-                "booking_count": len(route_booking_ids),
-                "booking_ids": route_booking_ids
-            })
-            
-            logger.info(f"[MERGE]   Route {r.route_id}: {len(route_booking_ids)} bookings - {route_booking_ids}")
-
-        all_booking_ids = list(dict.fromkeys(all_booking_ids))  # unique preserve order
-        logger.info(f"[MERGE] ✓ Step 3: Collected {len(all_booking_ids)} unique bookings from {len(routes)} routes")
-        logger.debug(f"[MERGE] Booking IDs: {all_booking_ids}")
-
-        if not all_booking_ids:
-            logger.error(f"[MERGE] ❌ FAILED: No bookings found in selected routes")
-            raise HTTPException(
-                400,
-                ResponseWrapper.error("No bookings in selected routes", "EMPTY_ROUTE_LIST")
-            )
-
-        # --- Pull full booking objects ---
-        bookings = get_bookings_by_ids(all_booking_ids, db)
-logger.info(f"[MERGE]   Checking IN shift - all bookings must have same DROP location (office)")
+        logger.info(f"[MERGE] Step 6: Validating office location consistency...")
+        
+        if shift_type == "IN":
+            # For IN shift (LOGIN): All employees go TO office - drop location must be same
+            logger.info(f"[MERGE]   Checking IN shift - all bookings must have same DROP location (office)")
             office_locations = set()
             office_details = []
             
@@ -2034,7 +2038,33 @@ logger.info(f"[MERGE]   Checking IN shift - all bookings must have same DROP loc
                     "booking_id": booking["booking_id"],
                     "pickup_lat": booking["pickup_latitude"],
                     "pickup_lng": booking["pickup_longitude"],
-              Step 7: Generate optimized route ---
+                    "pickup_location": booking["pickup_location"]
+                })
+                logger.debug(f"[MERGE]     Booking {booking['booking_id']}: Pickup={booking['pickup_location']} ({booking['pickup_latitude']}, {booking['pickup_longitude']})")
+            
+            if len(office_locations) > 1:
+                logger.error(f"[MERGE] ❌ FAILED: OUT shift has {len(office_locations)} different office pickup locations:")
+                for loc in office_details:
+                    logger.error(f"[MERGE]   - Booking {loc['booking_id']}: {loc['pickup_location']} ({loc['pickup_lat']}, {loc['pickup_lng']})")
+                raise HTTPException(
+                    400,
+                    ResponseWrapper.error(
+                        "Cannot merge routes: All bookings must have the same office pickup location for OUT shift",
+                        "OFFICE_LOCATION_MISMATCH",
+                        {"shift_type": "OUT", "unique_locations": len(office_locations), "details": office_details}
+                    )
+                )
+            
+            # Use validated office location
+            office_location = bookings[0]
+            office_lat = office_location["pickup_latitude"]
+            office_lng = office_location["pickup_longitude"]
+            office_address = office_location["pickup_location"]
+            logger.info(f"[MERGE] ✓ Step 6: All bookings have same office PICKUP location: {office_address}")
+
+        logger.info(f"[MERGE] Office coordinates: ({office_lat}, {office_lng})")
+
+        # --- Step 7: Generate optimized route ---
         logger.info(f"[MERGE] Step 7: Generating optimized route for {len(bookings)} bookings...")
         from app.services.optimal_roiute_generation import generate_optimal_route, generate_drop_route
 
@@ -2074,7 +2104,16 @@ logger.info(f"[MERGE]   Checking IN shift - all bookings must have same DROP loc
             logger.info(f"[MERGE]   - Estimated distance: {optimized.get('estimated_distance')}")
             logger.info(f"[MERGE]   - Stops: {len(optimized.get('pickup_order', []))}")
             
-        exceptStep 8: Create new merged route ---
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"[MERGE] ❌ FAILED: Route optimization error - {str(e)}", exc_info=True)
+            raise HTTPException(
+                500,
+                ResponseWrapper.error("Route optimization failed", "OPT_FAIL", {"error": str(e)})
+            )
+
+        # --- Step 8: Create new merged route ---
         logger.info(f"[MERGE] Step 8: Creating new merged route in database...")
         try:
             route = RouteManagement(
@@ -2088,7 +2127,13 @@ logger.info(f"[MERGE]   Checking IN shift - all bookings must have same DROP loc
             )
 
             db.add(route)
-            dbStep 9: Insert route stops ---
+            db.flush()
+            logger.info(f"[MERGE] ✓ Step 8: Created route ID: {route.route_id}")
+        except Exception as e:
+            logger.error(f"[MERGE] ❌ FAILED: Error creating route - {str(e)}", exc_info=True)
+            raise
+
+        # --- Step 9: Insert route stops ---
         logger.info(f"[MERGE] Step 9: Inserting {len(optimized['pickup_order'])} stops into route...")
         try:
             for idx, b in enumerate(optimized["pickup_order"]):
@@ -2127,7 +2172,49 @@ logger.info(f"[MERGE]   Checking IN shift - all bookings must have same DROP loc
                     Booking.booking_id.in_(all_booking_ids),
                     Booking.status == BookingStatusEnum.REQUEST
                 ).update(
-          --- Step 13: Create audit log ---
+                    {
+                        Booking.status: BookingStatusEnum.SCHEDULED,
+                        Booking.updated_at: func.now(),
+                    },
+                    synchronize_session=False
+                )
+                logger.info(f"[MERGE] ✓ Step 10: Updated {update_count} bookings to SCHEDULED")
+            else:
+                logger.info(f"[MERGE] ✓ Step 10: No bookings in REQUEST status, skipping update")
+        except Exception as e:
+            logger.error(f"[MERGE] ❌ FAILED: Error updating booking statuses - {str(e)}", exc_info=True)
+            raise
+
+        # --- Step 11: Delete old routes ---
+        logger.info(f"[MERGE] Step 11: Deleting old routes {merge_request.route_ids}...")
+        try:
+            # Delete route bookings
+            deleted_bookings = db.query(RouteManagementBooking).filter(
+                RouteManagementBooking.route_id.in_(merge_request.route_ids)
+            ).delete(synchronize_session=False)
+            logger.info(f"[MERGE]   Deleted {deleted_bookings} route-booking associations")
+
+            # Delete routes
+            deleted_routes = db.query(RouteManagement).filter(
+                RouteManagement.route_id.in_(merge_request.route_ids)
+            ).delete(synchronize_session=False)
+            logger.info(f"[MERGE]   Deleted {deleted_routes} routes")
+            
+            logger.info(f"[MERGE] ✓ Step 11: Cleaned up old routes")
+        except Exception as e:
+            logger.error(f"[MERGE] ❌ FAILED: Error deleting old routes - {str(e)}", exc_info=True)
+            raise
+
+        # --- Step 12: Commit transaction ---
+        logger.info(f"[MERGE] Step 12: Committing database transaction...")
+        try:
+            db.commit()
+            logger.info(f"[MERGE] ✓ Step 12: Transaction committed successfully")
+        except Exception as e:
+            logger.error(f"[MERGE] ❌ FAILED: Database commit error - {str(e)}", exc_info=True)
+            raise
+
+        # --- Step 13: Create audit log ---
         logger.info(f"[MERGE] Step 13: Creating audit log...")
         try:
             log_audit(
@@ -2154,34 +2241,13 @@ logger.info(f"[MERGE]   Checking IN shift - all bookings must have same DROP loc
 
         logger.info(f"[MERGE] ============ ROUTE MERGE COMPLETED SUCCESSFULLY ============")
         logger.info(f"[MERGE] New Route ID: {route.route_id} | Bookings: {len(all_booking_ids)} | Distance: {route.estimated_total_distance}km | Time: {route.estimated_total_time}min")
-                    # Delete routes
-            deleted_routes = db.query(RouteManagement).filter(
-                RouteManagement.route_id.in_(merge_request.route_ids)
-            ).delete(synchronize_session=False)
-            logger.info(f"[MERGE]   Deleted {deleted_routes} routes")
-            
-            logger.info(f"[MERGE] ✓ Step 11: Cleaned up old routes")
-        except Exception as e:
-            logger.error(f"[MERGE] ❌ FAILED: Error deleting old routes - {str(e)}", exc_info=True)
-            raise
+        
+        return ResponseWrapper.success(
+            {"route_id": route.route_id},
+            f"Merged routes into {route.route_id}"
+        )
 
-        # --- Step 12: Commit transaction ---
-        logger.info(f"[MERGE] Step 12: Committing database transaction...")
-        try:
-            db.commit()
-            logger.info(f"[MERGE] ✓ Step 12: Transaction committed successfully")
-        except Exception as e:
-            logger.error(f"[MERGE] ❌ FAILED: Database commit error - {str(e)}", exc_info=True)
-            raise optimized[0]  # first candidate
-
-        # --- Create new route ---
-        route = RouteManagement(
-            tenant_id=tenant_id,
-            shift_id=shift_id,
-            # route_code=f"M-{tenant_id}-{shift_id}",
-            estimated_total_time=float(optimized["estimated_time"].split()[0]),
-            estimated_total_distance=float(optimized["estimated_distance"].split()[0]),
-            buffer_time= as he:
+    except HTTPException as he:
         db.rollback()
         logger.error(f"[MERGE] ============ MERGE FAILED (HTTPException) ============")
         logger.error(f"[MERGE] Status: {he.status_code} | Detail: {he.detail}")
@@ -2193,81 +2259,7 @@ logger.info(f"[MERGE]   Checking IN shift - all bookings must have same DROP loc
         logger.error(f"[MERGE] Error Message: {str(e)}", exc_info=True)
         raise HTTPException(
             500,
-            ResponseWrapper.error("Error merging routes", "ROUTE_MERGE_ERROR", {"error": str(e), "error_type": type(e).__name__
-            # Convert datetime.time to string for SQLite
-            est_pickup = b["estimated_pickup_time_formatted"]
-            if isinstance(est_pickup, time):
-                est_pickup = est_pickup.strftime("%H:%M:%S")
-            
-            db.add(RouteManagementBooking(
-                route_id=route.route_id,
-                booking_id=b["booking_id"],
-                order_id=idx + 1,
-                estimated_pick_up_time=est_pickup,
-                estimated_distance=b["estimated_distance_km"]
-            ))
-
-        # Update all merged bookings to SCHEDULED (if they are in REQUEST)
-        db.query(Booking).filter(
-            Booking.booking_id.in_(all_booking_ids),
-            Booking.status == BookingStatusEnum.REQUEST
-        ).update(
-            {
-                Booking.status: BookingStatusEnum.SCHEDULED,
-                Booking.updated_at: func.now(),
-            },
-            synchronize_session=False
-        )
-        logger.info(f"Updated {len(all_booking_ids)} bookings to SCHEDULED status in merged route")
-
-        # ---- Delete old routes ----
-        db.query(RouteManagementBooking).filter(
-            RouteManagementBooking.route_id.in_(merge_request.route_ids)
-        ).delete(synchronize_session=False)
-
-        db.query(RouteManagement).filter(
-            RouteManagement.route_id.in_(merge_request.route_ids)
-        ).delete(synchronize_session=False)
-
-        db.commit()
-
-        # 🔍 Audit Log: Route Merge
-        try:
-            log_audit(
-                db=db,
-                tenant_id=tenant_id,
-                module="route_management",
-                action="CREATE",
-                user_data=user_data,
-                description=f"Merged {len(merge_request.route_ids)} routes into new route '{route.route_code}' (ID: {route.route_id})",
-                new_values={
-                    "new_route_id": route.route_id,
-                    "new_route_code": route.route_code,
-                    "merged_route_ids": merge_request.route_ids,
-                    "total_bookings": len(all_booking_ids),
-                    "shift_id": shift_id,
-                    "estimated_distance_km": route.estimated_total_distance,
-                    "estimated_time_min": route.estimated_total_time
-                },
-                request=request
-            )
-        except Exception as audit_error:
-            logger.error(f"Failed to create audit log for route merge: {str(audit_error)}")
-
-        return ResponseWrapper.success(
-            {"route_id": route.route_id},
-            f"Merged routes into {route.route_id}"
-        )
-
-    except HTTPException:
-        db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"[MERGE ROUTES] Error: {e}", exc_info=True)
-        raise HTTPException(
-            500,
-            ResponseWrapper.error("Error merging routes", "ROUTE_MERGE_ERROR", {"error": str(e)})
+            ResponseWrapper.error("Error merging routes", "ROUTE_MERGE_ERROR", {"error": str(e), "error_type": type(e).__name__})
         )
 
 
