@@ -169,7 +169,7 @@ async def export_bookings_report(
 
         # --- Validate Shift if provided (use cache) ---
         if shift_id:
-            shift = get_shift_with_cache(db, shift_id, tenant_id)
+            shift = get_shift_with_cache(db, tenant_id, shift_id)
             if not shift:
                 raise HTTPException(
                     status_code=http_status.HTTP_404_NOT_FOUND,
