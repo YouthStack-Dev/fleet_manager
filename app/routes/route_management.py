@@ -1551,7 +1551,7 @@ async def assign_vehicle_to_route(
                 continue
                 
             # Recalculate OTP count and purposes at assignment time
-            shift = get_shift_with_cache(db, booking.shift_id, booking.tenant_id)
+            shift = get_shift_with_cache(db, booking.tenant_id, booking.shift_id)
             shift_log_type = safe_get_enum_value(shift, "log_type") if shift else "IN"
             required_otp_count = get_required_otp_count(booking.booking_type, shift_log_type, tenant_config, escort_enabled)
 
@@ -1607,7 +1607,7 @@ async def assign_vehicle_to_route(
                 continue
             
             # Prepare shift data
-            shift = get_shift_with_cache(db, booking.shift_id, booking.tenant_id)
+            shift = get_shift_with_cache(db, booking.tenant_id, booking.shift_id)
             shift_time = get_shift_time(shift) if shift else None
             shift_time_str = shift_time.strftime('%H:%M') if shift_time else 'N/A'
             shift_type = get_shift_log_type(shift) if shift else 'IN'
@@ -2398,7 +2398,7 @@ async def update_route(
         logger.debug(f"Fetched request bookings: {request_bookings}")
         
         # figure out the shift type (use cache)
-        shift = get_shift_with_cache(db, route.shift_id, route.tenant_id)
+        shift = get_shift_with_cache(db, route.tenant_id, route.shift_id)
         shift_type = safe_get_enum_value(shift, "log_type")
         logger.debug(f"Shift type for route {route_id} is {shift_type}")
 
