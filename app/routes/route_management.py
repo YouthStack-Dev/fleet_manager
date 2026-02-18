@@ -1967,7 +1967,7 @@ async def merge_routes(
 
         # --- Step 5: Load and validate shift ---
         logger.info(f"[MERGE] Step 5: Loading shift {shift_id} for tenant {tenant_id}...")
-        shift = get_shift_with_cache(db, shift_id, tenant_id)
+        shift = get_shift_with_cache(db, tenant_id, shift_id)
         if not shift:
             logger.error(f"[MERGE] ❌ FAILED: Shift {shift_id} not found")
             raise HTTPException(
