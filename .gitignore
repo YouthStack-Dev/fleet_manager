@@ -39,6 +39,7 @@ postgres_data/
 
 # uploads
 uploads/
+uploaded_files/
 local_storage/
 
 # Firebase credentials

@@ -1,0 +1,19 @@
+# Files and folders to exclude from Docker build context
+
+# Exclude test suite and test artifacts
+tests/
+
+# Git metadata
+.git
+
+# Local storage and runtime uploads
+local_storage/
+uploaded_files/
+
+# Environment files (secrets)
+.env
+service.prod.env
+
+# Docs, monitoring configs and other developer-only folders
+docs/
+monitoring/
