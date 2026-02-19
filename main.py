@@ -39,14 +39,13 @@ async def lifespan(app: FastAPI):
     """Handle application startup and graceful shutdown."""
     logger.info("🌟 Application starting up…")
 
-    from app.database.session import engine
-    from app.utils.database_monitor import db_monitor, monitor_database_periodically
-
-    db_monitor.setup_monitoring(engine)
-    logger.info("📊 Database monitoring enabled")
-
-    asyncio.create_task(monitor_database_periodically())
-    logger.info("🔄 Background monitoring task started")
+    # Database monitoring disabled - uncomment to re-enable
+    # from app.database.session import engine
+    # from app.utils.database_monitor import db_monitor, monitor_database_periodically
+    # db_monitor.setup_monitoring(engine)
+    # logger.info("📊 Database monitoring enabled")
+    # asyncio.create_task(monitor_database_periodically())
+    # logger.info("🔄 Background monitoring task started")
 
     yield  # ← application runs here
 
