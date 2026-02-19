@@ -2449,8 +2449,17 @@ async def update_route(
             all_bookings.append(booking_details)
 
         # generate route based on shift type
+        logger.info("="*80)
+        logger.info(f"🛣️  ROUTE OPTIMIZATION REQUEST - Route ID: {route_id}")
+        logger.info(f"📍 Shift Type: {shift_type}, Shift Time: {shift.shift_time}")
+        logger.info(f"📦 Total bookings to process: {len(all_bookings)}")
+        
         from app.services.optimal_roiute_generation import generate_optimal_route, generate_drop_route
         if shift_type == "IN":
+            logger.info(f"🏢 PICKUP Route (IN): Optimizing pickups → Office")
+            logger.info(f"   Drop point: ({all_bookings[-1]['drop_latitude']}, {all_bookings[-1]['drop_longitude']})")
+            logger.info(f"   Drop address: {all_bookings[-1]['drop_location']}")
+            
             optimized = generate_optimal_route(
                 shift_time=shift.shift_time,
                 group=all_bookings,
@@ -2459,6 +2468,10 @@ async def update_route(
                 drop_address=all_bookings[-1]["drop_location"]
             )
         else:
+            logger.info(f"🏠 DROP Route (OUT): Optimizing Office → Drop locations")
+            logger.info(f"   Pickup point: ({all_bookings[0]['pickup_latitude']}, {all_bookings[0]['pickup_longitude']})")
+            logger.info(f"   Pickup address: {all_bookings[0]['pickup_location']}")
+            
             optimized = generate_drop_route(
                 group=all_bookings,
                 start_time_minutes=datetime_to_minutes(shift.shift_time),
@@ -2466,10 +2479,73 @@ async def update_route(
                 office_lng=all_bookings[0]["pickup_longitude"],
                 office_address=all_bookings[0]["pickup_location"]
             )
-        logger.debug(f"Optimized route data: {optimized}")
         
+        logger.info(f"📊 Optimization result: {len(optimized) if optimized else 0} route(s) generated")
+        if optimized:
+            logger.debug(f"Optimized route data: {optimized}")
+        
+        # Validate route optimization results
+        if not optimized or len(optimized) == 0:
+            logger.error("❌ ROUTE OPTIMIZATION FAILED - Empty result returned")
+            logger.error(f"Route ID: {route_id}, Shift Type: {shift_type}, Bookings: {len(all_bookings)}")
+            
+            # Collect problematic bookings for error message
+            problematic_bookings = []
+            office_lat = all_bookings[0]["pickup_latitude"] if shift_type != "IN" else all_bookings[-1]["drop_latitude"]
+            office_lng = all_bookings[0]["pickup_longitude"] if shift_type != "IN" else all_bookings[-1]["drop_longitude"]
+            
+            logger.error(f"Reference coordinates: ({office_lat}, {office_lng})")
+            
+            for booking in all_bookings:
+                lat = booking["drop_latitude"] if shift_type != "IN" else booking["pickup_latitude"]
+                lng = booking["drop_longitude"] if shift_type != "IN" else booking["pickup_longitude"]
+                location_str = f"{lat},{lng}"
+                logger.error(
+                    f"  Problematic Booking #{booking['booking_id']}: "
+                    f"Employee={booking['employee_code']}, Coords={location_str}, "
+                    f"Location={booking.get('drop_location' if shift_type != 'IN' else 'pickup_location', 'Unknown')}"
+                )
+                problematic_bookings.append({
+                    "booking_id": booking["booking_id"],
+                    "employee_code": booking["employee_code"],
+                    "coordinates": location_str,
+                    "location": booking.get("drop_location" if shift_type != "IN" else "pickup_location", "Unknown")
+                })
+            
+            logger.error(
+                f"Route optimization failed for route {route_id}. "
+                f"Cannot generate route with the given coordinates. "
+                f"Office/Destination: ({office_lat}, {office_lng}), "
+                f"Problematic bookings: {problematic_bookings}"
+            )
+            
+            raise HTTPException(
+                status_code=400,
+                detail=ResponseWrapper.error(
+                    message="Cannot generate route: Invalid or unreachable locations",
+                    error_code="ROUTE_OPTIMIZATION_FAILED",
+                    details={
+                        "reason": "Route optimization service returned no valid routes. This usually happens when:",
+                        "possible_causes": [
+                            "One or more locations are too far apart (e.g., different countries/continents)",
+                            "Invalid or unreachable coordinates",
+                            "Locations not connected by drivable roads"
+                        ],
+                        "action_required": "Please verify all booking locations are within the same city/region and have valid coordinates",
+                        "problematic_bookings": problematic_bookings
+                    }
+                )
+            )
+        
+        logger.info("✅ Route optimization successful - Processing results...")
         # now we generated routes, lets update our route and route_bookings
         optimized = optimized[0]  # first candidate
+        
+        logger.info(f"📊 Updating route metrics:")
+        logger.info(f"   Total time: {optimized['estimated_time']}")
+        logger.info(f"   Total distance: {optimized['estimated_distance']}")
+        logger.info(f"   Buffer time: {optimized['buffer_time']}")
+        
         route.estimated_total_time = float(optimized["estimated_time"].split()[0])
         route.estimated_total_distance = float(optimized["estimated_distance"].split()[0])
         route.buffer_time = float(optimized["buffer_time"].split()[0])
@@ -2482,16 +2558,23 @@ async def update_route(
 
 
         # --- Safely replace stops without deleting the route row (avoid StaleDataError) ---
+        logger.info(f"🔄 Updating route-booking mappings...")
         # Get bookings that will be removed from this route
         removed_booking_ids = current_booking_ids - set(all_booking_ids)
         added_booking_ids = set(all_booking_ids) - current_booking_ids
         
+        logger.info(f"   Removed bookings: {list(removed_booking_ids) if removed_booking_ids else 'None'}")
+        logger.info(f"   Added bookings: {list(added_booking_ids) if added_booking_ids else 'None'}")
+        logger.info(f"   Total stops in new route: {len(optimized['pickup_order'])}")
+        
         # Delete existing route-booking mappings for this route_id
-        db.query(RouteManagementBooking).filter(
+        deleted_count = db.query(RouteManagementBooking).filter(
             RouteManagementBooking.route_id == route_id
         ).delete(synchronize_session=False)
+        logger.info(f"   Deleted {deleted_count} old route-booking mappings")
 
         # Add new route-booking mappings based on optimized pickup_order
+        logger.info(f"   Creating {len(optimized['pickup_order'])} new route-booking mappings...")
         for idx, b in enumerate(optimized["pickup_order"]):
             # Convert datetime.time objects to strings for SQLite compatibility
             est_pickup = b.get("estimated_pickup_time_formatted")
@@ -2511,10 +2594,13 @@ async def update_route(
                 estimated_drop_time=est_drop,
             ))
 
+        logger.info(f"✅ Created {len(optimized['pickup_order'])} new route-booking mappings")
+        
         # Update booking statuses
+        logger.info(f"🔄 Updating booking statuses...")
         # 1. Set removed bookings back to REQUEST (if they were SCHEDULED)
         if removed_booking_ids:
-            db.query(Booking).filter(
+            updated_removed = db.query(Booking).filter(
                 Booking.booking_id.in_(removed_booking_ids),
                 Booking.status == BookingStatusEnum.SCHEDULED
             ).update(
@@ -2524,11 +2610,11 @@ async def update_route(
                 },
                 synchronize_session=False
             )
-            logger.info(f"Reverted {len(removed_booking_ids)} bookings to REQUEST status")
+            logger.info(f"   Reverted {updated_removed} removed bookings to REQUEST status")
 
         # 2. Set added bookings to SCHEDULED (if they are in REQUEST)
         if added_booking_ids:
-            db.query(Booking).filter(
+            updated_added = db.query(Booking).filter(
                 Booking.booking_id.in_(added_booking_ids),
                 Booking.status == BookingStatusEnum.REQUEST
             ).update(
@@ -2538,12 +2624,15 @@ async def update_route(
                 },
                 synchronize_session=False
             )
-            logger.info(f"Updated {len(added_booking_ids)} bookings to SCHEDULED status")
+            logger.info(f"   Updated {updated_added} added bookings to SCHEDULED status")
 
         # Commit once so both route updates and new mappings are persisted together
+        logger.info("💾 Committing changes to database...")
         db.commit()
+        logger.info("✅ Database commit successful")
 
         # 🔍 Audit Log: Route Update
+        logger.info("📝 Creating audit log entry...")
         try:
             log_audit(
                 db=db,
@@ -2563,10 +2652,17 @@ async def update_route(
                 },
                 request=request
             )
+            logger.info("✅ Audit log created successfully")
         except Exception as audit_error:
-            logger.error(f"Failed to create audit log for route update: {str(audit_error)}")
+            logger.error(f"❌ Failed to create audit log for route update: {str(audit_error)}")
 
-        logger.info(f"Route {route_id} updated successfully with {len(all_booking_ids)} bookings")
+        logger.info("="*80)
+        logger.info(f"🎉 ROUTE UPDATE COMPLETED SUCCESSFULLY")
+        logger.info(f"   Route ID: {route_id}, Route Code: {route.route_code}")
+        logger.info(f"   Total bookings: {len(all_booking_ids)}")
+        logger.info(f"   Estimated time: {route.estimated_total_time} mins")
+        logger.info(f"   Estimated distance: {route.estimated_total_distance} km")
+        logger.info("="*80)
 
         return ResponseWrapper.success(
             data=RouteWithEstimations(
@@ -2578,11 +2674,13 @@ async def update_route(
         )
 
     except HTTPException:
+        logger.error(f"❌ HTTP Exception during route update - rolling back transaction")
         db.rollback()
         raise
     except Exception as e:
+        logger.error(f"❌ Unexpected error updating route {route_id} - rolling back transaction")
         db.rollback()
-        logger.error(f"Error updating route {route_id}: {e}", exc_info=True)
+        logger.error(f"Error details: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=ResponseWrapper.error(
