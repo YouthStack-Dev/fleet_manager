@@ -2926,20 +2926,32 @@ async def bulk_delete_routes(
     for a given shift and date, and revert bookings back to 'REQUEST'.
     """
     try:
-        logger.info("==== BULK ROUTE HARD DELETE INITIATED ====")
-        logger.info(f"Received request | shift_id={shift_id}, route_date={route_date}, tenant_query={tenant_id}")
+        logger.info("="*80)
+        logger.info("🗑️  BULK ROUTE HARD DELETE INITIATED")
+        logger.info(f"📋 Request Parameters:")
+        logger.info(f"   Shift ID: {shift_id}")
+        logger.info(f"   Route Date: {route_date}")
+        logger.info(f"   Tenant Query: {tenant_id}")
 
         user_type = user_data.get("user_type")
         token_tenant_id = user_data.get("tenant_id")
         user_id = user_data.get("user_id", "unknown")
+        
+        logger.info(f"👤 User Context: user_id={user_id}, user_type={user_type}, token_tenant={token_tenant_id}")
 
         # --- Tenant Resolution ---
+        logger.info("🔍 Step 1: Resolving tenant context...")
         if user_type == "employee":
             tenant_id = token_tenant_id
+            logger.info(f"   Employee user - using token tenant: {tenant_id}")
         elif user_type == "admin":
             if not tenant_id:
                 tenant_id = token_tenant_id  # Use token tenant for admin
+                logger.info(f"   Admin user - using token tenant: {tenant_id}")
+            else:
+                logger.info(f"   Admin user - using query tenant: {tenant_id}")
             if not tenant_id:  # Still none? Super admin needs explicit tenant
+                logger.error("❌ Super admin must provide explicit tenant_id")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ResponseWrapper.error(
@@ -2949,8 +2961,10 @@ async def bulk_delete_routes(
                 )
         else:
             tenant_id = tenant_id or token_tenant_id
+            logger.info(f"   Other user type - resolved tenant: {tenant_id}")
 
         if not tenant_id:
+            logger.error("❌ Tenant context not available")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
@@ -2958,10 +2972,14 @@ async def bulk_delete_routes(
                     error_code="TENANT_ID_MISSING",
                 ),
             )
+        
+        logger.info(f"✅ Tenant resolved: {tenant_id}")
 
         # --- Validate Tenant (use cache) ---
+        logger.info("🔍 Step 2: Validating tenant...")
         tenant = get_tenant_with_cache(db, tenant_id)
         if not tenant:
+            logger.error(f"❌ Tenant {tenant_id} not found in database")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error(
@@ -2969,8 +2987,10 @@ async def bulk_delete_routes(
                     error_code="TENANT_NOT_FOUND",
                 ),
             )
+        logger.info(f"✅ Tenant validated: {tenant.tenant_id} - {tenant.tenant_name}")
 
-        logger.info(f"Hard deleting routes for tenant={tenant_id}, shift={shift_id}, date={route_date}")
+        logger.info("🔍 Step 3: Querying routes for deletion...")
+        logger.info(f"   Tenant: {tenant_id}, Shift: {shift_id}, Date: {route_date}")
 
         # --- Fetch route IDs ---
         route_query = (
@@ -2986,10 +3006,14 @@ async def bulk_delete_routes(
         )
 
         route_ids = [r.route_id for r in route_query.all()]
-        logger.info(f"Found {len(route_ids)} routes for hard deletion")
+        logger.info(f"📊 Found {len(route_ids)} route(s) for hard deletion")
+        if route_ids:
+            logger.info(f"   Route IDs: {route_ids}")
 
         if not route_ids:
-            logger.info(f"No routes found for shift {shift_id} on {route_date} - returning success with zero deletions")
+            logger.info("ℹ️  No routes found - nothing to delete")
+            logger.info(f"   Shift: {shift_id}, Date: {route_date}")
+            logger.info("="*80)
             return ResponseWrapper.success(
                 {
                     "deleted_routes_count": 0,
@@ -3001,6 +3025,7 @@ async def bulk_delete_routes(
             )
 
         # --- Fetch affected booking IDs ---
+        logger.info("🔍 Step 4: Fetching affected bookings...")
         booking_ids = [
             b.booking_id
             for b in db.query(RouteManagementBooking.booking_id)
@@ -3008,45 +3033,63 @@ async def bulk_delete_routes(
             .distinct()
             .all()
         ]
+        logger.info(f"📦 Found {len(booking_ids)} booking(s) affected")
+        if booking_ids:
+            logger.info(f"   Booking IDs: {booking_ids}")
 
         # --- Delete child route-booking links ---
+        logger.info("🗑️  Step 5: Deleting route-booking mappings...")
         deleted_bookings_count = (
             db.query(RouteManagementBooking)
             .filter(RouteManagementBooking.route_id.in_(route_ids))
             .delete(synchronize_session=False)
         )
+        logger.info(f"✅ Deleted {deleted_bookings_count} route-booking mapping(s)")
 
         # --- Revert booking statuses ---
+        logger.info("🔄 Step 6: Reverting booking statuses to REQUEST...")
+        reverted_count = 0
         if booking_ids:
-            db.query(Booking).filter(
+            reverted_count = db.query(Booking).filter(
                 Booking.booking_id.in_(booking_ids),
                 Booking.status == BookingStatusEnum.SCHEDULED,
             ).update(
                 {
                     Booking.status: BookingStatusEnum.REQUEST,
-                    Booking.OTP: None,
+                    Booking.boarding_otp: None,
+                    Booking.deboarding_otp: None,
+                    Booking.escort_otp: None,
                     Booking.updated_at: func.now(),
                     Booking.reason: "Route deleted - reverted to request",
                 },
                 synchronize_session=False,
             )
+            logger.info(f"✅ Reverted {reverted_count} booking(s) to REQUEST status")
+            logger.info(f"   Reset boarding_otp, deboarding_otp, escort_otp to NULL")
+        else:
+            logger.info("ℹ️  No bookings to revert")
 
         # --- Hard delete routes ---
+        logger.info("🗑️  Step 7: Deleting route records...")
         deleted_routes_count = (
             db.query(RouteManagement)
             .filter(RouteManagement.route_id.in_(route_ids))
             .delete(synchronize_session=False)
         )
+        logger.info(f"✅ Deleted {deleted_routes_count} route record(s)")
 
+        logger.info("💾 Step 8: Committing transaction to database...")
         db.commit()
+        logger.info("✅ Database commit successful")
 
         # 🔍 Audit Log: Bulk Route Deletion
+        logger.info("📝 Step 9: Creating audit log entry...")
         try:
             log_audit(
                 db=db,
                 tenant_id=tenant_id,
                 module="route_management",
-                action="DELETE",
+                action="HARD_DELETE",
                 user_data=user_data,
                 description=f"Bulk deleted {deleted_routes_count} routes for shift {shift_id} on {route_date}",
                 new_values={
@@ -3058,12 +3101,21 @@ async def bulk_delete_routes(
                 },
                 request=request
             )
+            logger.info("✅ Audit log created successfully")
         except Exception as audit_error:
-            logger.error(f"Failed to create audit log for bulk route deletion: {str(audit_error)}")
+            logger.error(f"❌ Failed to create audit log: {str(audit_error)}")
 
-        logger.info(
-            f"✅ Hard deleted {deleted_routes_count} routes, {deleted_bookings_count} mappings, reverted {len(booking_ids)} bookings."
-        )
+        logger.info("="*80)
+        logger.info("🎉 BULK DELETE COMPLETED SUCCESSFULLY")
+        logger.info(f"📊 Summary:")
+        logger.info(f"   Routes deleted: {deleted_routes_count}")
+        logger.info(f"   Route IDs: {route_ids}")
+        logger.info(f"   Route-booking mappings deleted: {deleted_bookings_count}")
+        logger.info(f"   Bookings reverted to REQUEST: {len(booking_ids)}")
+        logger.info(f"   Shift ID: {shift_id}")
+        logger.info(f"   Date: {route_date}")
+        logger.info(f"   Tenant: {tenant_id}")
+        logger.info("="*80)
 
         return ResponseWrapper.success(
             data={
@@ -3075,14 +3127,16 @@ async def bulk_delete_routes(
         )
 
     except HTTPException:
+        logger.error("❌ HTTP Exception during bulk delete - rolling back transaction")
         db.rollback()
         raise
     except Exception as e:
+        logger.error("❌ Unexpected error during bulk hard delete - rolling back transaction")
+        logger.error(f"   Tenant: {tenant_id if 'tenant_id' in locals() else 'unknown'}")
+        logger.error(f"   Shift: {shift_id}, Date: {route_date}")
+        logger.error(f"   User: {user_id if 'user_id' in locals() else 'unknown'}")
+        logger.error(f"   Error: {e}", exc_info=True)
         db.rollback()
-        logger.error(
-            f"Error during bulk hard delete | tenant_id={tenant_id}, shift_id={shift_id}, date={route_date}, user_id={user_id}, error={e}",
-            exc_info=True,
-        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=ResponseWrapper.error(
