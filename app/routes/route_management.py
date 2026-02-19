@@ -2987,7 +2987,7 @@ async def bulk_delete_routes(
                     error_code="TENANT_NOT_FOUND",
                 ),
             )
-        logger.info(f"✅ Tenant validated: {tenant.tenant_id} - {tenant.tenant_name}")
+        logger.info(f"✅ Tenant validated: {tenant.tenant_id}")
 
         logger.info("🔍 Step 3: Querying routes for deletion...")
         logger.info(f"   Tenant: {tenant_id}, Shift: {shift_id}, Date: {route_date}")
@@ -3253,7 +3253,9 @@ async def delete_route(
             ).update(
                 {
                     Booking.status: BookingStatusEnum.REQUEST,
-                    Booking.OTP: None,
+                    Booking.boarding_otp: None,
+                    Booking.deboarding_otp: None,
+                    Booking.escort_otp: None,
                     Booking.updated_at: func.now(),
                     Booking.reason: "Route deleted - reverted to request",
                 },
