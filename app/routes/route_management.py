@@ -370,25 +370,33 @@ def get_bookings_by_ids(booking_ids: List[int], db: Session) -> List[Dict]:
 
     logger.info(f"[get_bookings_by_ids] Final booking_ids to query: {booking_ids}")
 
-    # ---- Query bookings ----
-    bookings = db.query(Booking).filter(Booking.booking_id.in_(booking_ids)).all()
-    logger.info(f"[get_bookings_by_ids] Retrieved {len(bookings)} bookings from DB")
+    # ---- Query bookings with employee details ----
+    from app.models.employee import Employee
+    
+    bookings_with_employee = (
+        db.query(Booking, Employee)
+        .outerjoin(Employee, Booking.employee_id == Employee.employee_id)
+        .filter(Booking.booking_id.in_(booking_ids))
+        .all()
+    )
+    logger.info(f"[get_bookings_by_ids] Retrieved {len(bookings_with_employee)} bookings from DB")
 
     # ---- Log detailed booking info ----
-    for b in bookings:
+    for booking, employee in bookings_with_employee:
         logger.debug(
             f"[get_bookings_by_ids] Booking fetched → "
-            f"id={b.booking_id}, tenant={b.tenant_id}, shift={b.shift_id}, date={b.booking_date}, "
-            f"employee={b.employee_code or b.employee_id}, status={b.status.name if b.status else None}"
+            f"id={booking.booking_id}, tenant={booking.tenant_id}, shift={booking.shift_id}, date={booking.booking_date}, "
+            f"employee={employee.name if employee else 'N/A'} ({booking.employee_code or booking.employee_id}), status={booking.status.name if booking.status else None}"
         )
 
-    # ---- Convert to dictionaries ----
+    # ---- Convert to dictionaries with employee details ----
     bookings_dicts = [
         {
             "booking_id": booking.booking_id,
             "tenant_id": booking.tenant_id,
             "employee_id": booking.employee_id,
             "employee_code": booking.employee_code,
+            "employee_name": employee.name if employee else None,
             "shift_id": booking.shift_id,
             "team_id": booking.team_id,
             "booking_date": booking.booking_date,
@@ -404,7 +412,7 @@ def get_bookings_by_ids(booking_ids: List[int], db: Session) -> List[Dict]:
             "created_at": booking.created_at,
             "updated_at": booking.updated_at
         }
-        for booking in bookings
+        for booking, employee in bookings_with_employee
     ]
 
     if not bookings_dicts:
