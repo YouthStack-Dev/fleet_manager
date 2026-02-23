@@ -3005,8 +3005,14 @@ async def create_route_from_bookings(
     user_data=Depends(PermissionChecker(["route.create"], check_tenant=True)),
 ):
     """
-    Create a new route from bookings selected from any existing routes.
-    The bookings will remain in their original routes and also be added to the new route.
+    Create a new route from selected bookings.
+    
+    IMPORTANT: This endpoint ensures NO DUPLICATE bookings across routes.
+    - If bookings are already assigned to other routes, they will be REMOVED from those routes first.
+    - Then the bookings will be assigned to the newly created route.
+    - This prevents the same booking from appearing in multiple routes simultaneously.
+    
+    The operation is atomic - either all bookings are moved successfully or none are.
     """
     try:
         user_type = user_data.get("user_type")
@@ -3114,6 +3120,33 @@ async def create_route_from_bookings(
         ).count()
         route_code = f"ROUTE-{tenant_id[:4].upper()}-{existing_routes_count + 1:04d}"
         logger.info(f"[CREATE_FROM_BOOKINGS] Generated route_code={route_code} (existing_routes={existing_routes_count})")
+
+        # Check if bookings are already in other routes and remove them
+        logger.info(f"[CREATE_FROM_BOOKINGS] Checking for existing route assignments...")
+        existing_route_bookings = db.query(RouteManagementBooking).filter(
+            RouteManagementBooking.booking_id.in_(create_request.booking_ids)
+        ).all()
+        
+        routes_affected = {}  # Initialize outside if block for audit log access
+        
+        if existing_route_bookings:
+            # Group by route_id to show which routes are affected
+            for rmb in existing_route_bookings:
+                if rmb.route_id not in routes_affected:
+                    routes_affected[rmb.route_id] = []
+                routes_affected[rmb.route_id].append(rmb.booking_id)
+            
+            logger.info(f"[CREATE_FROM_BOOKINGS] Found {len(existing_route_bookings)} existing route-booking assignments across {len(routes_affected)} route(s)")
+            for route_id, booking_ids_in_route in routes_affected.items():
+                logger.info(f"[CREATE_FROM_BOOKINGS] Removing {len(booking_ids_in_route)} booking(s) from route_id={route_id}: {booking_ids_in_route}")
+            
+            # Delete existing route-booking mappings to prevent duplicates
+            deleted_count = db.query(RouteManagementBooking).filter(
+                RouteManagementBooking.booking_id.in_(create_request.booking_ids)
+            ).delete(synchronize_session=False)
+            logger.info(f"[CREATE_FROM_BOOKINGS] Removed {deleted_count} existing route-booking mapping(s) to prevent duplicates")
+        else:
+            logger.info(f"[CREATE_FROM_BOOKINGS] No existing route assignments found - bookings are fresh")
 
         # Prepare booking data for optimization
         logger.info(f"[CREATE_FROM_BOOKINGS] Preparing booking data for {len(bookings)} bookings")
@@ -3245,18 +3278,23 @@ async def create_route_from_bookings(
 
         # Audit log
         try:
+            audit_description = f"Created route '{route_code}' (ID: {new_route.route_id}) from {len(create_request.booking_ids)} selected bookings"
+            if existing_route_bookings:
+                audit_description += f". Removed bookings from {len(routes_affected)} existing route(s) to prevent duplicates."
+            
             log_audit(
                 db=db,
                 tenant_id=tenant_id,
                 module="route_management",
                 action="CREATE",
                 user_data=user_data,
-                description=f"Created route '{route_code}' (ID: {new_route.route_id}) from {len(create_request.booking_ids)} selected bookings",
+                description=audit_description,
                 new_values={
                     "route_id": new_route.route_id,
                     "route_code": route_code,
                     "booking_ids": create_request.booking_ids,
                     "optimized": create_request.optimize,
+                    "removed_from_routes": list(routes_affected.keys()) if existing_route_bookings else [],
                 },
                 request=request
             )
@@ -3265,14 +3303,20 @@ async def create_route_from_bookings(
 
         logger.info(f"[CREATE_FROM_BOOKINGS] Successfully created route {new_route.route_id}")
 
+        success_message = f"Route '{route_code}' created successfully from {len(create_request.booking_ids)} bookings"
+        if routes_affected:
+            success_message += f" (moved from {len(routes_affected)} existing route(s))"
+
         return ResponseWrapper.success(
             data={
                 "route_id": new_route.route_id,
                 "route_code": route_code,
                 "bookings_count": len(create_request.booking_ids),
                 "optimized": create_request.optimize,
+                "removed_from_routes": list(routes_affected.keys()),
+                "removed_from_routes_count": len(routes_affected),
             },
-            message=f"Route '{route_code}' created successfully from {len(create_request.booking_ids)} bookings",
+            message=success_message,
         )
 
     except HTTPException as e:
