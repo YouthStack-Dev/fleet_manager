@@ -3050,11 +3050,13 @@ async def create_route_from_bookings(
             )
 
         # Fetch booking details
+        logger.info(f"[CREATE_FROM_BOOKINGS] Fetching {len(create_request.booking_ids)} bookings for tenant={tenant_id}")
         bookings = db.query(Booking).filter(
             Booking.booking_id.in_(create_request.booking_ids),
             Booking.tenant_id == tenant_id
         ).all()
 
+        logger.info(f"[CREATE_FROM_BOOKINGS] Found {len(bookings)} bookings in database")
         if len(bookings) != len(create_request.booking_ids):
             raise HTTPException(
                 status_code=404,
@@ -3068,6 +3070,7 @@ async def create_route_from_bookings(
         shift_ids = set(b.shift_id for b in bookings)
         booking_dates = set(b.booking_date for b in bookings)
         
+        logger.info(f"[CREATE_FROM_BOOKINGS] Validation: unique shifts={len(shift_ids)}, unique dates={len(booking_dates)}")
         if len(shift_ids) > 1:
             raise HTTPException(
                 status_code=400,
@@ -3089,9 +3092,12 @@ async def create_route_from_bookings(
         shift_id = bookings[0].shift_id
         booking_date = bookings[0].booking_date
 
+        logger.info(f"[CREATE_FROM_BOOKINGS] Fetching shift info for shift_id={shift_id}, tenant_id={tenant_id}")
+        
         # Get shift info
-        shift = get_shift_with_cache(db, shift_id)
+        shift = get_shift_with_cache(db, tenant_id, shift_id)
         if not shift:
+            logger.error(f"[CREATE_FROM_BOOKINGS] Shift not found: shift_id={shift_id}, tenant_id={tenant_id}")
             raise HTTPException(
                 status_code=404,
                 detail=ResponseWrapper.error(
@@ -3100,15 +3106,17 @@ async def create_route_from_bookings(
                 ),
             )
 
-        logger.info(f"[CREATE_FROM_BOOKINGS] Shift {shift_id}, Date {booking_date}, Type {shift.log_type}")
+        logger.info(f"[CREATE_FROM_BOOKINGS] Shift retrieved successfully: shift_id={shift_id}, date={booking_date}, type={shift.log_type}")
 
         # Generate route code
         existing_routes_count = db.query(RouteManagement).filter(
             RouteManagement.tenant_id == tenant_id
         ).count()
         route_code = f"ROUTE-{tenant_id[:4].upper()}-{existing_routes_count + 1:04d}"
+        logger.info(f"[CREATE_FROM_BOOKINGS] Generated route_code={route_code} (existing_routes={existing_routes_count})")
 
         # Prepare booking data for optimization
+        logger.info(f"[CREATE_FROM_BOOKINGS] Preparing booking data for {len(bookings)} bookings")
         booking_data = []
         for booking in bookings:
             booking_data.append({
@@ -3120,13 +3128,15 @@ async def create_route_from_bookings(
                 "drop_longitude": booking.drop_longitude,
                 "drop_location": booking.drop_location,
             })
+        logger.info(f"[CREATE_FROM_BOOKINGS] Booking data prepared successfully")
 
         # Optimize route if requested
         if create_request.optimize:
-            logger.info(f"[CREATE_FROM_BOOKINGS] Optimizing new route")
+            logger.info(f"[CREATE_FROM_BOOKINGS] Starting route optimization for shift_type={shift.log_type}")
             from app.services.optimal_roiute_generation import generate_optimal_route, generate_drop_route
 
             if shift.log_type == "IN":
+                logger.info(f"[CREATE_FROM_BOOKINGS] Using generate_optimal_route for IN shift")
                 optimized = generate_optimal_route(
                     shift_time=shift.shift_time,
                     group=booking_data,
@@ -3135,7 +3145,9 @@ async def create_route_from_bookings(
                     drop_address=booking_data[-1]["drop_location"],
                     use_centroid=False
                 )
+                logger.info(f"[CREATE_FROM_BOOKINGS] IN shift optimization completed")
             else:
+                logger.info(f"[CREATE_FROM_BOOKINGS] Using generate_drop_route for OUT shift")
                 optimized = generate_drop_route(
                     group=booking_data,
                     start_time_minutes=datetime_to_minutes(shift.shift_time),
@@ -3144,8 +3156,10 @@ async def create_route_from_bookings(
                     office_address=booking_data[0]["pickup_location"],
                     optimize_route="true"
                 )
+                logger.info(f"[CREATE_FROM_BOOKINGS] OUT shift optimization completed")
 
             if not optimized:
+                logger.error(f"[CREATE_FROM_BOOKINGS] Optimization returned empty/None result")
                 raise HTTPException(
                     status_code=500,
                     detail=ResponseWrapper.error(
@@ -3159,6 +3173,7 @@ async def create_route_from_bookings(
             estimated_distance = float(optimized["estimated_distance"].split()[0])
             buffer_time = float(optimized["buffer_time"].split()[0])
             optimized_order = optimized["pickup_order"]
+            logger.info(f"[CREATE_FROM_BOOKINGS] Optimization results: time={estimated_time}min, distance={estimated_distance}km, buffer={buffer_time}min, stops={len(optimized_order)}")
         else:
             # No optimization - use provided order
             logger.info(f"[CREATE_FROM_BOOKINGS] Using booking order without optimization")
@@ -3168,6 +3183,7 @@ async def create_route_from_bookings(
             optimized_order = [{"booking_id": b["booking_id"]} for b in booking_data]
 
         # Create new route
+        logger.info(f"[CREATE_FROM_BOOKINGS] Creating RouteManagement record: code={route_code}, time={estimated_time}, distance={estimated_distance}")
         new_route = RouteManagement(
             route_code=route_code,
             tenant_id=tenant_id,
@@ -3177,8 +3193,10 @@ async def create_route_from_bookings(
         )
         db.add(new_route)
         db.flush()
+        logger.info(f"[CREATE_FROM_BOOKINGS] Route record created with route_id={new_route.route_id}")
 
         # Create route-booking mappings
+        logger.info(f"[CREATE_FROM_BOOKINGS] Creating {len(optimized_order)} route-booking mappings")
         for idx, booking_info in enumerate(optimized_order):
             booking_id = booking_info["booking_id"]
             
@@ -3207,7 +3225,8 @@ async def create_route_from_bookings(
             ))
 
         # Update booking statuses to SCHEDULED
-        db.query(Booking).filter(
+        logger.info(f"[CREATE_FROM_BOOKINGS] Updating booking statuses from REQUEST to SCHEDULED")
+        updated_count = db.query(Booking).filter(
             Booking.booking_id.in_(create_request.booking_ids),
             Booking.status == BookingStatusEnum.REQUEST
         ).update(
@@ -3217,8 +3236,11 @@ async def create_route_from_bookings(
             },
             synchronize_session=False
         )
+        logger.info(f"[CREATE_FROM_BOOKINGS] Updated {updated_count} booking statuses")
 
+        logger.info(f"[CREATE_FROM_BOOKINGS] Committing transaction")
         db.commit()
+        logger.info(f"[CREATE_FROM_BOOKINGS] Transaction committed successfully")
 
         # Audit log
         try:
@@ -3252,12 +3274,21 @@ async def create_route_from_bookings(
             message=f"Route '{route_code}' created successfully from {len(create_request.booking_ids)} bookings",
         )
 
-    except HTTPException:
+    except HTTPException as e:
+        logger.warning(f"[CREATE_FROM_BOOKINGS] HTTPException raised: status={e.status_code}, detail={e.detail}")
         db.rollback()
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"[CREATE_FROM_BOOKINGS] Error creating route: {e}", exc_info=True)
+        logger.error(
+            f"[CREATE_FROM_BOOKINGS] Unexpected error creating route: {type(e).__name__}: {e}",
+            exc_info=True,
+            extra={
+                "tenant_id": tenant_id,
+                "booking_ids": create_request.booking_ids if create_request else None,
+                "optimize": create_request.optimize if create_request else None,
+            }
+        )
         raise HTTPException(
             status_code=500,
             detail=ResponseWrapper.error(
