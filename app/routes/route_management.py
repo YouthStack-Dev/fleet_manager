@@ -3183,17 +3183,18 @@ async def create_route_from_bookings(
             optimized_order = [{"booking_id": b["booking_id"]} for b in booking_data]
 
         # Create new route
-        logger.info(f"[CREATE_FROM_BOOKINGS] Creating RouteManagement record: code={route_code}, time={estimated_time}, distance={estimated_distance}")
+        logger.info(f"[CREATE_FROM_BOOKINGS] Creating RouteManagement record: code={route_code}, shift_id={shift_id}, time={estimated_time}, distance={estimated_distance}")
         new_route = RouteManagement(
             route_code=route_code,
             tenant_id=tenant_id,
+            shift_id=shift_id,  # CRITICAL: Set shift_id to avoid data integrity errors
             estimated_total_time=estimated_time,
             estimated_total_distance=estimated_distance,
             buffer_time=buffer_time,
         )
         db.add(new_route)
         db.flush()
-        logger.info(f"[CREATE_FROM_BOOKINGS] Route record created with route_id={new_route.route_id}")
+        logger.info(f"[CREATE_FROM_BOOKINGS] Route record created with route_id={new_route.route_id}, shift_id={shift_id}")
 
         # Create route-booking mappings
         logger.info(f"[CREATE_FROM_BOOKINGS] Creating {len(optimized_order)} route-booking mappings")
