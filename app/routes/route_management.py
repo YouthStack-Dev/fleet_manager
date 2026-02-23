@@ -716,7 +716,7 @@ async def get_all_routes(
     tenant_id: Optional[str] = Query(None, description="Tenant ID"),
     shift_id: Optional[int] = Query(None, description="Filter by shift ID"),
     booking_date: Optional[date] = Query(None, description="Filter by booking date"),
-    status: Optional[RouteManagementStatusEnum] = Query(None, description="Filter by route status (e.g. PLANNED,VENDOR_ASSIGNED,DRIVER_ASSIGNED)"),
+    status_filter: Optional[RouteManagementStatusEnum] = Query(None, description="Filter by route status (e.g. PLANNED,VENDOR_ASSIGNED,DRIVER_ASSIGNED)"),
     db: Session = Depends(get_db),
     user_data=Depends(PermissionChecker(["route.read"], check_tenant=True)),
 ):
@@ -814,9 +814,9 @@ async def get_all_routes(
             routes_q = routes_q.filter(RouteManagement.assigned_vendor_id == vendor_id)
 
         # Apply status filter if provided
-        if status:
-            logger.info(f"[get_all_routes] Applying status filter: {status}")
-            routes_q = routes_q.filter(RouteManagement.status == status)
+        if status_filter:
+            logger.info(f"[get_all_routes] Applying status filter: {status_filter}")
+            routes_q = routes_q.filter(RouteManagement.status == status_filter)
 
         if shift_id or booking_date:
             routes_q = (
@@ -1031,7 +1031,7 @@ async def get_all_routes(
         logger.error(f"  - tenant_id: {tenant_id}")
         logger.error(f"  - shift_id: {shift_id}")
         logger.error(f"  - booking_date: {booking_date}")
-        logger.error(f"  - status_filter: {status}")
+        logger.error(f"  - status_filter: {status_filter}")
         logger.error(f"  - user_type: {user_data.get('user_type')}")
         logger.error(f"  - user_id: {user_data.get('user_id')}")
         logger.error(f"Stack Trace:", exc_info=True)
