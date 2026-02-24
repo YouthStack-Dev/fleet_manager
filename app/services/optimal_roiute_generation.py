@@ -346,7 +346,7 @@ def generate_drop_route(group, office_lat, office_lng, office_address,buffer_min
             "booking_id": booking["booking_id"],
             "drop_lat": booking["drop_latitude"],
             "drop_lng": booking["drop_longitude"],
-            "estimated_pickup_time_formatted": "",
+            "estimated_pickup_time_formatted": f"{start_time_minutes // 60:02d}:{start_time_minutes % 60:02d}",
             "estimated_drop_time_minutes": current_time,
             "estimated_drop_time_formatted": drop_time_formatted,
             "estimated_distance_km": round(current_distance, 2),
