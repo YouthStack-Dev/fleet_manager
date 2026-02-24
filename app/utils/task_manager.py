@@ -5,7 +5,7 @@ Handles async operations like email sending, route optimization, and Firebase up
 import asyncio
 from typing import Any, Dict, Optional
 import uuid
-from datetime import datetime
+from datetime import datetime, time
 from app.utils.cache_manager import cache
 from app.core.logging_config import get_logger
 from common_utils import datetime_to_minutes
@@ -217,11 +217,20 @@ async def optimize_routes_async(job_id: str, route_data: dict):
 
                     for idx, booking in enumerate(optimized_route[0]["pickup_order"]):
                         otp_code = random.randint(1000, 9999)
+                        est_pickup = booking["estimated_pickup_time_formatted"]
+                        if isinstance(est_pickup, time):
+                            est_pickup = est_pickup.strftime("%H:%M:%S")
+                        
+                        est_drop = booking.get("estimated_drop_time_formatted")
+                        if isinstance(est_drop, time):
+                            est_drop = est_drop.strftime("%H:%M:%S")
+                        
                         route_booking = RouteManagementBooking(
                             route_id=route.route_id,
                             booking_id=booking["booking_id"],
                             order_id=idx + 1,
-                            estimated_pick_up_time=booking["estimated_pickup_time_formatted"],
+                            estimated_pick_up_time=est_pickup,
+                            estimated_drop_time=est_drop,
                             estimated_distance=booking["estimated_distance_km"],
                         )
                         db.add(route_booking)

@@ -656,11 +656,16 @@ async def create_routes(
                         if isinstance(est_pickup, time):
                             est_pickup = est_pickup.strftime("%H:%M:%S")
                         
+                        est_drop = booking.get("estimated_drop_time_formatted")
+                        if isinstance(est_drop, time):
+                            est_drop = est_drop.strftime("%H:%M:%S")
+                        
                         route_booking = RouteManagementBooking(
                             route_id=route.route_id,
                             booking_id=booking["booking_id"],
                             order_id=idx + 1,
                             estimated_pick_up_time=est_pickup,
+                            estimated_drop_time=est_drop,
                             estimated_distance=booking["estimated_distance_km"],
                         )
                         db.add(route_booking)
@@ -2162,14 +2167,19 @@ async def merge_routes(
                 if isinstance(est_pickup, time):
                     est_pickup = est_pickup.strftime("%H:%M:%S")
                 
+                est_drop = b.get("estimated_drop_time_formatted")
+                if isinstance(est_drop, time):
+                    est_drop = est_drop.strftime("%H:%M:%S")
+                
                 db.add(RouteManagementBooking(
                     route_id=route.route_id,
                     booking_id=b["booking_id"],
                     order_id=idx + 1,
                     estimated_pick_up_time=est_pickup,
+                    estimated_drop_time=est_drop,
                     estimated_distance=b["estimated_distance_km"]
                 ))
-                logger.debug(f"[MERGE]   Stop {idx+1}: Booking {b['booking_id']} at {est_pickup}")
+                logger.debug(f"[MERGE]   Stop {idx+1}: Booking {b['booking_id']} at pickup={est_pickup}, drop={est_drop}")
             
             logger.info(f"[MERGE] ✓ Step 9: Inserted all stops")
         except Exception as e:
