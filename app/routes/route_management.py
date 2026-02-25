@@ -335,6 +335,13 @@ class UpdateRouteBookingsRequest(BaseModel):
     bookings: List[RouteBookingUpdate]
     optimize: bool = Field(True, description="If true, auto-optimize route; if false, use provided times")
 
+
+# Bulk vendor assignment request
+class BulkVendorAssignRequest(BaseModel):
+    route_ids: List[int] = Field(..., description="List of route IDs to assign the vendor to")
+    vendor_id: int = Field(..., description="Vendor ID to assign")
+    tenant_id: Optional[str] = Field(None, description="Tenant ID (optional for admin/superadmin)")
+
 def get_bookings_by_ids(booking_ids: List[int], db: Session) -> List[Dict]:
     """
     Retrieve bookings by their IDs and convert to dictionary format.
@@ -1275,6 +1282,171 @@ async def assign_vendor_to_route(
     except Exception as e:
         db.rollback()
         logger.exception("[assign_vendor_to_route] Unexpected error")
+        return handle_db_error(e)
+
+
+@router.put("/assign-vendor/bulk", status_code=status.HTTP_200_OK)
+async def assign_vendor_to_routes_bulk(
+    request: Request,
+    payload: BulkVendorAssignRequest,
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route_vendor_assignment.update", "route_vendor_assignment.create", "route_vendor_assignment.delete", "route_vendor_assignment.read"], check_tenant=True))
+):
+    """
+    Assign a vendor to multiple routes in bulk.
+    - Only assigns vendor to routes that currently have no vendor assigned.
+    - Skips routes that are already assigned (records reason in response).
+    - Validates tenant and vendor belong to the same tenant.
+    """
+    try:
+        user_id = user_data.get("user_id")
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        tenant_id = payload.tenant_id
+        # Resolve tenant similar to single assign
+        if user_type == "employee":
+            tenant_id = token_tenant_id
+        elif user_type == "admin":
+            if not tenant_id:
+                tenant_id = token_tenant_id
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="tenant_id is required for admin users",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+        else:
+            tenant_id = token_tenant_id
+
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant context not available",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+
+        route_ids = list(dict.fromkeys([int(rid) for rid in payload.route_ids]))
+        vendor_id = int(payload.vendor_id)
+
+        logger.info(f"[assign_vendor_to_routes_bulk] User={user_id} | Tenant={tenant_id} | Vendor={vendor_id} | Routes={route_ids}")
+
+        # Validate vendor
+        vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id, Vendor.tenant_id == tenant_id).first()
+        if not vendor:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Vendor not found under this tenant",
+                    error_code="VENDOR_NOT_FOUND_OR_MISMATCH",
+                    details={"vendor_id": vendor_id, "tenant_id": tenant_id},
+                ),
+            )
+
+        # Load requested routes (lock for update to avoid races)
+        routes = (
+            db.query(RouteManagement)
+            .filter(RouteManagement.route_id.in_(route_ids), RouteManagement.tenant_id == tenant_id)
+            .with_for_update()
+            .all()
+        )
+
+        found_route_ids = {r.route_id for r in routes}
+        missing = [rid for rid in route_ids if rid not in found_route_ids]
+
+        results = []
+        assigned_count = 0
+
+        for rid in route_ids:
+            if rid in missing:
+                results.append({"route_id": rid, "status": "skipped", "reason": "ROUTE_NOT_FOUND"})
+                logger.warning(f"[assign_vendor_to_routes_bulk] Route not found or not in tenant: {rid}")
+                continue
+
+            route = next((r for r in routes if r.route_id == rid), None)
+            if not route:
+                results.append({"route_id": rid, "status": "skipped", "reason": "ROUTE_LOAD_ERROR"})
+                logger.error(f"[assign_vendor_to_routes_bulk] Unexpected missing route after query: {rid}")
+                continue
+
+            if route.assigned_vendor_id:
+                if int(route.assigned_vendor_id) == vendor_id:
+                    results.append({"route_id": rid, "status": "skipped", "reason": "ALREADY_ASSIGNED_TO_SAME_VENDOR"})
+                    logger.info(f"[assign_vendor_to_routes_bulk] Route {rid} already assigned to vendor {vendor_id}")
+                else:
+                    results.append({"route_id": rid, "status": "skipped", "reason": "ALREADY_ASSIGNED_TO_OTHER_VENDOR", "current_vendor": route.assigned_vendor_id})
+                    logger.info(f"[assign_vendor_to_routes_bulk] Route {rid} already assigned to other vendor {route.assigned_vendor_id}")
+                continue
+
+            # Assign vendor
+            try:
+                route.assigned_vendor_id = vendor_id
+                if route.status == RouteManagementStatusEnum.PLANNED:
+                    route.status = RouteManagementStatusEnum.VENDOR_ASSIGNED
+                db.add(route)
+                assigned_count += 1
+
+                # Audit log per route
+                try:
+                    log_audit(
+                        db=db,
+                        tenant_id=tenant_id,
+                        module="route_management",
+                        action="UPDATE",
+                        user_data=user_data,
+                        description=f"Bulk-assigned vendor '{vendor.name}' (ID: {vendor_id}) to route '{route.route_code}' (ID: {rid})",
+                        new_values={
+                            "route_id": rid,
+                            "route_code": route.route_code,
+                            "assigned_vendor_id": vendor_id,
+                            "vendor_name": vendor.name,
+                            "status": safe_get_enum_value(route, "status")
+                        },
+                        request=request
+                    )
+                except Exception as audit_error:
+                    logger.error(f"[assign_vendor_to_routes_bulk] Failed to create audit log for route {rid}: {audit_error}")
+
+                results.append({"route_id": rid, "status": "assigned"})
+                logger.info(f"[assign_vendor_to_routes_bulk] Route {rid} assigned to vendor {vendor_id}")
+
+            except Exception as assign_err:
+                logger.exception(f"[assign_vendor_to_routes_bulk] Failed to assign vendor to route {rid}")
+                results.append({"route_id": rid, "status": "skipped", "reason": "ASSIGN_FAILED", "error": str(assign_err)})
+
+        # Commit once for all updates
+        try:
+            db.commit()
+        except Exception as commit_err:
+            db.rollback()
+            logger.exception("[assign_vendor_to_routes_bulk] Commit failed, rolling back changes")
+            raise HTTPException(
+                status_code=500,
+                detail=ResponseWrapper.error(
+                    message="Failed to commit bulk vendor assignments",
+                    error_code="BULK_ASSIGN_COMMIT_FAILED",
+                    details={"error": str(commit_err)}
+                )
+            )
+
+        return ResponseWrapper.success(
+            data={
+                "requested_count": len(route_ids),
+                "assigned_count": assigned_count,
+                "results": results,
+            },
+            message=f"Bulk vendor assignment completed: {assigned_count}/{len(route_ids)} assigned"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.exception("[assign_vendor_to_routes_bulk] Unexpected error")
         return handle_db_error(e)
 
 @router.put("/assign-vehicle", status_code=status.HTTP_200_OK)
