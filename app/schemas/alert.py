@@ -94,6 +94,7 @@ class AlertResponse(BaseModel):
     alert_id: int
     tenant_id: str
     employee_id: int
+    employee_name: Optional[str] = None
     booking_id: Optional[int]
     
     alert_type: str

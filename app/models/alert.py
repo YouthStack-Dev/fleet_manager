@@ -122,6 +122,7 @@ class Alert(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
     
     # Relationships
+    employee = relationship("Employee", foreign_keys=[employee_id])
     escalations = relationship("AlertEscalation", back_populates="alert", cascade="all, delete-orphan")
     notifications = relationship("AlertNotification", back_populates="alert", cascade="all, delete-orphan")
 
