@@ -298,9 +298,18 @@ def get_active_alerts(
             employee_id=target_employee_id
         )
         
+        # Build response with employee names
+        alert_responses = []
+        for alert in alerts:
+            alert_dict = AlertResponse.from_orm(alert).dict()
+            # Add employee name from relationship
+            if alert.employee:
+                alert_dict['employee_name'] = alert.employee.name
+            alert_responses.append(alert_dict)
+        
         return ResponseWrapper.success(
             message=f"Found {len(alerts)} active alert(s)",
-            data=[AlertResponse.from_orm(alert).dict() for alert in alerts]
+            data=alert_responses
         )
         
     except HTTPException:

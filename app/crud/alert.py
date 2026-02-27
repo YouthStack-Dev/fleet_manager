@@ -142,11 +142,13 @@ def get_alerts(
 
 def get_active_alerts(db: Session, tenant_id: Optional[str], employee_id: Optional[int] = None, team_id: Optional[int] = None) -> List[Alert]:
     """Get active (not closed) alerts"""
-    query = db.query(Alert)
+    from app.models.employee import Employee
+    from sqlalchemy.orm import joinedload
+    
+    query = db.query(Alert).options(joinedload(Alert.employee))
     
     # Join Employee table if team filtering is needed
     if team_id:
-        from app.models.employee import Employee
         query = query.join(Employee, Alert.employee_id == Employee.employee_id)
         query = query.filter(Employee.team_id == team_id)
     
