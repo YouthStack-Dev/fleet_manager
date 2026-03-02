@@ -264,7 +264,7 @@ def read_vehicle(
         token_vendor_id = user_data.get("vendor_id")
         token_tenant_id = user_data.get("tenant_id")
 
-        query = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type)).filter(Vehicle.vehicle_id == vehicle_id)
+        query = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type), joinedload(Vehicle.driver)).filter(Vehicle.vehicle_id == vehicle_id)
 
         if user_type == "vendor":
             query = query.filter(Vehicle.vendor_id == token_vendor_id)
@@ -332,7 +332,7 @@ def read_vehicles(
         token_vendor_id = user_data.get("vendor_id")
         token_tenant_id = user_data.get("tenant_id")
 
-        query = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type))
+        query = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type), joinedload(Vehicle.driver))
 
         if user_type == "vendor":
             vendor_id = token_vendor_id
@@ -449,7 +449,7 @@ async def update_vehicle(
         )
 
         # --- Fetch vehicle ---
-        db_vehicle = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type)).filter(Vehicle.vehicle_id == vehicle_id).first()
+        db_vehicle = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type), joinedload(Vehicle.driver)).filter(Vehicle.vehicle_id == vehicle_id).first()
         if not db_vehicle:
             logger.warning(f"[VehicleUpdate] Vehicle ID={vehicle_id} not found")
             raise HTTPException(
@@ -673,7 +673,7 @@ def update_vehicle_status(
         logger.info(f"[VehicleStatusUpdate] user_id={user_id}, vehicle_id={vehicle_id}, user_type={user_type}, set_active={is_active}")
 
         # --- Fetch vehicle ---
-        db_vehicle = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type)).filter(Vehicle.vehicle_id == vehicle_id).first()
+        db_vehicle = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type), joinedload(Vehicle.driver)).filter(Vehicle.vehicle_id == vehicle_id).first()
         if not db_vehicle:
             logger.warning(f"[VehicleStatusUpdate] Vehicle ID={vehicle_id} not found")
             raise HTTPException(

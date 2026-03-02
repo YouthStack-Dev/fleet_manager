@@ -45,10 +45,20 @@ class VehicleUpdate(BaseModel):
 class VehicleResponse(VehicleBase):
     vehicle_id: int
     vehicle_type_name: Optional[str] = None
+    driver_name: Optional[str] = None
+    driver_phone: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    @classmethod
+    def model_validate(cls, obj, **kwargs):
+        instance = super().model_validate(obj, **kwargs)
+        if hasattr(obj, "driver") and obj.driver is not None:
+            instance.driver_name = obj.driver.name
+            instance.driver_phone = obj.driver.phone
+        return instance
 
 class VehiclePaginationResponse(BaseModel):
     total: int
