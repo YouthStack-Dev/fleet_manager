@@ -44,6 +44,7 @@ class VehicleUpdate(BaseModel):
 
 class VehicleResponse(VehicleBase):
     vehicle_id: int
+    vehicle_type_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
