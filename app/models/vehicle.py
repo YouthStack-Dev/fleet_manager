@@ -54,3 +54,8 @@ class Vehicle(Base):
     vehicle_type = relationship("app.models.vehicle_type.VehicleType", back_populates="vehicles")
     vendor = relationship("app.models.vendor.Vendor", back_populates="vehicles")
     driver = relationship("app.models.driver.Driver", back_populates="vehicles")
+
+    @property
+    def vehicle_type_name(self) -> str:
+        """Return the vehicle type name if available."""
+        return self.vehicle_type.name if self.vehicle_type else None

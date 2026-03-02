@@ -4,7 +4,7 @@ from app.utils.file_utils import file_size_validator
 from app.services.storage_service import storage_service
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, Form, Request
 from fastapi.responses import FileResponse, StreamingResponse, Response
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import Optional
 import os
 import mimetypes
@@ -198,6 +198,9 @@ async def create_vehicle(
         db_obj = vehicle_crud.create_with_vendor(db, vendor_id=vendor_id, obj_in=vehicle_in)
         db.commit()
         db.refresh(db_obj)
+        
+        # Explicitly load vehicle_type relationship
+        db.refresh(db_obj, ["vehicle_type"])
 
         # 🔍 Audit Log: Vehicle Creation
         try:
@@ -261,7 +264,7 @@ def read_vehicle(
         token_vendor_id = user_data.get("vendor_id")
         token_tenant_id = user_data.get("tenant_id")
 
-        query = db.query(Vehicle).filter(Vehicle.vehicle_id == vehicle_id)
+        query = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type)).filter(Vehicle.vehicle_id == vehicle_id)
 
         if user_type == "vendor":
             query = query.filter(Vehicle.vendor_id == token_vendor_id)
@@ -329,7 +332,7 @@ def read_vehicles(
         token_vendor_id = user_data.get("vendor_id")
         token_tenant_id = user_data.get("tenant_id")
 
-        query = db.query(Vehicle)
+        query = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type))
 
         if user_type == "vendor":
             vendor_id = token_vendor_id
@@ -446,7 +449,7 @@ async def update_vehicle(
         )
 
         # --- Fetch vehicle ---
-        db_vehicle = db.query(Vehicle).filter(Vehicle.vehicle_id == vehicle_id).first()
+        db_vehicle = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type)).filter(Vehicle.vehicle_id == vehicle_id).first()
         if not db_vehicle:
             logger.warning(f"[VehicleUpdate] Vehicle ID={vehicle_id} not found")
             raise HTTPException(
@@ -670,7 +673,7 @@ def update_vehicle_status(
         logger.info(f"[VehicleStatusUpdate] user_id={user_id}, vehicle_id={vehicle_id}, user_type={user_type}, set_active={is_active}")
 
         # --- Fetch vehicle ---
-        db_vehicle = db.query(Vehicle).filter(Vehicle.vehicle_id == vehicle_id).first()
+        db_vehicle = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type)).filter(Vehicle.vehicle_id == vehicle_id).first()
         if not db_vehicle:
             logger.warning(f"[VehicleStatusUpdate] Vehicle ID={vehicle_id} not found")
             raise HTTPException(

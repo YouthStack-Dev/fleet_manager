@@ -187,13 +187,23 @@ def get_bookings_by_ids(booking_ids: List[int], db: Session) -> List[Dict]:
     """
     Retrieve bookings by their IDs and convert to dictionary format.
     """
-    bookings = db.query(Booking).filter(Booking.booking_id.in_(booking_ids)).all()
+    from app.models.employee import Employee
+    
+    bookings_with_employee = (
+        db.query(Booking, Employee)
+        .outerjoin(Employee, Booking.employee_id == Employee.employee_id)
+        .filter(Booking.booking_id.in_(booking_ids))
+        .all()
+    )
+    
     return [
         {
             "booking_id": booking.booking_id,
             "tenant_id": booking.tenant_id,
             "employee_id": booking.employee_id,
             "employee_code": booking.employee_code,
+            "employee_name": employee.name if employee else None,
+            "gender": employee.gender.value if employee and employee.gender else None,
             "shift_id": booking.shift_id,
             "team_id": booking.team_id,
             "booking_date": booking.booking_date,
@@ -209,7 +219,7 @@ def get_bookings_by_ids(booking_ids: List[int], db: Session) -> List[Dict]:
             "created_at": booking.created_at,
             "updated_at": booking.updated_at
         }
-        for booking in bookings
+        for booking, employee in bookings_with_employee
     ]
 
 def calculate_route_estimations(bookings: List[Dict], shift_type: str = "OUT") -> RouteEstimations:

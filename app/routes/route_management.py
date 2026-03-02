@@ -404,6 +404,7 @@ def get_bookings_by_ids(booking_ids: List[int], db: Session) -> List[Dict]:
             "employee_id": booking.employee_id,
             "employee_code": booking.employee_code,
             "employee_name": employee.name if employee else None,
+            "gender": employee.gender.value if employee and employee.gender else None,
             "shift_id": booking.shift_id,
             "team_id": booking.team_id,
             "booking_date": booking.booking_date,
@@ -431,8 +432,16 @@ def get_booking_by_id(booking_id: int, db: Session) -> Optional[Dict]:
     """
     Retrieve a single booking by its ID and convert to dictionary format.
     """
-    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
-    if not booking:
+    from app.models.employee import Employee
+    
+    booking_with_employee = (
+        db.query(Booking, Employee)
+        .outerjoin(Employee, Booking.employee_id == Employee.employee_id)
+        .filter(Booking.booking_id == booking_id)
+        .first()
+    )
+    
+    if not booking_with_employee:
         logger.warning(f"[get_booking_by_id] No booking found with ID {booking_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
             detail=ResponseWrapper.error(
@@ -440,11 +449,13 @@ def get_booking_by_id(booking_id: int, db: Session) -> Optional[Dict]:
                 error_code="BOOKING_NOT_FOUND",
             )
         )
+    
+    booking, employee = booking_with_employee
 
     logger.debug(
         f"[get_booking_by_id] Booking fetched → "
         f"id={booking.booking_id}, tenant={booking.tenant_id}, shift={booking.shift_id}, date={booking.booking_date}, "
-        f"employee={booking.employee_code or booking.employee_id}, status={booking.status.name if booking.status else None}"
+        f"employee={employee.name if employee else booking.employee_code or booking.employee_id}, status={booking.status.name if booking.status else None}"
     )
 
     booking_dict = {
@@ -452,6 +463,8 @@ def get_booking_by_id(booking_id: int, db: Session) -> Optional[Dict]:
         "tenant_id": booking.tenant_id,
         "employee_id": booking.employee_id,
         "employee_code": booking.employee_code,
+        "employee_name": employee.name if employee else None,
+        "gender": employee.gender.value if employee and employee.gender else None,
         "shift_id": booking.shift_id,
         "team_id": booking.team_id,
         "booking_date": booking.booking_date,
