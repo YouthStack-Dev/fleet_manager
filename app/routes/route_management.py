@@ -113,26 +113,42 @@ async def send_assignment_notifications_background(
     driver_phone: str,
     vehicle_rc_number: str,
     route_id: int,
+    tenant_id: str = "",
+    triggered_by: str = "vehicle_assignment",
+    shift_id: Optional[int] = None,
+    booking_date=None,
 ):
     """
     Send notifications (Email, SMS, Push) to employees in the background.
-    This prevents blocking the main API response.
+    Saves a NotificationLog record with per-channel sent/failed counts.
     """
     from app.core.email_service import EmailService
     from app.services.unified_notification_service import UnifiedNotificationService
     from app.services.session_cache import SessionCache
     from app.services.sms_service import SMSService
     from app.database.session import SessionLocal
-    
+    from app.models.notification_log import NotificationLog
+
     db = SessionLocal()
-    
+
+    # Aggregate counters
+    email_sent_count = 0
+    email_failed_count = 0
+    sms_sent_count = 0
+    sms_failed_count = 0
+    push_sent_count = 0
+    push_failed_count = 0
+
+    # Per-booking detail list saved into the JSON column
+    details = []
+
     try:
         email_service = EmailService()
         push_service = UnifiedNotificationService(db, SessionCache())
         sms_service = SMSService()
-        
+
         logger.info(f"[BACKGROUND] Starting notification dispatch for {len(booking_data)} bookings")
-        
+
         for data in booking_data:
             employee_email = data.get("employee_email")
             employee_phone = data.get("employee_phone")
@@ -146,7 +162,7 @@ async def send_assignment_notifications_background(
             boarding_otp = data.get("boarding_otp")
             deboarding_otp = data.get("deboarding_otp")
             escort_otp = data.get("escort_otp")
-            
+
             otp_details = []
             if boarding_otp:
                 otp_details.append(f"Boarding OTP: {boarding_otp}")
@@ -154,9 +170,9 @@ async def send_assignment_notifications_background(
                 otp_details.append(f"Deboarding OTP: {deboarding_otp}")
             if escort_otp:
                 otp_details.append(f"Escort OTP: {escort_otp}")
-            
+
             otp_message = "\n".join(otp_details) if otp_details else "No OTP required"
-            
+
             subject = f"Driver Assigned - Route {route_code}"
             message_body = f"""
 Hello {employee_name},
@@ -179,7 +195,15 @@ Estimated Pickup: {estimated_pickup or 'TBD'}
 Thank you,
 Fleet Management Team
             """.strip()
-            
+
+            booking_detail = {
+                "booking_id": booking_id,
+                "employee_id": employee_id,
+                "email_status": None,
+                "sms_status": None,
+                "push_status": None,
+            }
+
             # 1. Send Email
             try:
                 if employee_email:
@@ -189,7 +213,7 @@ Fleet Management Team
                             <h2 style="color: #2c5aa0;">🚗 Driver Assigned</h2>
                             <p>Hello <strong>{employee_name}</strong>,</p>
                             <p>Your driver has been assigned for your <strong>{shift_type}</strong> shift on <strong>{booking_date}</strong>.</p>
-                            
+
                             <div style="background-color: #f0f8ff; padding: 15px; border-left: 4px solid #2c5aa0; margin: 20px 0;">
                                 <h3 style="margin-top: 0;">Route Details</h3>
                                 <ul style="list-style: none; padding-left: 0;">
@@ -200,7 +224,7 @@ Fleet Management Team
                                     <li>⏰ <strong>Estimated Pickup:</strong> {estimated_pickup or 'TBD'}</li>
                                 </ul>
                             </div>
-                            
+
                             <div style="background-color: #fff3cd; padding: 15px; border-left: 4px solid #ffc107; margin: 20px 0;">
                                 <h3 style="margin-top: 0;">🔐 Your OTP Codes</h3>
                                 <p style="font-size: 16px; line-height: 1.8;">
@@ -210,52 +234,68 @@ Fleet Management Team
                                     <em>Please share these OTPs with the driver at the designated times.</em>
                                 </p>
                             </div>
-                            
+
                             <p>Thank you,<br><strong>Fleet Management Team</strong></p>
                         </body>
                     </html>
                     """
-                    
-                    email_sent = await email_service.send_email(
+
+                    email_result = await email_service.send_email(
                         to_emails=[employee_email],
                         subject=subject,
                         html_content=email_html,
                         text_content=message_body
                     )
-                    
-                    if email_sent:
+
+                    if email_result:
+                        email_sent_count += 1
+                        booking_detail["email_status"] = "sent"
                         logger.info(f"[BACKGROUND] Email sent to {employee_email} for booking {booking_id}")
                     else:
+                        email_failed_count += 1
+                        booking_detail["email_status"] = "failed"
                         logger.warning(f"[BACKGROUND] Failed to send email to {employee_email}")
                 else:
+                    email_failed_count += 1
+                    booking_detail["email_status"] = "no_email"
                     logger.warning(f"[BACKGROUND] No email found for employee {employee_id}")
             except Exception as e:
+                email_failed_count += 1
+                booking_detail["email_status"] = f"error: {str(e)}"
                 logger.error(f"[BACKGROUND] Error sending email: {e}")
-            
+
             # 2. Send SMS
             try:
                 if employee_phone:
                     sms_message = f"Driver Assigned! Route: {route_code}, Driver: {driver_name} ({driver_phone}), Vehicle: {vehicle_rc_number}. "
-                    
+
                     if otp_details:
                         sms_message += f"OTPs: {' | '.join(otp_details)}. "
-                    
+
                     sms_message += f"Pickup: {estimated_pickup or 'TBD'}. Check email for details."
-                    
-                    sms_sent = sms_service.send_sms(
+
+                    sms_result = sms_service.send_sms(
                         to_phone=employee_phone,
                         message=sms_message
                     )
-                    
-                    if sms_sent:
+
+                    if sms_result:
+                        sms_sent_count += 1
+                        booking_detail["sms_status"] = "sent"
                         logger.info(f"[BACKGROUND] SMS sent to {employee_phone} for booking {booking_id}")
                     else:
+                        sms_failed_count += 1
+                        booking_detail["sms_status"] = "failed"
                         logger.warning(f"[BACKGROUND] Failed to send SMS to {employee_phone}")
                 else:
+                    sms_failed_count += 1
+                    booking_detail["sms_status"] = "no_phone"
                     logger.warning(f"[BACKGROUND] No phone found for employee {employee_id}")
             except Exception as e:
+                sms_failed_count += 1
+                booking_detail["sms_status"] = f"error: {str(e)}"
                 logger.error(f"[BACKGROUND] Error sending SMS: {e}")
-            
+
             # 3. Send Push Notification
             try:
                 push_result = push_service.send_to_user(
@@ -278,16 +318,54 @@ Fleet Management Team
                     },
                     priority="high"
                 )
-                
+
                 if push_result.get("success"):
+                    push_sent_count += 1
+                    booking_detail["push_status"] = "sent"
                     logger.info(f"[BACKGROUND] Push notification sent to employee {employee_id}")
                 else:
+                    push_failed_count += 1
+                    booking_detail["push_status"] = f"failed: {push_result.get('error', 'Unknown')}"
                     logger.warning(f"[BACKGROUND] Push notification failed: {push_result.get('error', 'Unknown')}")
             except Exception as e:
+                push_failed_count += 1
+                booking_detail["push_status"] = f"error: {str(e)}"
                 logger.error(f"[BACKGROUND] Error sending push notification: {e}")
-        
-        logger.info(f"[BACKGROUND] Notification dispatch completed for route {route_id}")
-        
+
+            details.append(booking_detail)
+
+        logger.info(
+            f"[BACKGROUND] Notification dispatch completed for route {route_id} | "
+            f"Email: {email_sent_count} sent / {email_failed_count} failed | "
+            f"SMS: {sms_sent_count} sent / {sms_failed_count} failed | "
+            f"Push: {push_sent_count} sent / {push_failed_count} failed"
+        )
+
+        # ---- Persist stats to notification_logs ----
+        try:
+            log_entry = NotificationLog(
+                tenant_id=tenant_id,
+                route_id=route_id,
+                route_code=route_code,
+                shift_id=shift_id,
+                booking_date=booking_date,
+                triggered_by=triggered_by,
+                total_employees=len(booking_data),
+                email_sent=email_sent_count,
+                email_failed=email_failed_count,
+                sms_sent=sms_sent_count,
+                sms_failed=sms_failed_count,
+                push_sent=push_sent_count,
+                push_failed=push_failed_count,
+                details=details,
+            )
+            db.add(log_entry)
+            db.commit()
+            logger.info(f"[BACKGROUND] NotificationLog saved (id={log_entry.id}) for route {route_id}")
+        except Exception as log_err:
+            logger.error(f"[BACKGROUND] Failed to save NotificationLog: {log_err}")
+            db.rollback()
+
     except Exception as e:
         logger.error(f"[BACKGROUND] Error in notification background task: {e}")
     finally:
@@ -1465,7 +1543,6 @@ async def assign_vendor_to_routes_bulk(
 @router.put("/assign-vehicle", status_code=status.HTTP_200_OK)
 async def assign_vehicle_to_route(
     request: Request,
-    background_tasks: BackgroundTasks,
     route_id: int = Query(..., description="Route ID"),
     vehicle_id: int = Query(..., description="Vehicle ID to assign"),
     db: Session = Depends(get_db),
@@ -1708,148 +1785,6 @@ async def assign_vehicle_to_route(
         except Exception as audit_error:
             logger.error(f"Failed to create audit log for vehicle/driver assignment: {str(audit_error)}")
 
-        # Generate OTPs and send notifications for all bookings in the route
-        from app.utils.otp_utils import generate_otp_codes
-        from app.utils import cache_manager
-        from app.models.employee import Employee
-        
-        cutoff = get_cutoff_with_cache(db, tenant_id)
-        
-        # Get tenant_config using cache-first helper
-        tenant_config = get_tenant_config_with_cache(db, tenant_id)
-        
-        # Check if escort is assigned to this route AND route requires escort
-        escort_enabled = route.assigned_escort_id
-        
-        # ✅ OPTIMIZATION: Fetch all route bookings with related data in one query using eager loading
-        route_bookings = (
-            db.query(RouteManagementBooking)
-            .join(Booking, Booking.booking_id == RouteManagementBooking.booking_id)
-            .join(Employee, Employee.employee_id == Booking.employee_id)
-            .filter(RouteManagementBooking.route_id == route.route_id)
-            .all()
-        )
-
-        if not route_bookings:
-            logger.info(f"[assign_vehicle_to_route] No bookings found for route {route_id}")
-            return ResponseWrapper.success(
-                data={
-                    "route_id": route.route_id,
-                    "assigned_vendor_id": route.assigned_vendor_id,
-                    "assigned_vehicle_id": route.assigned_vehicle_id,
-                    "assigned_driver_id": route.assigned_driver_id,
-                    "status": safe_get_enum_value(route, "status"),
-                },
-                message="Vehicle and driver assigned successfully. No bookings to notify.",
-            )
-
-        # ✅ OPTIMIZATION: Fetch all bookings and employees at once (batch query)
-        booking_ids = [rb.booking_id for rb in route_bookings]
-        bookings_dict = {b.booking_id: b for b in db.query(Booking).filter(Booking.booking_id.in_(booking_ids)).all()}
-        employee_ids = [bookings_dict[bid].employee_id for bid in booking_ids if bid in bookings_dict]
-        employees_dict = {e.employee_id: e for e in db.query(Employee).filter(Employee.employee_id.in_(employee_ids)).all()}
-
-        logger.info(f"[assign_vehicle_to_route] Starting OTP generation for route {route_id} with {len(route_bookings)} bookings")
-
-        # Prepare batch updates for OTPs
-        otp_updates = []
-        
-        for rb in route_bookings:
-            booking = bookings_dict.get(rb.booking_id)
-            if not booking:
-                logger.warning(f"[assign_vehicle_to_route] Booking {rb.booking_id} not found in batch")
-                continue
-                
-            # Recalculate OTP count and purposes at assignment time
-            shift = get_shift_with_cache(db, booking.tenant_id, booking.shift_id)
-            shift_log_type = safe_get_enum_value(shift, "log_type") if shift else "IN"
-            required_otp_count = get_required_otp_count(booking.booking_type, shift_log_type, tenant_config, escort_enabled)
-
-            # Generate OTPs based on required count
-            otp_codes = generate_otp_codes(required_otp_count)
-
-            # Determine which OTP fields to assign based on configuration
-            required_otps = []
-
-            # Check shift type and add required OTPs
-            if shift_log_type == "IN":  # Login shift
-                if tenant_config and tenant_config.login_boarding_otp:
-                    required_otps.append('boarding')
-                if tenant_config and tenant_config.login_deboarding_otp:
-                    required_otps.append('deboarding')
-            elif shift_log_type == "OUT":  # Logout shift
-                if tenant_config and tenant_config.logout_boarding_otp:
-                    required_otps.append('boarding')
-                if tenant_config and tenant_config.logout_deboarding_otp:
-                    required_otps.append('deboarding')
-
-            # Add escort if enabled
-            if escort_enabled:
-                required_otps.append('escort')
-
-            # Assign OTP codes to required fields in order
-            assignments = {}
-            for i, otp_type in enumerate(required_otps):
-                if i < len(otp_codes):
-                    assignments[otp_type] = otp_codes[i]
-                else:
-                    assignments[otp_type] = None
-
-            # Update booking OTPs
-            booking.boarding_otp = assignments.get('boarding')
-            booking.deboarding_otp = assignments.get('deboarding')
-            booking.escort_otp = assignments.get('escort')
-
-        # ✅ OPTIMIZATION: Commit all OTP updates at once
-        db.commit()
-
-        logger.info(f"[assign_vehicle_to_route] OTP generation completed for route {route_id}")
-
-        # ✅ OPTIMIZATION: Prepare notification data for background task
-        notification_data = []
-        
-        for rb in route_bookings:
-            booking = bookings_dict.get(rb.booking_id)
-            employee = employees_dict.get(booking.employee_id) if booking else None
-            
-            if not booking or not employee:
-                logger.warning(f"[assign_vehicle_to_route] Booking or employee not found for route booking {rb.route_booking_id}")
-                continue
-            
-            # Prepare shift data
-            shift = get_shift_with_cache(db, booking.tenant_id, booking.shift_id)
-            shift_time = get_shift_time(shift) if shift else None
-            shift_time_str = shift_time.strftime('%H:%M') if shift_time else 'N/A'
-            shift_type = get_shift_log_type(shift) if shift else 'IN'
-            
-            notification_data.append({
-                "employee_email": employee.email,
-                "employee_phone": employee.phone,
-                "employee_name": employee.name,
-                "employee_id": employee.employee_id,
-                "booking_id": booking.booking_id,
-                "shift_type": shift_type,
-                "shift_time": shift_time_str,
-                "booking_date": str(booking.booking_date),
-                "estimated_pickup": rb.estimated_pick_up_time,
-                "boarding_otp": booking.boarding_otp,
-                "deboarding_otp": booking.deboarding_otp,
-                "escort_otp": booking.escort_otp,
-            })
-        
-        # ✅ OPTIMIZATION: Add notification sending to background tasks
-        if notification_data:
-            background_tasks.add_task(
-                send_assignment_notifications_background,
-                booking_data=notification_data,
-                route_code=route.route_code,
-                driver_name=driver.name,
-                driver_phone=driver.phone,
-                vehicle_rc_number=vehicle.rc_number,
-                route_id=route.route_id,
-            )
-            logger.info(f"[assign_vehicle_to_route] {len(notification_data)} notifications queued for background processing")
-        
         logger.info(
             f"[assign_vehicle_to_route] Vehicle={vehicle_id} (Driver={driver.driver_id}) assigned to Route={route_id} (Tenant={tenant_id})"
         )
@@ -1870,6 +1805,791 @@ async def assign_vehicle_to_route(
     except Exception as e:
         db.rollback()
         logger.exception("[assign_vehicle_to_route] Unexpected error")
+        raise handle_db_error(e)
+
+
+@router.post("/{route_id}/dispatch", status_code=status.HTTP_200_OK)
+async def dispatch_otps_and_notifications(
+    route_id: int,
+    request: Request,
+    tenant_id: Optional[str] = Query(None, description="Tenant ID"),
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route.update"], check_tenant=True)),
+):
+    """
+    Generate OTPs for every booking on a route and send Email + SMS + Push
+    notifications to each employee. Runs synchronously so you get the full
+    per-employee delivery result immediately in the response.
+
+    The result is also persisted to notification_logs so failed deliveries can
+    be identified and followed up (manual resend via POST /{route_id}/resend-notifications).
+
+    Requirements:
+    - Route must have a vendor, vehicle, and driver assigned.
+    """
+    try:
+        from app.core.email_service import EmailService
+        from app.services.unified_notification_service import UnifiedNotificationService
+        from app.services.session_cache import SessionCache
+        from app.services.sms_service import SMSService
+        from app.utils.otp_utils import generate_otp_codes
+        from app.models.employee import Employee
+        from app.models.notification_log import NotificationLog
+
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        # ---- Tenant Resolution ----
+        if user_type == "employee":
+            tenant_id = token_tenant_id
+        elif user_type == "admin" and not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="tenant_id is required for admin users",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+        else:
+            tenant_id = tenant_id or token_tenant_id
+
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant context not available",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+
+        logger.info(f"[dispatch_otps_and_notifications] route_id={route_id}, tenant_id={tenant_id}, user={user_data.get('user_id')}")
+
+        # ---- Fetch Route ----
+        route = (
+            db.query(RouteManagement)
+            .filter(RouteManagement.route_id == route_id, RouteManagement.tenant_id == tenant_id)
+            .first()
+        )
+        if not route:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Route not found for this tenant",
+                    error_code="ROUTE_NOT_FOUND",
+                ),
+            )
+
+        # ---- Validate all assignments are in place ----
+        if not route.assigned_vendor_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Vendor must be assigned to the route before dispatching",
+                    error_code="VENDOR_NOT_ASSIGNED",
+                    details={"route_id": route_id},
+                ),
+            )
+        if not route.assigned_vehicle_id or not route.assigned_driver_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Both a vehicle and a driver must be assigned before dispatching",
+                    error_code="DRIVER_OR_VEHICLE_NOT_ASSIGNED",
+                    details={"route_id": route_id},
+                ),
+            )
+
+        # ---- Fetch Driver + Vehicle ----
+        driver = db.query(Driver).filter(Driver.driver_id == route.assigned_driver_id).first()
+        vehicle = db.query(Vehicle).filter(Vehicle.vehicle_id == route.assigned_vehicle_id).first()
+        if not driver:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Assigned driver not found",
+                    error_code="DRIVER_NOT_FOUND",
+                    details={"driver_id": route.assigned_driver_id},
+                ),
+            )
+        if not vehicle:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Assigned vehicle not found",
+                    error_code="VEHICLE_NOT_FOUND",
+                    details={"vehicle_id": route.assigned_vehicle_id},
+                ),
+            )
+
+        # ---- Fetch tenant config + escort flag ----
+        tenant_config = get_tenant_config_with_cache(db, tenant_id)
+        escort_enabled = route.assigned_escort_id
+
+        # ---- Fetch all route bookings ----
+        route_bookings = (
+            db.query(RouteManagementBooking)
+            .filter(RouteManagementBooking.route_id == route_id)
+            .all()
+        )
+        if not route_bookings:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="No bookings found for this route",
+                    error_code="NO_BOOKINGS_FOUND",
+                    details={"route_id": route_id},
+                ),
+            )
+
+        # ---- Batch-fetch bookings and employees ----
+        booking_ids = [rb.booking_id for rb in route_bookings]
+        bookings_dict = {
+            b.booking_id: b
+            for b in db.query(Booking).filter(Booking.booking_id.in_(booking_ids)).all()
+        }
+        employee_ids = [
+            bookings_dict[bid].employee_id
+            for bid in booking_ids
+            if bid in bookings_dict and bookings_dict[bid].employee_id
+        ]
+        employees_dict = {
+            e.employee_id: e
+            for e in db.query(Employee).filter(Employee.employee_id.in_(employee_ids)).all()
+        }
+
+        # ═══════════════════════════════════════════════════════════
+        # STEP 1: Generate OTPs for all bookings and commit
+        # ═══════════════════════════════════════════════════════════
+        logger.info(f"[dispatch] Generating OTPs for {len(route_bookings)} bookings on route {route_id}")
+        for rb in route_bookings:
+            booking = bookings_dict.get(rb.booking_id)
+            if not booking:
+                continue
+
+            shift = get_shift_with_cache(db, booking.tenant_id, booking.shift_id)
+            shift_log_type = safe_get_enum_value(shift, "log_type") if shift else "IN"
+            required_otp_count = get_required_otp_count(booking.booking_type, shift_log_type, tenant_config, escort_enabled)
+            otp_codes = generate_otp_codes(required_otp_count)
+
+            required_otps = []
+            if shift_log_type == "IN":
+                if tenant_config and tenant_config.login_boarding_otp:
+                    required_otps.append('boarding')
+                if tenant_config and tenant_config.login_deboarding_otp:
+                    required_otps.append('deboarding')
+            elif shift_log_type == "OUT":
+                if tenant_config and tenant_config.logout_boarding_otp:
+                    required_otps.append('boarding')
+                if tenant_config and tenant_config.logout_deboarding_otp:
+                    required_otps.append('deboarding')
+            if escort_enabled:
+                required_otps.append('escort')
+
+            assignments = {
+                otp_type: (otp_codes[i] if i < len(otp_codes) else None)
+                for i, otp_type in enumerate(required_otps)
+            }
+            booking.boarding_otp = assignments.get('boarding')
+            booking.deboarding_otp = assignments.get('deboarding')
+            booking.escort_otp = assignments.get('escort')
+
+        db.commit()
+        # Refresh so booking OTP fields are up-to-date
+        for bid in booking_ids:
+            if bid in bookings_dict:
+                db.refresh(bookings_dict[bid])
+        logger.info(f"[dispatch] OTPs committed for route {route_id}")
+
+        # ═══════════════════════════════════════════════════════════
+        # STEP 2: Send notifications synchronously, track per-employee
+        # ═══════════════════════════════════════════════════════════
+        email_service = EmailService()
+        push_service = UnifiedNotificationService(db, SessionCache())
+        sms_service = SMSService()
+
+        email_sent_count = email_failed_count = 0
+        sms_sent_count = sms_failed_count = 0
+        push_sent_count = push_failed_count = 0
+
+        employee_results = []   # returned in API response
+        details = []            # saved to notification_logs.details
+
+        for rb in route_bookings:
+            booking = bookings_dict.get(rb.booking_id)
+            if not booking:
+                employee_results.append({
+                    "booking_id": rb.booking_id,
+                    "employee_id": None,
+                    "employee_name": None,
+                    "email_status": None,
+                    "sms_status": None,
+                    "push_status": None,
+                    "otps_generated": False,
+                    "skipped_reason": "Booking not found",
+                })
+                continue
+
+            employee = employees_dict.get(booking.employee_id)
+            if not employee:
+                employee_results.append({
+                    "booking_id": booking.booking_id,
+                    "employee_id": booking.employee_id,
+                    "employee_name": None,
+                    "email_status": None,
+                    "sms_status": None,
+                    "push_status": None,
+                    "otps_generated": False,
+                    "skipped_reason": "Employee not found",
+                })
+                continue
+
+            shift = get_shift_with_cache(db, booking.tenant_id, booking.shift_id)
+            shift_time_obj = get_shift_time(shift) if shift else None
+            shift_time_str = shift_time_obj.strftime('%H:%M') if shift_time_obj else 'N/A'
+            shift_type_str = get_shift_log_type(shift) if shift else 'IN'
+
+            boarding_otp = booking.boarding_otp
+            deboarding_otp = booking.deboarding_otp
+            escort_otp = booking.escort_otp
+
+            otp_details = []
+            if boarding_otp:
+                otp_details.append(f"Boarding OTP: {boarding_otp}")
+            if deboarding_otp:
+                otp_details.append(f"Deboarding OTP: {deboarding_otp}")
+            if escort_otp:
+                otp_details.append(f"Escort OTP: {escort_otp}")
+            otp_message = "\n".join(otp_details) if otp_details else "No OTP required"
+
+            subject = f"Driver Assigned - Route {route.route_code}"
+            message_body = f"""Hello {employee.name},
+
+Your driver has been assigned for your {shift_type_str} shift on {booking.booking_date}.
+
+Route: {route.route_code} | Driver: {driver.name} ({driver.phone}) | Vehicle: {vehicle.rc_number}
+Shift Time: {shift_time_str} | Estimated Pickup: {rb.estimated_pick_up_time or 'TBD'}
+
+Your OTPs:
+{otp_message}
+
+Fleet Management Team"""
+
+            result_entry = {
+                "booking_id": booking.booking_id,
+                "employee_id": employee.employee_id,
+                "employee_name": employee.name,
+                "employee_email": employee.email,
+                "employee_phone": employee.phone,
+                "otps_generated": bool(otp_details),
+                "email_status": None,
+                "sms_status": None,
+                "push_status": None,
+            }
+
+            # -- Email --
+            try:
+                if employee.email:
+                    email_html = f"""
+                    <html><body style="font-family:Arial,sans-serif;">
+                    <h2 style="color:#2c5aa0;">&#x1F697; Driver Assigned</h2>
+                    <p>Hello <strong>{employee.name}</strong>,</p>
+                    <p>Your <strong>{shift_type_str}</strong> shift driver is assigned for <strong>{booking.booking_date}</strong>.</p>
+                    <div style="background:#f0f8ff;padding:15px;border-left:4px solid #2c5aa0;margin:20px 0;">
+                        <ul style="list-style:none;padding:0;">
+                        <li>&#x1F4CD; Route: {route.route_code}</li>
+                        <li>&#x1F550; Shift: {shift_time_str}</li>
+                        <li>&#x1F464; Driver: {driver.name} ({driver.phone})</li>
+                        <li>&#x1F699; Vehicle: {vehicle.rc_number}</li>
+                        <li>&#x23F0; Pickup: {rb.estimated_pick_up_time or 'TBD'}</li>
+                        </ul>
+                    </div>
+                    <div style="background:#fff3cd;padding:15px;border-left:4px solid #ffc107;margin:20px 0;">
+                        <h3>&#x1F510; OTP Codes</h3>
+                        <p>{'<br>'.join(otp_details) if otp_details else 'No OTP required'}</p>
+                    </div>
+                    <p>Fleet Management Team</p>
+                    </body></html>
+                    """
+                    sent = await email_service.send_email(
+                        to_emails=[employee.email],
+                        subject=subject,
+                        html_content=email_html,
+                        text_content=message_body,
+                    )
+                    if sent:
+                        email_sent_count += 1
+                        result_entry["email_status"] = "sent"
+                    else:
+                        email_failed_count += 1
+                        result_entry["email_status"] = "failed"
+                else:
+                    email_failed_count += 1
+                    result_entry["email_status"] = "no_email"
+            except Exception as exc:
+                email_failed_count += 1
+                result_entry["email_status"] = f"error: {exc}"
+                logger.error(f"[dispatch] Email error for booking {booking.booking_id}: {exc}")
+
+            # -- SMS --
+            try:
+                if employee.phone:
+                    sms_msg = (
+                        f"Driver Assigned! Route: {route.route_code}, Driver: {driver.name} ({driver.phone}), "
+                        f"Vehicle: {vehicle.rc_number}. "
+                        + (f"OTPs: {' | '.join(otp_details)}. " if otp_details else "")
+                        + f"Pickup: {rb.estimated_pick_up_time or 'TBD'}."
+                    )
+                    sent = sms_service.send_sms(to_phone=employee.phone, message=sms_msg)
+                    if sent:
+                        sms_sent_count += 1
+                        result_entry["sms_status"] = "sent"
+                    else:
+                        sms_failed_count += 1
+                        result_entry["sms_status"] = "failed"
+                else:
+                    sms_failed_count += 1
+                    result_entry["sms_status"] = "no_phone"
+            except Exception as exc:
+                sms_failed_count += 1
+                result_entry["sms_status"] = f"error: {exc}"
+                logger.error(f"[dispatch] SMS error for booking {booking.booking_id}: {exc}")
+
+            # -- Push --
+            try:
+                push_result = push_service.send_to_user(
+                    user_type="employee",
+                    user_id=employee.employee_id,
+                    title=subject,
+                    body=f"Driver {driver.name} assigned. Vehicle: {vehicle.rc_number}.",
+                    data={
+                        "type": "driver_assignment",
+                        "route_id": str(route_id),
+                        "route_code": route.route_code,
+                        "booking_id": str(booking.booking_id),
+                        "driver_name": driver.name,
+                        "driver_phone": driver.phone,
+                        "vehicle_number": vehicle.rc_number,
+                        "estimated_pickup": rb.estimated_pick_up_time or "",
+                        "boarding_otp": str(boarding_otp) if boarding_otp else "",
+                        "deboarding_otp": str(deboarding_otp) if deboarding_otp else "",
+                        "escort_otp": str(escort_otp) if escort_otp else "",
+                    },
+                    priority="high",
+                )
+                if push_result.get("success"):
+                    push_sent_count += 1
+                    result_entry["push_status"] = "sent"
+                else:
+                    push_failed_count += 1
+                    result_entry["push_status"] = f"failed: {push_result.get('error', 'Unknown')}"
+            except Exception as exc:
+                push_failed_count += 1
+                result_entry["push_status"] = f"error: {exc}"
+                logger.error(f"[dispatch] Push error for booking {booking.booking_id}: {exc}")
+
+            employee_results.append(result_entry)
+            details.append({
+                "booking_id": booking.booking_id,
+                "employee_id": employee.employee_id,
+                "email_status": result_entry["email_status"],
+                "sms_status": result_entry["sms_status"],
+                "push_status": result_entry["push_status"],
+            })
+
+        # ═══════════════════════════════════════════════════════════
+        # STEP 3: Persist dispatch stats to notification_logs
+        # ═══════════════════════════════════════════════════════════
+        try:
+            log_entry = NotificationLog(
+                tenant_id=tenant_id,
+                route_id=route_id,
+                route_code=route.route_code,
+                shift_id=route.shift_id,
+                booking_date=(
+                    bookings_dict[booking_ids[0]].booking_date
+                    if booking_ids and booking_ids[0] in bookings_dict
+                    else None
+                ),
+                triggered_by="dispatch",
+                total_employees=len(employee_results),
+                email_sent=email_sent_count,
+                email_failed=email_failed_count,
+                sms_sent=sms_sent_count,
+                sms_failed=sms_failed_count,
+                push_sent=push_sent_count,
+                push_failed=push_failed_count,
+                details=details,
+            )
+            db.add(log_entry)
+            db.commit()
+            log_id = log_entry.id
+            logger.info(f"[dispatch] NotificationLog id={log_id} saved for route {route_id}")
+        except Exception as log_err:
+            db.rollback()
+            log_id = None
+            logger.error(f"[dispatch] Failed to save NotificationLog: {log_err}")
+
+        logger.info(
+            f"[dispatch] route={route_id} | "
+            f"Email {email_sent_count}/{email_sent_count+email_failed_count} | "
+            f"SMS {sms_sent_count}/{sms_sent_count+sms_failed_count} | "
+            f"Push {push_sent_count}/{push_sent_count+push_failed_count}"
+        )
+
+        return ResponseWrapper.success(
+            data={
+                "route_id": route_id,
+                "route_code": route.route_code,
+                "log_id": log_id,
+                "summary": {
+                    "total_employees": len(employee_results),
+                    "email": {"sent": email_sent_count, "failed": email_failed_count},
+                    "sms": {"sent": sms_sent_count, "failed": sms_failed_count},
+                    "push": {"sent": push_sent_count, "failed": push_failed_count},
+                },
+                "employees": employee_results,
+            },
+            message=f"OTPs generated and notifications dispatched for route {route.route_code}",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.exception("[dispatch_otps_and_notifications] Unexpected error")
+        raise handle_db_error(e)
+
+
+@router.post("/{route_id}/resend-notifications", status_code=status.HTTP_200_OK)
+async def resend_route_notifications(
+    route_id: int,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    tenant_id: Optional[str] = Query(None, description="Tenant ID"),
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route.read"], check_tenant=True)),
+):
+    """
+    Resend all notifications (Email, SMS, Push) to every employee on a route.
+
+    Fetches the route's current vehicle, driver, and all booking+OTP data for the
+    given route_id and dispatches notifications in the background.
+
+    Requirements:
+    - Route must have a driver and vehicle assigned.
+    - Each booking must have at least one OTP already generated.
+    """
+    try:
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        # ---- Tenant Resolution ----
+        if user_type == "employee":
+            tenant_id = token_tenant_id
+        elif user_type == "admin" and not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="tenant_id is required for admin users",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+        else:
+            tenant_id = tenant_id or token_tenant_id
+
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant context not available",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+
+        logger.info(f"[resend_route_notifications] route_id={route_id}, tenant_id={tenant_id}, user={user_data.get('user_id')}")
+
+        # ---- Fetch Route ----
+        route = (
+            db.query(RouteManagement)
+            .filter(RouteManagement.route_id == route_id, RouteManagement.tenant_id == tenant_id)
+            .first()
+        )
+        if not route:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Route not found for this tenant",
+                    error_code="ROUTE_NOT_FOUND",
+                ),
+            )
+
+        # ---- Must have driver + vehicle assigned ----
+        if not route.assigned_driver_id or not route.assigned_vehicle_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Route must have both a vehicle and a driver assigned before sending notifications",
+                    error_code="DRIVER_OR_VEHICLE_NOT_ASSIGNED",
+                    details={"route_id": route_id},
+                ),
+            )
+
+        # ---- Fetch Driver ----
+        driver = db.query(Driver).filter(Driver.driver_id == route.assigned_driver_id).first()
+        if not driver:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Assigned driver not found",
+                    error_code="DRIVER_NOT_FOUND",
+                    details={"driver_id": route.assigned_driver_id},
+                ),
+            )
+
+        # ---- Fetch Vehicle ----
+        vehicle = db.query(Vehicle).filter(Vehicle.vehicle_id == route.assigned_vehicle_id).first()
+        if not vehicle:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Assigned vehicle not found",
+                    error_code="VEHICLE_NOT_FOUND",
+                    details={"vehicle_id": route.assigned_vehicle_id},
+                ),
+            )
+
+        # ---- Fetch all route bookings ----
+        from app.models.employee import Employee
+
+        route_bookings = (
+            db.query(RouteManagementBooking)
+            .filter(RouteManagementBooking.route_id == route_id)
+            .all()
+        )
+
+        if not route_bookings:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="No bookings found for this route",
+                    error_code="NO_BOOKINGS_FOUND",
+                    details={"route_id": route_id},
+                ),
+            )
+
+        # ---- Batch-fetch bookings and employees ----
+        booking_ids = [rb.booking_id for rb in route_bookings]
+        bookings_dict = {
+            b.booking_id: b
+            for b in db.query(Booking).filter(Booking.booking_id.in_(booking_ids)).all()
+        }
+        employee_ids = [
+            bookings_dict[bid].employee_id
+            for bid in booking_ids
+            if bid in bookings_dict and bookings_dict[bid].employee_id
+        ]
+        employees_dict = {
+            e.employee_id: e
+            for e in db.query(Employee).filter(Employee.employee_id.in_(employee_ids)).all()
+        }
+
+        # ---- Build notification payload ----
+        notification_data = []
+        skipped = []
+
+        for rb in route_bookings:
+            booking = bookings_dict.get(rb.booking_id)
+            if not booking:
+                logger.warning(f"[resend_route_notifications] Booking {rb.booking_id} not found, skipping")
+                skipped.append(rb.booking_id)
+                continue
+
+            employee = employees_dict.get(booking.employee_id)
+            if not employee:
+                logger.warning(f"[resend_route_notifications] Employee for booking {rb.booking_id} not found, skipping")
+                skipped.append(rb.booking_id)
+                continue
+
+            # Resolve shift info
+            shift = get_shift_with_cache(db, booking.tenant_id, booking.shift_id)
+            shift_time = get_shift_time(shift) if shift else None
+            shift_time_str = shift_time.strftime('%H:%M') if shift_time else 'N/A'
+            shift_type = get_shift_log_type(shift) if shift else 'IN'
+
+            notification_data.append({
+                "employee_email": employee.email,
+                "employee_phone": employee.phone,
+                "employee_name": employee.name,
+                "employee_id": employee.employee_id,
+                "booking_id": booking.booking_id,
+                "shift_type": shift_type,
+                "shift_time": shift_time_str,
+                "booking_date": str(booking.booking_date),
+                "estimated_pickup": rb.estimated_pick_up_time,
+                "boarding_otp": booking.boarding_otp,
+                "deboarding_otp": booking.deboarding_otp,
+                "escort_otp": booking.escort_otp,
+            })
+
+        if not notification_data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="No valid employees found to notify on this route",
+                    error_code="NO_VALID_EMPLOYEES",
+                    details={"route_id": route_id, "skipped_bookings": skipped},
+                ),
+            )
+
+        # ---- Dispatch notifications in background ----
+        background_tasks.add_task(
+            send_assignment_notifications_background,
+            booking_data=notification_data,
+            route_code=route.route_code,
+            driver_name=driver.name,
+            driver_phone=driver.phone,
+            vehicle_rc_number=vehicle.rc_number,
+            route_id=route.route_id,
+            tenant_id=tenant_id,
+            triggered_by="resend",
+            shift_id=route.shift_id,
+            booking_date=(
+                bookings_dict[booking_ids[0]].booking_date
+                if booking_ids and booking_ids[0] in bookings_dict
+                else None
+            ),
+        )
+
+        logger.info(
+            f"[resend_route_notifications] Queued {len(notification_data)} notifications for route {route_id}"
+        )
+
+        return ResponseWrapper.success(
+            data={
+                "route_id": route_id,
+                "route_code": route.route_code,
+                "notifications_queued": len(notification_data),
+                "skipped_bookings": skipped,
+            },
+            message=f"Notifications queued for {len(notification_data)} employee(s) on route {route.route_code}",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[resend_route_notifications] Unexpected error")
+        raise handle_db_error(e)
+
+
+
+
+@router.get("/notification-logs", status_code=status.HTTP_200_OK)
+async def get_notification_logs_by_date_shift(
+    booking_date: date = Query(..., description="Filter by booking date (YYYY-MM-DD)"),
+    shift_id: int = Query(..., description="Filter by shift ID"),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID"),
+    limit: int = Query(50, ge=1, le=200, description="Max records to return"),
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["route.read"], check_tenant=True)),
+):
+    """
+    Fetch notification dispatch logs filtered by booking_date and shift_id.
+
+    Returns every dispatch record (OTP + Email + SMS + Push) that was triggered
+    for routes running on the given date and shift, along with per-employee
+    delivery status details.
+    """
+    try:
+        from app.models.notification_log import NotificationLog
+
+        user_type = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+
+        # ---- Tenant Resolution ----
+        if user_type == "employee":
+            tenant_id = token_tenant_id
+        elif user_type == "admin" and not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="tenant_id is required for admin users",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+        else:
+            tenant_id = tenant_id or token_tenant_id
+
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant context not available",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+
+        logger.info(
+            f"[get_notification_logs_by_date_shift] tenant={tenant_id}, "
+            f"booking_date={booking_date}, shift_id={shift_id}"
+        )
+
+        logs = (
+            db.query(NotificationLog)
+            .filter(
+                NotificationLog.tenant_id == tenant_id,
+                NotificationLog.shift_id == shift_id,
+                NotificationLog.booking_date == booking_date,
+            )
+            .order_by(NotificationLog.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+        result = [
+            {
+                "id": log.id,
+                "route_id": log.route_id,
+                "route_code": log.route_code,
+                "shift_id": log.shift_id,
+                "booking_date": log.booking_date.isoformat() if log.booking_date else None,
+                "triggered_by": log.triggered_by,
+                "total_employees": log.total_employees,
+                "email": {"sent": log.email_sent, "failed": log.email_failed},
+                "sms": {"sent": log.sms_sent, "failed": log.sms_failed},
+                "push": {"sent": log.push_sent, "failed": log.push_failed},
+                "details": log.details,
+                "created_at": log.created_at.isoformat() if log.created_at else None,
+            }
+            for log in logs
+        ]
+
+        # Aggregate totals across all logs for this date+shift
+        total_email_sent = sum(r["email"]["sent"] for r in result)
+        total_email_failed = sum(r["email"]["failed"] for r in result)
+        total_sms_sent = sum(r["sms"]["sent"] for r in result)
+        total_sms_failed = sum(r["sms"]["failed"] for r in result)
+        total_push_sent = sum(r["push"]["sent"] for r in result)
+        total_push_failed = sum(r["push"]["failed"] for r in result)
+
+        return ResponseWrapper.success(
+            data={
+                "booking_date": booking_date.isoformat(),
+                "shift_id": shift_id,
+                "total_logs": len(result),
+                "aggregate": {
+                    "email": {"sent": total_email_sent, "failed": total_email_failed},
+                    "sms": {"sent": total_sms_sent, "failed": total_sms_failed},
+                    "push": {"sent": total_push_sent, "failed": total_push_failed},
+                },
+                "logs": result,
+            },
+            message=f"Notification logs for date {booking_date} / shift {shift_id}",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[get_notification_logs_by_date_shift] Unexpected error")
         raise handle_db_error(e)
 
 
