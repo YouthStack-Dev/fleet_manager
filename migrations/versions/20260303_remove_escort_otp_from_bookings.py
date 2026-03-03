@@ -18,7 +18,8 @@ depends_on = None
 
 
 def upgrade():
-    op.drop_column('bookings', 'escort_otp')
+    # Use IF EXISTS so this is safe on DBs where the column was already removed manually
+    op.execute('ALTER TABLE bookings DROP COLUMN IF EXISTS escort_otp')
 
 
 def downgrade():
