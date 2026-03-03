@@ -20,6 +20,7 @@ from app.routes.app_driver_router import router as app_driver_router
 from app.routes.vehicle_type_router import router as vehicle_type_router
 from app.routes.vehicle_router import router as vehicle_router
 from app.routes.escort_router import router as escort_router
+from app.routes.app_escort_router import router as app_escort_router
 
 # ── Scheduling ────────────────────────────────────────────────
 from app.routes.team_router import router as team_router

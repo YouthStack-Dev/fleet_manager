@@ -10,6 +10,7 @@ import datetime
 from app.crud.vendor_user import vendor_user_crud
 from app.models.admin import Admin
 from app.models.driver import Driver
+from app.models.escort import Escort
 from app.models.tenant import Tenant
 from fastapi import APIRouter, Depends, HTTPException, Header, status, Body, Query, BackgroundTasks
 
@@ -213,6 +214,20 @@ def refresh_permissions_from_db(db: Session, user_id: str, user_type: str, tenan
             
             logger.info(f"✅ Refreshed driver {user_id}: {len(roles)} roles, {len(all_permissions)} permissions")
             return {"roles": roles, "permissions": all_permissions}
+        
+        elif user_type == "escort":
+            escort = db.query(Escort).filter(Escort.escort_id == int(user_id)).first()
+            
+            if not escort or not escort.is_active:
+                logger.warning(f"Escort {user_id} not found or inactive during permission refresh")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=ResponseWrapper.error("User not found or inactive", "USER_INACTIVE")
+                )
+            
+            # Escorts have no IAM permission model
+            logger.info(f"✅ Refreshed escort {user_id}: active, no permission model")
+            return {"roles": [], "permissions": []}
         
         else:
             logger.error(f"Unknown user_type during permission refresh: {user_type}")
@@ -2321,6 +2336,32 @@ async def get_user_profile_formatted(
                 }
             }
 
+        elif user_type == "escort":
+            escort = db.query(Escort).filter(Escort.escort_id == int(user_id)).first()
+            if not escort:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message="Escort not found",
+                        error_code=status.HTTP_404_NOT_FOUND,
+                    ),
+                )
+
+            response_data = {
+                "user": {
+                    "id": str(escort.escort_id),
+                    "name": escort.name,
+                    "phone": escort.phone,
+                    "email": escort.email,
+                    "gender": escort.gender,
+                    "vendor_id": escort.vendor_id,
+                    "tenant_id": escort.tenant_id,
+                    "status": "ACTIVE" if escort.is_active else "INACTIVE",
+                    "createdAt": escort.created_at.isoformat() if escort.created_at else None,
+                    "updatedAt": escort.updated_at.isoformat() if escort.updated_at else None
+                }
+            }
+
         else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -2476,6 +2517,32 @@ async def get_current_user_profile(
                 },
                 "roles": roles,
                 "permissions": permissions,
+            }
+
+        elif user_type == "escort":
+            escort = db.query(Escort).filter(Escort.escort_id == int(user_id)).first()
+            if not escort:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message="Escort not found",
+                        error_code=status.HTTP_404_NOT_FOUND,
+                    ),
+                )
+
+            response_data = {
+                "user_type": "escort",
+                "user": {
+                    "escort_id": escort.escort_id,
+                    "name": escort.name,
+                    "phone": escort.phone,
+                    "email": escort.email,
+                    "gender": escort.gender,
+                    "vendor_id": escort.vendor_id,
+                    "tenant_id": escort.tenant_id,
+                    "is_active": escort.is_active,
+                    "is_available": escort.is_available,
+                },
             }
 
         else:
@@ -3139,3 +3206,278 @@ async def driver_refresh_token(
     except Exception as e:
         db.rollback()
         raise handle_http_error(e)
+
+
+# ===================================================
+# ESCORT APP AUTHENTICATION
+# Simple phone + password login — no device binding
+# Permissions are hardcoded (no IAM roles for escorts)
+# ===================================================
+
+@router.post("/escort/login")
+async def escort_login(
+    form_data: LoginRequest = Body(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Authenticate an escort via email or phone + password and return JWT tokens.
+
+    Request body:
+      - username  : escort's email address OR phone number
+      - password  : plain-text password (SHA-256 hashed before comparing)
+      - tenant_id : the tenant the escort belongs to
+
+    On success returns:
+      - access_token  : short-lived JWT for API calls
+      - refresh_token : long-lived token for renewing access
+      - token_type    : "bearer"
+      - user          : escort profile
+
+    Error codes:
+      - 401 INVALID_CREDENTIALS : wrong email/phone, tenant, or password
+      - 401 PASSWORD_NOT_SET     : escort exists but no password configured yet
+      - 403 ACCOUNT_INACTIVE     : escort account is deactivated
+    """
+    is_email = "@" in form_data.username
+    login_field = "email" if is_email else "phone"
+    logger.info(
+        f"Escort login attempt via {login_field}: {form_data.username} in tenant: {form_data.tenant_id}"
+    )
+
+    try:
+        escort = (
+            db.query(Escort)
+            .filter(
+                (Escort.email == form_data.username) if is_email
+                else (Escort.phone == form_data.username),
+                Escort.tenant_id == form_data.tenant_id,
+            )
+            .first()
+        )
+
+        if not escort:
+            logger.warning(
+                f"Escort login failed — not found: {login_field}={form_data.username} "
+                f"tenant={form_data.tenant_id}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error(
+                    message="Incorrect email/phone, tenant, or password",
+                    error_code="INVALID_CREDENTIALS",
+                ),
+            )
+
+        # Guard: account must be active
+        if not escort.is_active:
+            logger.warning(
+                f"Escort login failed — inactive account: escort_id={escort.escort_id}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Your account has been deactivated. Please contact your supervisor.",
+                    error_code="ACCOUNT_INACTIVE",
+                ),
+            )
+
+        # Guard: password must have been set by an admin
+        if not escort.password:
+            logger.warning(
+                f"Escort login failed — password not set for escort_id={escort.escort_id}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error(
+                    message=(
+                        "No password has been configured for your account. "
+                        "Please contact your supervisor or administrator."
+                    ),
+                    error_code="PASSWORD_NOT_SET",
+                ),
+            )
+
+        # Verify password (stored value is sha256(plain_text))
+        if not verify_password(hash_password(form_data.password), escort.password):
+            logger.warning(
+                f"Escort login failed — wrong password for escort_id={escort.escort_id}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ResponseWrapper.error(
+                    message="Incorrect email/phone, tenant, or password",
+                    error_code="INVALID_CREDENTIALS",
+                ),
+            )
+
+        logger.info(
+            f"Escort {escort.escort_id} authenticated — building token"
+        )
+
+        current_time = int(time.time())
+        expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
+        opaque_token = secrets.token_hex(16)
+
+        # No permission model used for escorts — token only carries identity
+        token_payload = {
+            "user_id": str(escort.escort_id),
+            "tenant_id": str(escort.tenant_id),
+            "vendor_id": str(escort.vendor_id),
+            "opaque_token": opaque_token,
+            "roles": [],
+            "permissions": [],
+            "user_type": "escort",
+            "iat": current_time,
+            "exp": expiry_time,
+        }
+
+        oauth_accessor = Oauth2AsAccessor()
+        ttl = expiry_time - current_time
+        escort_session_key = f"escort_session:{escort.escort_id}"
+        metadata_prefix = "opaque_token_metadata:"
+        basic_prefix = "opaque_token:"
+
+        try:
+            if oauth_accessor.use_redis:
+                redis_client = oauth_accessor.redis_manager.client
+
+                # Single-session enforcement: invalidate previous session
+                try:
+                    old_token = redis_client.get(escort_session_key)
+                    if old_token:
+                        if isinstance(old_token, bytes):
+                            old_token = old_token.decode()
+                        redis_client.delete(f"{metadata_prefix}{old_token}")
+                        redis_client.delete(f"{basic_prefix}{old_token}")
+                        redis_client.delete(old_token)
+                        logger.info(
+                            f"Invalidated previous session for escort {escort.escort_id}"
+                        )
+                except Exception as redis_err:
+                    logger.warning(
+                        f"Redis error while cleaning old session for escort "
+                        f"{escort.escort_id}: {redis_err}"
+                    )
+
+                stored = oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl)
+                try:
+                    redis_client.setex(escort_session_key, int(ttl), opaque_token)
+                except Exception as ex:
+                    logger.warning(
+                        f"Failed to set escort_session key in Redis for {escort.escort_id}: {ex}"
+                    )
+
+                if not stored:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=ResponseWrapper.error(
+                            "Failed to store authentication token", "TOKEN_STORE_FAILED"
+                        ),
+                    )
+            else:
+                # In-memory fallback
+                try:
+                    old_session_val = oauth_accessor.cache.get(escort_session_key)
+                    if old_session_val:
+                        old_token = (
+                            old_session_val[0]
+                            if isinstance(old_session_val, tuple)
+                            else old_session_val
+                        )
+                        try:
+                            meta_key = hashkey(f"{metadata_prefix}{old_token}")
+                            basic_key = hashkey(f"{basic_prefix}{old_token}")
+                            if meta_key in oauth_accessor.cache:
+                                del oauth_accessor.cache[meta_key]
+                            if basic_key in oauth_accessor.cache:
+                                del oauth_accessor.cache[basic_key]
+                            logger.info(
+                                f"Invalidated previous in-memory session for escort "
+                                f"{escort.escort_id}"
+                            )
+                        except Exception as ie:
+                            logger.warning(
+                                f"Error cleaning in-memory old token for escort "
+                                f"{escort.escort_id}: {ie}"
+                            )
+                except Exception as ex:
+                    logger.warning(
+                        f"In-memory session cleanup failed for escort {escort.escort_id}: {ex}"
+                    )
+
+                oauth_accessor.store_opaque_token(opaque_token, token_payload, ttl)
+                try:
+                    oauth_accessor.cache[escort_session_key] = (
+                        opaque_token,
+                        current_time + ttl,
+                    )
+                except Exception as ex:
+                    logger.warning(
+                        f"Failed to set in-memory escort_session pointer for {escort.escort_id}: {ex}"
+                    )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(
+                f"Unexpected token storage error for escort {escort.escort_id}: {e}",
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error(
+                    "Failed to complete login (token storage error)",
+                    "TOKEN_STORE_ERROR",
+                    {"error": str(e)},
+                ),
+            )
+
+        access_token = create_access_token(
+            user_id=str(escort.escort_id),
+            tenant_id=str(escort.tenant_id),
+            vendor_id=str(escort.vendor_id),
+            opaque_token=opaque_token,
+            user_type="escort",
+        )
+        refresh_token = create_refresh_token(
+            user_id=str(escort.escort_id),
+            user_type="escort",
+        )
+
+        logger.info(
+            f"🚀 Escort login successful: escort_id={escort.escort_id} "
+            f"{login_field}={form_data.username} tenant={escort.tenant_id}"
+        )
+
+        return ResponseWrapper.success(
+            data={
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "token_type": "bearer",
+                "user": {
+                    "escort_id": escort.escort_id,
+                    "name": escort.name,
+                    "phone": escort.phone,
+                    "email": escort.email,
+                    "gender": escort.gender,
+                    "vendor_id": escort.vendor_id,
+                    "tenant_id": escort.tenant_id,
+                    "is_active": escort.is_active,
+                    "is_available": escort.is_available,
+                },
+            },
+            message="Escort login successful",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Escort login failed with unexpected error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message="Login failed due to server error",
+                error_code="SERVER_ERROR",
+                details={"error": str(e)},
+            ),
+        )

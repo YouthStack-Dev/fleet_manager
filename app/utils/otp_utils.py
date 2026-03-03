@@ -31,11 +31,9 @@ def get_required_otp_count(booking_type: str, shift_log_type: str, tenant_config
     else:
         base_count = 0  # default fallback
 
-    # If escort is assigned, add escort OTP
-    if escort_enabled:
-        return base_count + 1
-    else:
-        return base_count
+    # Escort OTP is now generated once at route level and sent directly to the escort.
+    # Per-booking escort OTP generation is no longer used.
+    return base_count
 
 
 

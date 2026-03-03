@@ -39,7 +39,6 @@ class Booking(Base):
     team_id = Column(Integer, ForeignKey("teams.team_id", ondelete="SET NULL"), nullable=True)  
     boarding_otp = Column(Integer, nullable=True)  # OTP for boarding verification
     deboarding_otp = Column(Integer, nullable=True)  # OTP for deboarding verification
-    escort_otp = Column(Integer, nullable=True)  # OTP for escort verification
 
     # Booking details
     booking_date = Column(Date, nullable=False)

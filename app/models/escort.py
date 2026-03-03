@@ -23,6 +23,9 @@ class Escort(Base):
     # Gender for safety matching (optional)
     gender = Column(String(10), nullable=True)
 
+    # App login (SHA-256 hex hash, nullable for existing records; set via admin panel or first-login flow)
+    password = Column(String(64), nullable=True)
+
     # Audit fields
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from app.models.escort import Escort
 from app.schemas.escort import EscortCreate, EscortUpdate
 from typing import List, Optional
+from common_utils.auth.utils import hash_password
 
 
 def get_escorts(db: Session, tenant_id: str, skip: int = 0, limit: int = 100) -> List[Escort]:
@@ -23,6 +24,8 @@ def get_escort_by_phone(db: Session, phone: str, tenant_id: str) -> Optional[Esc
 
 
 def create_escort(db: Session, escort: EscortCreate, tenant_id: str) -> Escort:
+    # Use the supplied password or fall back to the phone number as the default
+    raw_password = escort.password if escort.password else escort.phone
     db_escort = Escort(
         tenant_id=tenant_id,
         vendor_id=escort.vendor_id,
@@ -33,6 +36,7 @@ def create_escort(db: Session, escort: EscortCreate, tenant_id: str) -> Escort:
         gender=escort.gender,
         is_active=escort.is_active,
         is_available=escort.is_available,
+        password=hash_password(raw_password),
     )
     db.add(db_escort)
     db.commit()
