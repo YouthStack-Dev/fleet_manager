@@ -16,7 +16,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = '20260303_escort_otp'
-down_revision = '20260302_notif_logs'
+down_revision = '20260302c_route_mgmt_tables'
 branch_labels = None
 depends_on = None
 
