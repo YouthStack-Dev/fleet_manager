@@ -15,6 +15,9 @@ class EscortBase(BaseModel):
 
 
 class EscortCreate(EscortBase):
+    # Optional — if omitted the escort's phone number is used as the default password
+    password: Optional[str] = None
+
     @field_validator('phone')
     def validate_phone(cls, v):
         if not v or len(v) < 10:
@@ -26,6 +29,11 @@ class EscortCreate(EscortBase):
         if v and v.upper() not in ['MALE', 'FEMALE', 'OTHER']:
             raise ValueError('Gender must be MALE, FEMALE, or OTHER')
         return v.upper() if v else v
+
+
+class EscortSetPassword(BaseModel):
+    """Body for the admin set-password endpoint."""
+    new_password: str
 
 
 class EscortUpdate(BaseModel):

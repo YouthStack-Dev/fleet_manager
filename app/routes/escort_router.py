@@ -6,12 +6,13 @@ from datetime import datetime
 from app.database.session import get_db
 from app.models.escort import Escort
 from app.models.vendor import Vendor
-from app.schemas.escort import EscortCreate, EscortUpdate, EscortResponse
+from app.schemas.escort import EscortCreate, EscortUpdate, EscortResponse, EscortSetPassword
 from app.crud.escort import (
     get_escorts, get_escort, create_escort, update_escort,
     delete_escort, get_available_escorts, get_escort_by_phone
 )
 from common_utils.auth.permission_checker import PermissionChecker
+from common_utils.auth.utils import hash_password
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from app.utils.audit_helper import log_audit
 from sqlalchemy.exc import SQLAlchemyError
@@ -349,6 +350,64 @@ def delete_escort_endpoint(
         raise handle_db_error(e)
     except Exception as e:
         logger.exception("Unexpected error occurred while deleting escort")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ResponseWrapper.error(
+                message="Internal server error",
+                error_code="INTERNAL_ERROR",
+            ),
+        )
+
+
+@router.post("/{escort_id}/set-password", status_code=status.HTTP_200_OK)
+def set_escort_password(
+    escort_id: int,
+    body: EscortSetPassword,
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["escort.update"], check_tenant=True)),
+):
+    """
+    Set or reset the password for an escort (admin only).
+    The new_password is hashed before storage.
+    """
+    try:
+        tenant_id = user_data.get("tenant_id")
+
+        escort = get_escort(db, escort_id, tenant_id)
+        if not escort:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message="Escort not found",
+                    error_code="ESCORT_NOT_FOUND",
+                ),
+            )
+
+        escort.password = hash_password(body.new_password)
+        db.commit()
+
+        try:
+            log_audit(
+                db=db,
+                tenant_id=tenant_id,
+                module="escort",
+                action="SET_PASSWORD",
+                user_data=user_data,
+                description=f"Password updated for escort '{escort.name}' (ID: {escort_id})",
+            )
+        except Exception as audit_error:
+            logger.error(f"Audit log failed for set-password: {audit_error}")
+
+        logger.info(f"Password updated for escort {escort_id}")
+        return ResponseWrapper.success(message="Password updated successfully")
+
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        logger.exception("Database error while setting escort password")
+        raise handle_db_error(e)
+    except Exception as e:
+        logger.exception("Unexpected error while setting escort password")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=ResponseWrapper.error(

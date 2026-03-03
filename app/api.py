@@ -17,7 +17,7 @@ from app.routes import (
     # Employees & drivers
     employee_router, driver_router, app_employee_router, app_driver_router,
     # Fleet assets
-    vehicle_type_router, vehicle_router, escort_router,
+    vehicle_type_router, vehicle_router, escort_router, app_escort_router,
     # Scheduling
     team_router, shift_router, weekoff_config_router, cutoff_router,
     # Bookings & routing
@@ -60,6 +60,7 @@ api_router.include_router(employee_router,           prefix=V1)
 api_router.include_router(driver_router,             prefix=V1)
 api_router.include_router(app_employee_router,       prefix=V1)
 api_router.include_router(app_driver_router,         prefix=V1)
+api_router.include_router(app_escort_router,         prefix=V1)
 
 # Fleet assets
 api_router.include_router(vehicle_type_router,       prefix=V1)
