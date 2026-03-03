@@ -652,6 +652,257 @@ async def get_driver_trips(
         logger.exception("[driver.trips] Unexpected error")
         return handle_db_error(e)
 
+@router.get("/history/report", status_code=status.HTTP_200_OK)
+async def driver_history_report(
+    start_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: date = Query(..., description="End date (YYYY-MM-DD)"),
+    format: str = Query("json", pattern="^(json|excel)$", description="Response format: json or excel"),
+    db: Session = Depends(get_db),
+    ctx=Depends(DriverAuth),
+):
+    """
+    Driver trip history report for a date range.
+
+    Returns every booking the driver handled between start_date and end_date,
+    with route, timing, and distance details.
+
+    Use `format=json` for in-app view, `format=excel` to download an XLSX file.
+
+    Response fields per booking row:
+    - route_id, route_code, route_status
+    - booking_id, booking_date, booking_status
+    - employee_name, employee_code
+    - estimated_pickup_time, actual_pickup_time
+    - estimated_drop_time, actual_drop_time
+    - estimated_distance_km, actual_distance_km
+    - estimated_total_distance_km (route level)
+    - actual_total_distance_km (route level)
+    """
+    import io
+    try:
+        tenant_id = ctx["tenant_id"]
+        driver_id = ctx["driver_id"]
+
+        if start_date > end_date:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="start_date must be on or before end_date",
+                    error_code="INVALID_DATE_RANGE",
+                ),
+            )
+
+        logger.info(
+            f"[driver.history_report] driver={driver_id}, tenant={tenant_id}, "
+            f"{start_date} → {end_date}, format={format}"
+        )
+
+        # ── Single optimised query: join Route ▸ RMBooking ▸ Booking ▸ Employee ─
+        rows = (
+            db.query(
+                RouteManagement,
+                RouteManagementBooking,
+                Booking,
+                Employee,
+            )
+            .join(RouteManagementBooking, RouteManagementBooking.route_id == RouteManagement.route_id)
+            .join(Booking, Booking.booking_id == RouteManagementBooking.booking_id)
+            .outerjoin(Employee, Employee.employee_id == Booking.employee_id)
+            .filter(
+                RouteManagement.tenant_id == tenant_id,
+                RouteManagement.assigned_driver_id == driver_id,
+                RouteManagement.status == RouteManagementStatusEnum.COMPLETED,
+                Booking.booking_date >= start_date,
+                Booking.booking_date <= end_date,
+            )
+            .order_by(Booking.booking_date.asc(), RouteManagementBooking.order_id.asc())
+            .all()
+        )
+
+        # ── Build flat record list ───────────────────────────────────────────────
+        records = []
+        for route, rb, booking, employee in rows:
+            records.append({
+                "route_id": route.route_id,
+                "route_code": route.route_code or "",
+                "route_status": route.status.value if route.status else "",
+                "estimated_total_distance_km": route.estimated_total_distance,
+                "actual_total_distance_km": route.actual_total_distance,
+                "booking_id": booking.booking_id,
+                "booking_date": booking.booking_date.isoformat(),
+                "booking_status": booking.status.value if booking.status else "",
+                "booking_type": booking.booking_type.value if booking.booking_type else "",
+                "order_in_route": rb.order_id,
+                "employee_id": booking.employee_id,
+                "employee_name": getattr(employee, "name", None),
+                "employee_code": getattr(employee, "employee_code", None),
+                "pickup_location": booking.pickup_location,
+                "drop_location": booking.drop_location,
+                "estimated_pickup_time": rb.estimated_pick_up_time,
+                "actual_pickup_time": rb.actual_pick_up_time,
+                "estimated_drop_time": rb.estimated_drop_time,
+                "actual_drop_time": rb.actual_drop_time,
+                "estimated_distance_km": rb.estimated_distance,
+                "actual_distance_km": rb.actual_distance,
+            })
+
+        # ── Summary counts ───────────────────────────────────────────────────────
+        total_bookings = len(records)
+        completed = sum(1 for r in records if r["booking_status"] == "Completed")
+        no_show = sum(1 for r in records if r["booking_status"] == "No-Show")
+        cancelled = sum(1 for r in records if r["booking_status"] == "Cancelled")
+        total_actual_km = sum(
+            r["actual_distance_km"] or 0 for r in records
+        )
+        unique_routes = len(set(r["route_id"] for r in records))
+
+        summary = {
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "total_routes": unique_routes,
+            "total_bookings": total_bookings,
+            "completed": completed,
+            "no_show": no_show,
+            "cancelled": cancelled,
+            "total_actual_km": round(total_actual_km, 2),
+        }
+
+        # ── JSON response ────────────────────────────────────────────────────────
+        if format == "json":
+            return ResponseWrapper.success(
+                data={"summary": summary, "bookings": records},
+                message=f"Driver history report: {start_date} to {end_date}",
+            )
+
+        # ── Excel response ───────────────────────────────────────────────────────
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+            from openpyxl.utils import get_column_letter
+            from fastapi.responses import StreamingResponse
+        except ImportError:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ResponseWrapper.error(
+                    message="openpyxl is required for Excel export",
+                    error_code="MISSING_DEPENDENCY",
+                ),
+            )
+
+        wb = Workbook()
+
+        # ── Sheet 1: Summary ─────────────────────────────────────────────────────
+        ws_sum = wb.active
+        ws_sum.title = "Summary"
+
+        header_fill = PatternFill("solid", fgColor="2C5AA0")
+        header_font = Font(bold=True, color="FFFFFF", size=11)
+        label_font = Font(bold=True, size=10)
+        thin = Side(style="thin", color="CCCCCC")
+        cell_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        ws_sum.append(["Driver History Report"])
+        ws_sum["A1"].font = Font(bold=True, size=14, color="2C5AA0")
+        ws_sum.append([f"Period: {start_date}  →  {end_date}"])
+        ws_sum.append([f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"])
+        ws_sum.append([])
+
+        for label, value in [
+            ("Total Routes", summary["total_routes"]),
+            ("Total Bookings", summary["total_bookings"]),
+            ("Completed", summary["completed"]),
+            ("No-Show", summary["no_show"]),
+            ("Cancelled", summary["cancelled"]),
+            ("Total Actual KM", summary["total_actual_km"]),
+        ]:
+            row = ws_sum.append([label, value])
+            # style label cell
+            cell_a = ws_sum.cell(ws_sum.max_row, 1)
+            cell_a.font = label_font
+            cell_a.border = cell_border
+            ws_sum.cell(ws_sum.max_row, 2).border = cell_border
+
+        ws_sum.column_dimensions["A"].width = 22
+        ws_sum.column_dimensions["B"].width = 18
+
+        # ── Sheet 2: Booking Detail ───────────────────────────────────────────────
+        ws = wb.create_sheet("Booking Detail")
+
+        columns = [
+            ("Route ID",                    "route_id"),
+            ("Route Code",                  "route_code"),
+            ("Route Status",                "route_status"),
+            ("Booking ID",                  "booking_id"),
+            ("Booking Date",                "booking_date"),
+            ("Booking Status",              "booking_status"),
+            ("Booking Type",                "booking_type"),
+            ("Order in Route",              "order_in_route"),
+            ("Employee ID",                 "employee_id"),
+            ("Employee Name",               "employee_name"),
+            ("Employee Code",               "employee_code"),
+            ("Pickup Location",             "pickup_location"),
+            ("Drop Location",               "drop_location"),
+            ("Est. Pickup Time",            "estimated_pickup_time"),
+            ("Actual Pickup Time",          "actual_pickup_time"),
+            ("Est. Drop Time",              "estimated_drop_time"),
+            ("Actual Drop Time",            "actual_drop_time"),
+            ("Est. Distance (km)",          "estimated_distance_km"),
+            ("Actual Distance (km)",        "actual_distance_km"),
+            ("Route Est. Total Dist (km)",  "estimated_total_distance_km"),
+            ("Route Act. Total Dist (km)",  "actual_total_distance_km"),
+        ]
+
+        # Header row
+        for col_idx, (header, _) in enumerate(columns, 1):
+            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", wrap_text=True)
+            cell.border = cell_border
+
+        # Data rows
+        alt_fill = PatternFill("solid", fgColor="F0F4FF")
+        for row_idx, record in enumerate(records, 2):
+            fill = alt_fill if row_idx % 2 == 0 else None
+            for col_idx, (_, key) in enumerate(columns, 1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=record.get(key))
+                cell.alignment = Alignment(horizontal="center")
+                cell.border = cell_border
+                if fill:
+                    cell.fill = fill
+
+        # Auto-width columns
+        for col_idx, (header, _) in enumerate(columns, 1):
+            col_letter = get_column_letter(col_idx)
+            max_len = len(header)
+            for row_idx in range(2, len(records) + 2):
+                val = ws.cell(row=row_idx, column=col_idx).value
+                if val is not None:
+                    max_len = max(max_len, len(str(val)))
+            ws.column_dimensions[col_letter].width = min(max_len + 4, 40)
+
+        ws.freeze_panes = "A2"
+
+        # Write to in-memory buffer
+        buffer = io.BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+
+        filename = f"driver_{driver_id}_report_{start_date}_to_{end_date}.xlsx"
+        from fastapi.responses import StreamingResponse as SR
+        return SR(
+            content=buffer,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[driver.history_report] Unexpected error")
+        raise handle_db_error(e)
+
+
 @router.post("/trip/start", status_code=status.HTTP_200_OK)
 async def start_trip(
     route_id: int,
