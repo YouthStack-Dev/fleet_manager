@@ -161,15 +161,11 @@ async def send_assignment_notifications_background(
             estimated_pickup = data.get("estimated_pickup")
             boarding_otp = data.get("boarding_otp")
             deboarding_otp = data.get("deboarding_otp")
-            escort_otp = data.get("escort_otp")
-
             otp_details = []
             if boarding_otp:
                 otp_details.append(f"Boarding OTP: {boarding_otp}")
             if deboarding_otp:
                 otp_details.append(f"Deboarding OTP: {deboarding_otp}")
-            if escort_otp:
-                otp_details.append(f"Escort OTP: {escort_otp}")
 
             otp_message = "\n".join(otp_details) if otp_details else "No OTP required"
 
@@ -314,7 +310,6 @@ Fleet Management Team
                         "estimated_pickup": estimated_pickup or "",
                         "boarding_otp": str(boarding_otp) if boarding_otp else "",
                         "deboarding_otp": str(deboarding_otp) if deboarding_otp else "",
-                        "escort_otp": str(escort_otp) if escort_otp else "",
                     },
                     priority="high"
                 )
@@ -1968,7 +1963,8 @@ async def dispatch_otps_and_notifications(
 
             shift = get_shift_with_cache(db, booking.tenant_id, booking.shift_id)
             shift_log_type = safe_get_enum_value(shift, "log_type") if shift else "IN"
-            required_otp_count = get_required_otp_count(booking.booking_type, shift_log_type, tenant_config, escort_enabled)
+            # Escort OTP is now a single route-level OTP; exclude from per-booking count
+            required_otp_count = get_required_otp_count(booking.booking_type, shift_log_type, tenant_config)
             otp_codes = generate_otp_codes(required_otp_count)
 
             required_otps = []
@@ -1982,8 +1978,6 @@ async def dispatch_otps_and_notifications(
                     required_otps.append('boarding')
                 if tenant_config and tenant_config.logout_deboarding_otp:
                     required_otps.append('deboarding')
-            if escort_enabled:
-                required_otps.append('escort')
 
             assignments = {
                 otp_type: (otp_codes[i] if i < len(otp_codes) else None)
@@ -1991,7 +1985,6 @@ async def dispatch_otps_and_notifications(
             }
             booking.boarding_otp = assignments.get('boarding')
             booking.deboarding_otp = assignments.get('deboarding')
-            booking.escort_otp = assignments.get('escort')
 
         db.commit()
         # Refresh so booking OTP fields are up-to-date
@@ -1999,6 +1992,42 @@ async def dispatch_otps_and_notifications(
             if bid in bookings_dict:
                 db.refresh(bookings_dict[bid])
         logger.info(f"[dispatch] OTPs committed for route {route_id}")
+
+        # ═══════════════════════════════════════════════════════════
+        # STEP 1b: Generate route-level escort OTP; send SMS to escort
+        # ═══════════════════════════════════════════════════════════
+        escort_otp_result = {"generated": False, "escort_id": None, "sms_status": None}
+        if escort_enabled:
+            import random as _random
+            route.escort_otp = _random.randint(1000, 9999)
+            route.escort_boarded = False
+            db.add(route)
+            db.commit()
+            db.refresh(route)
+
+            escort_otp_result["generated"] = True
+            escort_otp_result["escort_id"] = route.assigned_escort_id
+
+            escort_obj = db.query(Escort).filter(Escort.escort_id == route.assigned_escort_id).first()
+            if escort_obj and escort_obj.phone:
+                try:
+                    _sms = SMSService()
+                    _sms.send_sms(
+                        to_phone=escort_obj.phone,
+                        message=(
+                            f"You are assigned as escort for Route {route.route_code}. "
+                            f"Your Escort OTP is: {route.escort_otp}. "
+                            f"When the driver arrives, tell them this OTP so they can verify you are on board."
+                        ),
+                    )
+                    escort_otp_result["sms_status"] = "sent"
+                    logger.info(f"[dispatch] Escort OTP SMS sent to escort {route.assigned_escort_id}")
+                except Exception as _e:
+                    escort_otp_result["sms_status"] = f"error: {_e}"
+                    logger.error(f"[dispatch] Escort OTP SMS error: {_e}")
+            else:
+                escort_otp_result["sms_status"] = "no_phone"
+                logger.warning(f"[dispatch] Escort {route.assigned_escort_id} has no phone for OTP SMS")
 
         # ═══════════════════════════════════════════════════════════
         # STEP 2: Send notifications synchronously, track per-employee
@@ -2050,15 +2079,12 @@ async def dispatch_otps_and_notifications(
 
             boarding_otp = booking.boarding_otp
             deboarding_otp = booking.deboarding_otp
-            escort_otp = booking.escort_otp
 
             otp_details = []
             if boarding_otp:
                 otp_details.append(f"Boarding OTP: {boarding_otp}")
             if deboarding_otp:
                 otp_details.append(f"Deboarding OTP: {deboarding_otp}")
-            if escort_otp:
-                otp_details.append(f"Escort OTP: {escort_otp}")
             otp_message = "\n".join(otp_details) if otp_details else "No OTP required"
 
             subject = f"Driver Assigned - Route {route.route_code}"
@@ -2172,7 +2198,6 @@ Fleet Management Team"""
                         "estimated_pickup": rb.estimated_pick_up_time or "",
                         "boarding_otp": str(boarding_otp) if boarding_otp else "",
                         "deboarding_otp": str(deboarding_otp) if deboarding_otp else "",
-                        "escort_otp": str(escort_otp) if escort_otp else "",
                     },
                     priority="high",
                 )
@@ -2241,6 +2266,7 @@ Fleet Management Team"""
                 "route_id": route_id,
                 "route_code": route.route_code,
                 "log_id": log_id,
+                "escort": escort_otp_result,
                 "summary": {
                     "total_employees": len(employee_results),
                     "email": {"sent": email_sent_count, "failed": email_failed_count},
@@ -2428,7 +2454,6 @@ async def resend_route_notifications(
                 "estimated_pickup": rb.estimated_pick_up_time,
                 "boarding_otp": booking.boarding_otp,
                 "deboarding_otp": booking.deboarding_otp,
-                "escort_otp": booking.escort_otp,
             })
 
         if not notification_data:
@@ -4405,14 +4430,13 @@ async def bulk_delete_routes(
                     Booking.status: BookingStatusEnum.REQUEST,
                     Booking.boarding_otp: None,
                     Booking.deboarding_otp: None,
-                    Booking.escort_otp: None,
                     Booking.updated_at: func.now(),
                     Booking.reason: "Route deleted - reverted to request",
                 },
                 synchronize_session=False,
             )
             logger.info(f"✅ Reverted {reverted_count} booking(s) to REQUEST status")
-            logger.info(f"   Reset boarding_otp, deboarding_otp, escort_otp to NULL")
+            logger.info(f"   Reset boarding_otp, deboarding_otp to NULL")
         else:
             logger.info("ℹ️  No bookings to revert")
 
@@ -4602,7 +4626,6 @@ async def delete_route(
                     Booking.status: BookingStatusEnum.REQUEST,
                     Booking.boarding_otp: None,
                     Booking.deboarding_otp: None,
-                    Booking.escort_otp: None,
                     Booking.updated_at: func.now(),
                     Booking.reason: "Route deleted - reverted to request",
                 },

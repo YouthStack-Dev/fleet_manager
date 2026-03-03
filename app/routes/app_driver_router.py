@@ -426,6 +426,105 @@ async def start_duty(
         return handle_db_error(e)
 
 
+@router.post("/escort/board", status_code=status.HTTP_200_OK)
+async def board_escort(
+    route_id: int,
+    otp: int = Query(..., description="Escort OTP told verbally by the escort to the driver"),
+    db: Session = Depends(get_db),
+    ctx=Depends(DriverAuth),
+):
+    """
+    Verify escort OTP and mark the escort as boarded.
+
+    Flow:
+    1. Driver starts duty: POST /driver/duty/start
+    2. Driver arrives at escort pickup point; escort tells their OTP verbally.
+    3. Driver enters that OTP here: POST /driver/escort/board
+    4. After escort is confirmed on board, driver can start picking up employees.
+
+    The escort OTP is generated during route dispatch and sent to the escort via SMS.
+    """
+    try:
+        tenant_id = ctx["tenant_id"]
+        driver_id = ctx["driver_id"]
+
+        logger.info(f"[driver.escort_board] tenant={tenant_id}, driver={driver_id}, route={route_id}")
+
+        route = validate_route_for_driver(db, route_id, driver_id, tenant_id)
+
+        if route.status != RouteManagementStatusEnum.ONGOING:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Route must be in ONGOING state (duty started) before boarding the escort",
+                    error_code="ROUTE_NOT_ONGOING",
+                    details={"current_status": route.status.value},
+                ),
+            )
+
+        if not route.assigned_escort_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="No escort is assigned to this route",
+                    error_code="NO_ESCORT_ASSIGNED",
+                    details={"route_id": route_id},
+                ),
+            )
+
+        # Idempotent
+        if route.escort_boarded:
+            return ResponseWrapper.success(
+                message="Escort already boarded",
+                data={"route_id": route_id, "escort_id": route.assigned_escort_id, "escort_boarded": True},
+            )
+
+        if not route.escort_otp:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Escort OTP has not been generated yet. Please dispatch the route first.",
+                    error_code="ESCORT_OTP_NOT_GENERATED",
+                    details={"route_id": route_id},
+                ),
+            )
+
+        # Verify OTP
+        if str(route.escort_otp).strip() != str(otp).strip():
+            logger.warning(f"[driver.escort_board] Invalid escort OTP for route {route_id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Invalid escort OTP",
+                    error_code="INVALID_ESCORT_OTP",
+                    details={"route_id": route_id},
+                ),
+            )
+
+        # Mark escort as boarded
+        route.escort_boarded = True
+        db.add(route)
+        db.commit()
+
+        logger.info(f"[driver.escort_board] Escort boarded for route {route_id} by driver {driver_id}")
+
+        return ResponseWrapper.success(
+            message="Escort boarded successfully. You can now start picking up employees.",
+            data={
+                "route_id": route_id,
+                "escort_id": route.assigned_escort_id,
+                "escort_boarded": True,
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[driver.escort_board] Unexpected error")
+        db.rollback()
+        raise handle_db_error(e)
+
+
 @router.get("/trips", status_code=status.HTTP_200_OK)
 async def get_driver_trips(
     status_filter: str = Query(..., pattern="^(upcoming|ongoing|completed)$", description="Trip status filter"),
@@ -580,7 +679,6 @@ async def get_driver_trips(
                     "is_active": getattr(booking, "is_active", True),
                     "is_boarding_otp_required": booking.boarding_otp is not None,
                     "is_deboarding_otp_required": booking.deboarding_otp is not None,
-                    "is_escort_otp_required": booking.escort_otp is not None,
                     "created_at": booking.created_at.isoformat() if booking.created_at else None,
                     "updated_at": booking.updated_at.isoformat() if booking.updated_at else None,
                     "order_id": rb.order_id,
@@ -611,6 +709,7 @@ async def get_driver_trips(
                 "assigned_driver_id": getattr(route, "assigned_driver_id", None),
                 "assigned_escort_id": getattr(route, "assigned_escort_id", None),
                 "escort_required": route.escort_required,
+                "escort_boarded": getattr(route, "escort_boarded", False),
                 "shift_time": shift.shift_time.strftime("%H:%M:%S") if shift and shift.shift_time else None,
                 "log_type": shift.log_type.value if shift and shift.log_type else None,
                 "status": route.status.value,
@@ -949,6 +1048,17 @@ async def start_trip(
                     message="Route must be in ONGOING state. Please start duty first.",
                     error_code="ROUTE_NOT_ONGOING",
                     details={"current_status": route.status.value},
+                ),
+            )
+
+        # --- Escort must be boarded before picking up any employees ---
+        if route.assigned_escort_id and not getattr(route, "escort_boarded", False):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Escort must be boarded before picking up employees. Use POST /driver/escort/board first.",
+                    error_code="ESCORT_NOT_BOARDED",
+                    details={"route_id": route_id, "escort_id": route.assigned_escort_id},
                 ),
             )
 

@@ -36,6 +36,8 @@ class RouteManagement(Base):
 
     # Escort safety requirements
     escort_required = Column(Boolean, default=False, nullable=False)  # Route requires escort based on safety rules
+    escort_otp = Column(Integer, nullable=True)        # Single OTP sent to the escort; driver verifies verbally before picking up employees
+    escort_boarded = Column(Boolean, default=False, nullable=False)  # True once driver has successfully verified escort OTP
 
     status = Column(Enum(RouteManagementStatusEnum, native_enum=False), default=RouteManagementStatusEnum.PLANNED, nullable=False)
     estimated_total_time = Column(Float, nullable=True)  # New column

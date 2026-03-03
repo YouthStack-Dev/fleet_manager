@@ -61,7 +61,6 @@ class BookingBase(BaseModel):
     reason: Optional[str] = None
     boarding_otp: Optional[int] = None
     deboarding_otp: Optional[int] = None
-    escort_otp: Optional[int] = None
     is_active: Optional[bool] = True
 
 

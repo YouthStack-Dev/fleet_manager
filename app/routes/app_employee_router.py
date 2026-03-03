@@ -178,7 +178,6 @@ async def get_employee_bookings(
                 "reason": booking.reason,
                 "boarding_otp": booking.boarding_otp,
                 "deboarding_otp": booking.deboarding_otp,
-                "escort_otp": booking.escort_otp,
                 "is_active": True,
                 "booking_id": booking.booking_id,
                 "shift_time": booking.shift.shift_time.strftime("%H:%M:%S") if booking.shift and booking.shift.shift_time else None,
