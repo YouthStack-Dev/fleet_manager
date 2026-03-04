@@ -74,3 +74,4 @@ class Booking(Base):
     employee = relationship("Employee", back_populates="bookings")
     shift = relationship("Shift", back_populates="bookings")
     team = relationship("Team", back_populates="bookings")
+    review = relationship("RideReview", back_populates="booking", uselist=False)

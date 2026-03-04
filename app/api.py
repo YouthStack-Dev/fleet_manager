@@ -30,6 +30,8 @@ from app.routes import (
     permission_router, policy_router, role_router,
     # Observability & reporting
     monitoring_router, audit_log_router, reports_router,
+    # Ride Reviews
+    review_router,
     # Seed & dev utilities
     dev_testing_router,
 )
@@ -94,6 +96,9 @@ api_router.include_router(role_router,       prefix=f"{V1}/iam")
 api_router.include_router(monitoring_router, prefix=V1)
 api_router.include_router(audit_log_router,  prefix=V1)
 api_router.include_router(reports_router,    prefix=V1)
+
+# Ride reviews
+api_router.include_router(review_router,     prefix=V1)
 
 # Seed & development utilities
 api_router.include_router(seed_router,        prefix=V1)

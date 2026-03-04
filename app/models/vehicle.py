@@ -54,6 +54,7 @@ class Vehicle(Base):
     vehicle_type = relationship("app.models.vehicle_type.VehicleType", back_populates="vehicles")
     vendor = relationship("app.models.vendor.Vendor", back_populates="vehicles")
     driver = relationship("app.models.driver.Driver", back_populates="vehicles")
+    reviews = relationship("RideReview", back_populates="vehicle", foreign_keys="RideReview.vehicle_id")
 
     @property
     def vehicle_type_name(self) -> str:

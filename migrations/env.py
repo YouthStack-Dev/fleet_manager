@@ -23,6 +23,7 @@ from app.models.driver import Driver
 from app.models.employee import Employee
 from app.models.escort import Escort
 from app.models.route_management import RouteManagement, RouteManagementBooking
+from app.models.review import RideReview, ReviewTag
 from app.models.shift import Shift
 from app.models.team import Team
 from app.models.tenant_config import TenantConfig
