@@ -17,42 +17,68 @@ sys.path.insert(0, str(project_root))
 def check_migration_files():
     """Check for common issues in migration files."""
     print("🔍 Checking migration files...")
-    
+
     migrations_dir = project_root / "migrations" / "versions"
     migration_files = list(migrations_dir.glob("*.py"))
-    
+
     if not migration_files:
         print("⚠️  No migration files found")
         return True
-    
+
+    # Regex-based function detection — tolerates `-> None` type annotations and
+    # any amount of whitespace that Alembic / Black may generate, e.g.:
+    #   def upgrade():
+    #   def upgrade() -> None:
+    #   def upgrade()  ->  None :
+    _upgrade_re   = re.compile(r'^\s*def\s+upgrade\s*\(\s*\)\s*(?:->\s*\w+\s*)?:', re.M)
+    _downgrade_re = re.compile(r'^\s*def\s+downgrade\s*\(\s*\)\s*(?:->\s*\w+\s*)?:', re.M)
+
+    # Detect a merge migration: down_revision is a tuple (two or more parents).
+    # Merge migrations intentionally have empty (pass-only) bodies.
+    _merge_re = re.compile(r'^down_revision\s*=\s*\(', re.M)
+
     issues = []
-    
+
     for migration_file in migration_files:
         with open(migration_file, 'r', encoding='utf-8') as f:
             content = f.read()
-        
-        # Check for required functions
-        if 'def upgrade()' not in content:
+
+        is_merge = bool(_merge_re.search(content))
+
+        # ── 1. Required function signatures ───────────────────────────────────
+        if not _upgrade_re.search(content):
             issues.append(f"❌ {migration_file.name}: Missing upgrade() function")
-        
-        if 'def downgrade()' not in content:
+
+        if not _downgrade_re.search(content):
             issues.append(f"❌ {migration_file.name}: Missing downgrade() function")
-        
-        # Check for common mistakes
-        if 'def upgrade()' in content and 'pass' in content:
-            # Only warn if BOTH upgrade and downgrade are just 'pass'
-            upgrade_section = content.split('def upgrade()')[1].split('def downgrade()')[0]
-            downgrade_section = content.split('def downgrade()')[1] if 'def downgrade()' in content else ''
-            
-            if upgrade_section.strip().endswith('pass') and 'pass' in downgrade_section:
-                issues.append(f"⚠️  {migration_file.name}: Both upgrade and downgrade are empty (just 'pass')")
-        
-        # Check revision is set
-        if "revision = None" in content and "down_revision = None" in content:
-            pass  # This is OK for first migration
-        elif "revision = None" in content:
-            issues.append(f"❌ {migration_file.name}: revision is None")
-    
+
+        # ── 2. Warn when both bodies are pass-only (skip for merge migrations) ─
+        # Use regex to extract the body of each function so we don't get tripped
+        # up by `-> None` annotations in the split delimiter.
+        if not is_merge and _upgrade_re.search(content) and _downgrade_re.search(content):
+            # Split on the upgrade signature, grab everything after it
+            after_upgrade   = _upgrade_re.split(content, maxsplit=1)[-1]
+            # The upgrade body is everything up to the next top-level def
+            upgrade_body    = re.split(r'\ndef\s+\w', after_upgrade, maxsplit=1)[0]
+            after_downgrade = _downgrade_re.split(content, maxsplit=1)[-1]
+            downgrade_body  = re.split(r'\ndef\s+\w', after_downgrade, maxsplit=1)[0]
+
+            upgrade_is_empty   = re.fullmatch(r'\s*(pass\s*)?', upgrade_body) is not None
+            downgrade_is_empty = re.fullmatch(r'\s*(pass\s*)?', downgrade_body) is not None
+
+            if upgrade_is_empty and downgrade_is_empty:
+                issues.append(
+                    f"⚠️  {migration_file.name}: Both upgrade() and downgrade() are empty. "
+                    f"If this is intentional (e.g. a no-op migration), add a comment explaining why."
+                )
+
+        # ── 3. revision must not be None (except the very first migration) ────
+        if re.search(r'^revision\s*=\s*None', content, re.M):
+            if not re.search(r'^down_revision\s*=\s*None', content, re.M):
+                # down_revision = None only appears in the root migration; if it's
+                # absent and revision is None, the file was left in a broken state.
+                issues.append(f"❌ {migration_file.name}: revision = None (did Alembic fail to generate the ID?)")
+
     if issues:
         print("\n".join(issues))
         return False
