@@ -54,12 +54,16 @@ jobs:
     
     - name: Set environment variables
       run: |
-        echo "POSTGRES_HOST=localhost" >> $GITHUB_ENV
-        echo "POSTGRES_USER=fleetadmin" >> $GITHUB_ENV
-        echo "POSTGRES_PASSWORD=testpassword" >> $GITHUB_ENV
-        echo "POSTGRES_DB=fleet_test_db" >> $GITHUB_ENV
-        echo "PORT=5432" >> $GITHUB_ENV
-        echo "ENV=development" >> $GITHUB_ENV
+        echo "POSTGRES_HOST=localhost"                                                       >> $GITHUB_ENV
+        echo "POSTGRES_USER=fleetadmin"                                                     >> $GITHUB_ENV
+        echo "POSTGRES_PASSWORD=testpassword"                                               >> $GITHUB_ENV
+        echo "POSTGRES_DB=fleet_test_db"                                                    >> $GITHUB_ENV
+        echo "POSTGRES_PORT=5432"                                                           >> $GITHUB_ENV
+        echo "PORT=5432"                                                                    >> $GITHUB_ENV
+        echo "ENV=development"                                                              >> $GITHUB_ENV
+        # Explicit DATABASE_URL prevents app/config.py from ever falling back to the
+        # current OS user (which caused "FATAL: role 'root' does not exist" in CI).
+        echo "DATABASE_URL=postgresql://fleetadmin:testpassword@localhost:5432/fleet_test_db" >> $GITHUB_ENV
     
     - name: Run migration validation
       run: python validate_migrations.py
@@ -74,6 +78,19 @@ jobs:
     - name: Check current state
       run: alembic current || echo "No migrations applied yet"
     
+    - name: Assert single migration head
+      run: |
+        HEAD_COUNT=$(alembic heads 2>&1 | grep -c '(head)' || true)
+        echo "Found ${HEAD_COUNT} head(s)"
+        if [ "$HEAD_COUNT" -ne 1 ]; then
+          echo "ERROR: Multiple Alembic heads detected. Run:"
+          echo "  alembic heads"
+          echo "  alembic merge <rev1> <rev2> -m 'merge_heads'"
+          echo "and commit the resulting merge migration before re-running CI."
+          exit 1
+        fi
+        echo "OK: exactly one head — safe to upgrade."
+
     - name: Test migration upgrade
       run: alembic upgrade head
     
