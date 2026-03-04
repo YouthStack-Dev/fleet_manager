@@ -48,6 +48,7 @@ class Employee(Base):
     tenant = relationship("Tenant", back_populates="employees")
     team = relationship("Team", back_populates="employees")
     bookings = relationship("Booking", back_populates="employee")
+    reviews = relationship("RideReview", back_populates="employee", foreign_keys="RideReview.employee_id")
     weekoff_config = relationship("WeekoffConfig", back_populates="employee", uselist=False)
     role = relationship(
         "Role",

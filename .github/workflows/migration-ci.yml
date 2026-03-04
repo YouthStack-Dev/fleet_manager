@@ -54,12 +54,16 @@ jobs:
     
     - name: Set environment variables
       run: |
-        echo "POSTGRES_HOST=localhost" >> $GITHUB_ENV
-        echo "POSTGRES_USER=fleetadmin" >> $GITHUB_ENV
-        echo "POSTGRES_PASSWORD=testpassword" >> $GITHUB_ENV
-        echo "POSTGRES_DB=fleet_test_db" >> $GITHUB_ENV
-        echo "PORT=5432" >> $GITHUB_ENV
-        echo "ENV=development" >> $GITHUB_ENV
+        echo "POSTGRES_HOST=localhost"                                                       >> $GITHUB_ENV
+        echo "POSTGRES_USER=fleetadmin"                                                     >> $GITHUB_ENV
+        echo "POSTGRES_PASSWORD=testpassword"                                               >> $GITHUB_ENV
+        echo "POSTGRES_DB=fleet_test_db"                                                    >> $GITHUB_ENV
+        echo "POSTGRES_PORT=5432"                                                           >> $GITHUB_ENV
+        echo "PORT=5432"                                                                    >> $GITHUB_ENV
+        echo "ENV=development"                                                              >> $GITHUB_ENV
+        # Explicit DATABASE_URL prevents app/config.py from ever falling back to the
+        # current OS user (which caused "FATAL: role 'root' does not exist" in CI).
+        echo "DATABASE_URL=postgresql://fleetadmin:testpassword@localhost:5432/fleet_test_db" >> $GITHUB_ENV
     
     - name: Run migration validation
       run: python validate_migrations.py
@@ -74,6 +78,19 @@ jobs:
     - name: Check current state
       run: alembic current || echo "No migrations applied yet"
     
+    - name: Assert single migration head
+      run: |
+        HEAD_COUNT=$(alembic heads 2>&1 | grep -c '(head)' || true)
+        echo "Found ${HEAD_COUNT} head(s)"
+        if [ "$HEAD_COUNT" -ne 1 ]; then
+          echo "ERROR: Multiple Alembic heads detected. Run:"
+          echo "  alembic heads"
+          echo "  alembic merge <rev1> <rev2> -m 'merge_heads'"
+          echo "and commit the resulting merge migration before re-running CI."
+          exit 1
+        fi
+        echo "OK: exactly one head — safe to upgrade."
+
     - name: Test migration upgrade
       run: alembic upgrade head
     
@@ -117,15 +134,55 @@ jobs:
     
     - name: Check for sensitive data in migrations
       run: |
-        echo "Checking for sensitive data patterns..."
-        # Check for hardcoded sensitive values (not column definitions)
-        # Exclude patterns like Column('password', ...) or sa.Column('password_hash', ...)
-        if grep -r -E "(password|secret|api_key|token)\s*=\s*['\"]" migrations/versions/*.py | grep -v "Column(" | grep -v "server_default"; then
-          echo "⚠️ Warning: Potential hardcoded sensitive data found in migrations"
+        set -euo pipefail
+        echo "Checking for sensitive data patterns in migrations/versions/*.py ..."
+
+        # ── What we're looking for ────────────────────────────────────────────
+        # Lines where a variable named password/secret/api_key/token is assigned
+        # a string literal, e.g.:
+        #   default_password = "changeme"
+        #   api_key = 'abc123'
+        #
+        # ── Safe patterns that are NOT secrets and are excluded ───────────────
+        # • Column(... — SQLAlchemy column definitions  (e.g. sa.Column('password', ...))
+        # • server_default  — column default values     (e.g. server_default='[]')
+        # • revision =      — Alembic revision IDs can contain "password" in the slug
+        # • down_revision = — same (e.g. down_revision = '..._add_escort_password')
+        # • branch_labels = — Alembic metadata line
+        # • depends_on =    — Alembic metadata line
+        # • Lines starting with # — comments are not secrets
+
+        MATCHES=$(
+          grep -InE "(password|secret|api_key|token)\s*=\s*['\"]" migrations/versions/*.py \
+            | grep -v "Column("        \
+            | grep -v "server_default" \
+            | grep -v "^\([^:]*\):[0-9]*:[[:space:]]*revision\s*="         \
+            | grep -v "^\([^:]*\):[0-9]*:[[:space:]]*down_revision\s*="    \
+            | grep -v "^\([^:]*\):[0-9]*:[[:space:]]*branch_labels\s*="    \
+            | grep -v "^\([^:]*\):[0-9]*:[[:space:]]*depends_on\s*="       \
+            | grep -v "^\([^:]*\):[0-9]*:[[:space:]]*#"                    \
+            || true
+        )
+
+        if [ -n "$MATCHES" ]; then
+          echo ""
+          echo "⚠️  Hardcoded sensitive data found in migration files:"
+          echo "──────────────────────────────────────────────────────"
+          echo "$MATCHES"
+          echo "──────────────────────────────────────────────────────"
+          echo ""
+          echo "Fix options:"
+          echo "  1. Remove the hardcoded value — never embed secrets in migrations."
+          echo "  2. For seed data with credentials: move to an admin/seed script,"
+          echo "     NOT a migration file."
+          echo "  3. For default placeholders: use NULL and require a reset flow,"
+          echo "     or store only a hash (never the raw secret)."
+          echo "  4. If it's a false positive (e.g. a non-secret variable that happens"
+          echo "     to be named 'token'): rename it so it doesn't match the pattern."
           exit 1
-        else
-          echo "✅ No hardcoded sensitive data patterns found"
         fi
+
+        echo "✅ No hardcoded sensitive data patterns found"
     
     - name: Verify migration file naming
       run: |

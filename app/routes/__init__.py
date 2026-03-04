@@ -48,5 +48,8 @@ from app.routes.monitoring_router import router as monitoring_router
 from app.routes.audit_log_router import router as audit_log_router
 from app.routes.reports_router import router as reports_router
 
+# ── Ride Reviews ──────────────────────────────────────────────
+from app.routes.review_router import router as review_router
+
 # ── Seed & development utilities ──────────────────────────────
 from app.routes.dev_testing_routes import router as dev_testing_router

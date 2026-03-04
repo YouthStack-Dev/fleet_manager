@@ -1,7 +1,10 @@
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, Date, Text, ForeignKey, Enum, func, UniqueConstraint
+    Column, Integer, String, Boolean, DateTime, Date, Text, ForeignKey, Enum, func, UniqueConstraint, JSON
 )
 from sqlalchemy.dialects.postgresql import JSONB
+
+# Cross-database JSON type: uses JSONB on PostgreSQL, JSON on SQLite/others
+_JsonB = JSON().with_variant(JSONB(), "postgresql")
 from sqlalchemy.orm import relationship
 from app.database.session import Base
 from enum import Enum as PyEnum
@@ -98,10 +101,11 @@ class Driver(Base):
     # Note: No unique constraint - same Android ID can be used by same license holder across multiple vendors
     # Application-level security prevents different license holders from using the same Android ID
     active_android_id = Column(String(255), nullable=True, index=True)
-    android_id_history = Column(JSONB, nullable=False, default=list, server_default='[]')
+    android_id_history = Column(_JsonB, nullable=False, default=list, server_default='[]')
 
     # Relationships
     tenant = relationship("Tenant", back_populates="drivers")
     vendor = relationship("Vendor", back_populates="drivers")
     vehicles = relationship("Vehicle", back_populates="driver")
     role = relationship("Role", back_populates="drivers")
+    reviews = relationship("RideReview", back_populates="driver", foreign_keys="RideReview.driver_id")
