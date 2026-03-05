@@ -902,3 +902,292 @@ class TestFullCycle:
 def test_db_second_tenant_booking(test_db):
     """Not a real fixture body -- just prevents NameError in the class."""
     return test_db
+
+
+# ================================================================
+# GET /reviews  — Admin list / search reviews
+# ================================================================
+
+class TestAdminListReviews:
+    """
+    Tests for the new GET /reviews admin endpoint.
+    Admins browse reviews by date range, driver, employee, route, rating.
+    No booking_id needed.
+    """
+
+    URL = "/api/v1/reviews"
+
+    def _seed_review(self, db, tenant_id, employee_id, shift_id,
+                     driver_id, vehicle_id,
+                     booking_id, route_id,
+                     overall_rating=4, driver_rating=4, vehicle_rating=4):
+        bk = _make_completed_booking(db, tenant_id, employee_id, shift_id, booking_id)
+        _make_route_with_booking(
+            db, tenant_id, shift_id, driver_id, vehicle_id,
+            booking_id, route_id=route_id,
+        )
+        review = RideReview(
+            tenant_id=tenant_id,
+            booking_id=booking_id,
+            employee_id=employee_id,
+            driver_id=driver_id,
+            vehicle_id=vehicle_id,
+            route_id=route_id,
+            overall_rating=overall_rating,
+            driver_rating=driver_rating,
+            driver_comment="Good ride",
+            vehicle_rating=vehicle_rating,
+            vehicle_comment="Clean vehicle",
+        )
+        db.add(review)
+        db.commit()
+        db.refresh(review)
+        return review
+
+    # ── happy paths ──────────────────────────────────────────────
+
+    def test_list_reviews_empty(self, client, admin_token):
+        """No reviews yet → empty list, total=0."""
+        resp = client.get(self.URL, headers={"Authorization": admin_token})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["meta"]["total"] == 0
+        assert body["data"] == []
+
+    def test_list_reviews_returns_seeded_review(
+        self, client, test_db, admin_token, employee_user,
+        test_shift, test_driver, test_vehicle
+    ):
+        """After seeding one review it appears in the listing."""
+        emp = employee_user["employee"]
+        self._seed_review(
+            test_db, emp.tenant_id, emp.employee_id,
+            test_shift.shift_id, test_driver.driver_id, test_vehicle.vehicle_id,
+            booking_id=7001, route_id=7001,
+        )
+        resp = client.get(self.URL, headers={"Authorization": admin_token})
+        assert resp.status_code == 200
+        assert resp.json()["meta"]["total"] >= 1
+
+    def test_filter_by_driver_id(
+        self, client, test_db, admin_token, employee_user,
+        test_shift, test_driver, test_vehicle
+    ):
+        """driver_id filter narrows results to that driver only."""
+        emp = employee_user["employee"]
+        self._seed_review(
+            test_db, emp.tenant_id, emp.employee_id,
+            test_shift.shift_id, test_driver.driver_id, test_vehicle.vehicle_id,
+            booking_id=7010, route_id=7010,
+        )
+        resp = client.get(
+            self.URL,
+            params={"driver_id": test_driver.driver_id},
+            headers={"Authorization": admin_token},
+        )
+        assert resp.status_code == 200
+        for item in resp.json()["data"]:
+            assert item["driver_id"] == test_driver.driver_id
+
+    def test_filter_by_employee_id(
+        self, client, test_db, admin_token, employee_user,
+        test_shift, test_driver, test_vehicle
+    ):
+        """employee_id filter returns only that employee's reviews."""
+        emp = employee_user["employee"]
+        self._seed_review(
+            test_db, emp.tenant_id, emp.employee_id,
+            test_shift.shift_id, test_driver.driver_id, test_vehicle.vehicle_id,
+            booking_id=7020, route_id=7020,
+        )
+        resp = client.get(
+            self.URL,
+            params={"employee_id": emp.employee_id},
+            headers={"Authorization": admin_token},
+        )
+        assert resp.status_code == 200
+        for item in resp.json()["data"]:
+            assert item["employee_id"] == emp.employee_id
+
+    def test_filter_by_route_id(
+        self, client, test_db, admin_token, employee_user,
+        test_shift, test_driver, test_vehicle
+    ):
+        """route_id filter returns only reviews for that route."""
+        emp = employee_user["employee"]
+        self._seed_review(
+            test_db, emp.tenant_id, emp.employee_id,
+            test_shift.shift_id, test_driver.driver_id, test_vehicle.vehicle_id,
+            booking_id=7030, route_id=7030,
+        )
+        resp = client.get(
+            self.URL,
+            params={"route_id": 7030},
+            headers={"Authorization": admin_token},
+        )
+        assert resp.status_code == 200
+        for item in resp.json()["data"]:
+            assert item["route_id"] == 7030
+
+    def test_filter_by_min_rating(
+        self, client, test_db, admin_token, employee_user,
+        test_shift, test_driver, test_vehicle
+    ):
+        """min_rating=5 returns only 5-star reviews."""
+        emp = employee_user["employee"]
+        self._seed_review(
+            test_db, emp.tenant_id, emp.employee_id,
+            test_shift.shift_id, test_driver.driver_id, test_vehicle.vehicle_id,
+            booking_id=7040, route_id=7040, overall_rating=5,
+        )
+        self._seed_review(
+            test_db, emp.tenant_id, emp.employee_id,
+            test_shift.shift_id, test_driver.driver_id, test_vehicle.vehicle_id,
+            booking_id=7041, route_id=7041, overall_rating=2,
+        )
+        resp = client.get(
+            self.URL,
+            params={"min_rating": 5},
+            headers={"Authorization": admin_token},
+        )
+        assert resp.status_code == 200
+        for item in resp.json()["data"]:
+            assert item["overall_rating"] >= 5
+
+    def test_filter_by_max_rating(
+        self, client, test_db, admin_token, employee_user,
+        test_shift, test_driver, test_vehicle
+    ):
+        """max_rating=2 returns only low-rating reviews."""
+        emp = employee_user["employee"]
+        self._seed_review(
+            test_db, emp.tenant_id, emp.employee_id,
+            test_shift.shift_id, test_driver.driver_id, test_vehicle.vehicle_id,
+            booking_id=7050, route_id=7050, overall_rating=1,
+        )
+        self._seed_review(
+            test_db, emp.tenant_id, emp.employee_id,
+            test_shift.shift_id, test_driver.driver_id, test_vehicle.vehicle_id,
+            booking_id=7051, route_id=7051, overall_rating=5,
+        )
+        resp = client.get(
+            self.URL,
+            params={"max_rating": 2},
+            headers={"Authorization": admin_token},
+        )
+        assert resp.status_code == 200
+        for item in resp.json()["data"]:
+            assert item["overall_rating"] <= 2
+
+    def test_from_date_future_returns_empty(
+        self, client, test_db, admin_token, employee_user,
+        test_shift, test_driver, test_vehicle
+    ):
+        """from_date in the future → zero results."""
+        emp = employee_user["employee"]
+        self._seed_review(
+            test_db, emp.tenant_id, emp.employee_id,
+            test_shift.shift_id, test_driver.driver_id, test_vehicle.vehicle_id,
+            booking_id=7060, route_id=7060,
+        )
+        resp = client.get(
+            self.URL,
+            params={"from_date": "2099-01-01"},
+            headers={"Authorization": admin_token},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["meta"]["total"] == 0
+
+    def test_to_date_past_returns_empty(
+        self, client, test_db, admin_token, employee_user,
+        test_shift, test_driver, test_vehicle
+    ):
+        """to_date in the distant past → zero results."""
+        emp = employee_user["employee"]
+        self._seed_review(
+            test_db, emp.tenant_id, emp.employee_id,
+            test_shift.shift_id, test_driver.driver_id, test_vehicle.vehicle_id,
+            booking_id=7070, route_id=7070,
+        )
+        resp = client.get(
+            self.URL,
+            params={"to_date": "2000-01-01"},
+            headers={"Authorization": admin_token},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["meta"]["total"] == 0
+
+    def test_date_range_includes_today(
+        self, client, test_db, admin_token, employee_user,
+        test_shift, test_driver, test_vehicle
+    ):
+        """Broad date range spanning today includes newly seeded review."""
+        emp = employee_user["employee"]
+        self._seed_review(
+            test_db, emp.tenant_id, emp.employee_id,
+            test_shift.shift_id, test_driver.driver_id, test_vehicle.vehicle_id,
+            booking_id=7080, route_id=7080,
+        )
+        resp = client.get(
+            self.URL,
+            params={"from_date": "2020-01-01", "to_date": "2099-12-31"},
+            headers={"Authorization": admin_token},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["meta"]["total"] >= 1
+
+    def test_pagination_page_size(
+        self, client, test_db, admin_token, employee_user,
+        test_shift, test_driver, test_vehicle
+    ):
+        """page_size=1 returns exactly 1 item per page."""
+        emp = employee_user["employee"]
+        self._seed_review(
+            test_db, emp.tenant_id, emp.employee_id,
+            test_shift.shift_id, test_driver.driver_id, test_vehicle.vehicle_id,
+            booking_id=7090, route_id=7090,
+        )
+        self._seed_review(
+            test_db, emp.tenant_id, emp.employee_id,
+            test_shift.shift_id, test_driver.driver_id, test_vehicle.vehicle_id,
+            booking_id=7091, route_id=7091,
+        )
+        resp = client.get(
+            self.URL,
+            params={"per_page": 1, "page": 1},
+            headers={"Authorization": admin_token},
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()["data"]) == 1
+        assert resp.json()["meta"]["per_page"] == 1
+
+    def test_pagination_second_page_different_items(
+        self, client, test_db, admin_token, employee_user,
+        test_shift, test_driver, test_vehicle
+    ):
+        """Page 2 returns a different item than page 1."""
+        emp = employee_user["employee"]
+        self._seed_review(
+            test_db, emp.tenant_id, emp.employee_id,
+            test_shift.shift_id, test_driver.driver_id, test_vehicle.vehicle_id,
+            booking_id=7100, route_id=7100,
+        )
+        self._seed_review(
+            test_db, emp.tenant_id, emp.employee_id,
+            test_shift.shift_id, test_driver.driver_id, test_vehicle.vehicle_id,
+            booking_id=7101, route_id=7101,
+        )
+        r1 = client.get(self.URL, params={"per_page": 1, "page": 1},
+                        headers={"Authorization": admin_token})
+        r2 = client.get(self.URL, params={"per_page": 1, "page": 2},
+                        headers={"Authorization": admin_token})
+        ids_p1 = {i["review_id"] for i in r1.json()["data"]}
+        ids_p2 = {i["review_id"] for i in r2.json()["data"]}
+        assert ids_p1.isdisjoint(ids_p2)
+
+    # ── auth / access control ────────────────────────────────────
+
+    def test_no_auth_returns_401(self, client):
+        """No token → 401 Unauthorized."""
+        resp = client.get(self.URL)
+        assert resp.status_code in (401, 403)
