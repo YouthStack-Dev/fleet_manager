@@ -596,13 +596,99 @@ async def get_my_review(
 
 
 # ================================================================
+# ADMIN -- LIST / SEARCH ALL REVIEWS
+# ================================================================
+
+@router.get(
+    "/reviews",
+    status_code=status.HTTP_200_OK,
+    summary="List and search reviews (admin/manager)",
+)
+async def list_reviews(
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=20, ge=1, le=100),
+    from_date: Optional[date] = Query(
+        default=None,
+        description="Return reviews created on or after this date (YYYY-MM-DD)",
+    ),
+    to_date: Optional[date] = Query(
+        default=None,
+        description="Return reviews created on or before this date (YYYY-MM-DD, inclusive)",
+    ),
+    driver_id: Optional[int] = Query(default=None, description="Filter by driver"),
+    employee_id: Optional[int] = Query(default=None, description="Filter by employee"),
+    route_id: Optional[int] = Query(default=None, description="Filter by route"),
+    min_rating: Optional[float] = Query(
+        default=None, ge=1, le=5, description="Minimum overall_rating (inclusive)"
+    ),
+    max_rating: Optional[float] = Query(
+        default=None, ge=1, le=5, description="Maximum overall_rating (inclusive)"
+    ),
+    db: Session = Depends(get_db),
+    ctx=Depends(AdminAuth),
+):
+    """
+    Browse all reviews for the tenant with flexible filters — no booking ID needed.
+
+    Filters
+    -------
+    from_date / to_date  → date range on created_at
+    driver_id            → reviews about a specific driver
+    employee_id          → reviews submitted by a specific employee
+    route_id             → reviews tied to a specific route
+    min_rating / max_rating → filter by overall_rating (1-5)
+    """
+    try:
+        tenant_id = ctx["tenant_id"]
+
+        q = db.query(RideReview).filter(
+            RideReview.tenant_id == tenant_id,
+            RideReview.is_active.is_(True),
+        )
+        if from_date:
+            q = q.filter(RideReview.created_at >= datetime.combine(from_date, dt_time.min))
+        if to_date:
+            q = q.filter(RideReview.created_at <= datetime.combine(to_date, dt_time.max))
+        if driver_id:
+            q = q.filter(RideReview.driver_id == driver_id)
+        if employee_id:
+            q = q.filter(RideReview.employee_id == employee_id)
+        if route_id:
+            q = q.filter(RideReview.route_id == route_id)
+        if min_rating is not None:
+            q = q.filter(RideReview.overall_rating >= min_rating)
+        if max_rating is not None:
+            q = q.filter(RideReview.overall_rating <= max_rating)
+
+        total = q.count()
+        reviews = (
+            q.order_by(RideReview.created_at.desc())
+            .offset((page - 1) * per_page)
+            .limit(per_page)
+            .all()
+        )
+
+        return ResponseWrapper.paginated(
+            items=[_enrich_review(db, r) for r in reviews],
+            total=total,
+            page=page,
+            per_page=per_page,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error listing reviews")
+        raise handle_http_error(e)
+
+
+# ================================================================
 # ADMIN -- READ ANY BOOKING'S REVIEW
 # ================================================================
 
 @router.get(
     "/bookings/{booking_id}/review",
     status_code=status.HTTP_200_OK,
-    summary="Get review for any booking (admin/manager)",
+    summary="Get review for a specific booking (admin/manager)",
 )
 async def get_booking_review(
     booking_id: int,
