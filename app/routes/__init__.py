@@ -51,5 +51,8 @@ from app.routes.reports_router import router as reports_router
 # ── Ride Reviews ──────────────────────────────────────────────
 from app.routes.review_router import router as review_router
 
+# ── Announcements / Broadcasts ────────────────────────────────
+from app.routes.announcement_router import router as announcement_router
+
 # ── Seed & development utilities ──────────────────────────────
 from app.routes.dev_testing_routes import router as dev_testing_router

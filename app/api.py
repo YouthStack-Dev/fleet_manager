@@ -32,6 +32,8 @@ from app.routes import (
     monitoring_router, audit_log_router, reports_router,
     # Ride Reviews
     review_router,
+    # Announcements
+    announcement_router,
     # Seed & dev utilities
     dev_testing_router,
 )
@@ -98,7 +100,10 @@ api_router.include_router(audit_log_router,  prefix=V1)
 api_router.include_router(reports_router,    prefix=V1)
 
 # Ride reviews
-api_router.include_router(review_router,     prefix=V1)
+api_router.include_router(review_router,        prefix=V1)
+
+# Announcements / Broadcasts
+api_router.include_router(announcement_router, prefix=V1)
 
 # Seed & development utilities
 api_router.include_router(seed_router,        prefix=V1)

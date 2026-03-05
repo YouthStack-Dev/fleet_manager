@@ -19,6 +19,17 @@ from app.models.escort import Escort
 # Push notification models
 from app.models.user_session import UserSession
 
+# Announcements / Broadcasts
+from app.models.announcement import (
+    Announcement,
+    AnnouncementRecipient,
+    AnnouncementChannel,
+    AnnouncementContentType,
+    AnnouncementTargetType,
+    AnnouncementStatus,
+    AnnouncementDeliveryStatus,
+)
+
 # IAM models
 from app.models.iam.permission import Permission
 from app.models.iam.policy import Policy, policy_permission
