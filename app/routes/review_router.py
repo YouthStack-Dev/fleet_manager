@@ -204,6 +204,7 @@ async def get_review_tags(
     No authentication required -- used by the tag picker before login.
     Employees can always send any free-form custom word; no server-side enforcement.
     """
+    logger.info(f"[review_tags.get] tenant_id={tenant_id}")
     try:
         q = db.query(ReviewTag).filter(ReviewTag.is_active == True)  # noqa: E712
         if tenant_id:
@@ -213,6 +214,7 @@ async def get_review_tags(
         else:
             q = q.filter(ReviewTag.tenant_id.is_(None))
         tags = q.order_by(ReviewTag.display_order, ReviewTag.tag_name).all()
+        logger.info(f"[review_tags.get] OK tenant_id={tenant_id} driver_tags={sum(1 for t in tags if t.tag_type == ReviewTagTypeEnum.DRIVER)} vehicle_tags={sum(1 for t in tags if t.tag_type == ReviewTagTypeEnum.VEHICLE)}")
         return ResponseWrapper.success(
             data={
                 "driver_tags": [t.tag_name for t in tags if t.tag_type == ReviewTagTypeEnum.DRIVER],
@@ -221,7 +223,7 @@ async def get_review_tags(
             message="Review tags fetched successfully",
         )
     except Exception as e:
-        logger.exception("Error fetching review tags")
+        logger.exception(f"[review_tags.get] CRASH tenant_id={tenant_id} error={e}")
         raise handle_http_error(e)
 
 
@@ -240,6 +242,7 @@ async def create_review_tag(
     tag_type: "driver" or "vehicle"
     Tags are scoped to the caller's tenant and appear immediately in the app.
     """
+    logger.info(f"[review_tag.create] START tenant={ctx['tenant_id']} tag_name='{payload.tag_name}' tag_type={payload.tag_type}")
     try:
         tag = ReviewTag(
             tenant_id=ctx["tenant_id"],
@@ -251,8 +254,8 @@ async def create_review_tag(
         db.commit()
         db.refresh(tag)
         logger.info(
-            f"[review_tag.create] tenant={ctx['tenant_id']} "
-            f"tag='{tag.tag_name}' type={tag.tag_type}"
+            f"[review_tag.create] OK tenant={ctx['tenant_id']} "
+            f"tag_id={tag.tag_id} tag='{tag.tag_name}' type={tag.tag_type}"
         )
         return ResponseWrapper.success(
             data={
@@ -270,7 +273,7 @@ async def create_review_tag(
         raise
     except Exception as e:
         db.rollback()
-        logger.exception("Error creating review tag")
+        logger.exception(f"[review_tag.create] CRASH tenant={ctx['tenant_id']} tag_name='{payload.tag_name}' error={e}")
         raise handle_http_error(e)
 
 
@@ -289,6 +292,7 @@ async def delete_review_tag(
     Only tags owned by the caller's tenant can be deactivated.
     Global (tenant_id=NULL) tags cannot be deactivated this way.
     """
+    logger.info(f"[review_tag.delete] START tenant={ctx['tenant_id']} tag_id={tag_id}")
     try:
         tag = (
             db.query(ReviewTag)
@@ -299,19 +303,20 @@ async def delete_review_tag(
             .first()
         )
         if not tag:
+            logger.warning(f"[review_tag.delete] 404 NOT_FOUND tenant={ctx['tenant_id']} tag_id={tag_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error("Tag not found or access denied", "TAG_NOT_FOUND"),
             )
         tag.is_active = False
         db.commit()
-        logger.info(f"[review_tag.delete] tenant={ctx['tenant_id']} tag_id={tag_id}")
+        logger.info(f"[review_tag.delete] OK tenant={ctx['tenant_id']} tag_id={tag_id} tag_name='{tag.tag_name}'")
         return ResponseWrapper.success(message="Tag deactivated successfully")
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
-        logger.exception("Error deactivating review tag")
+        logger.exception(f"[review_tag.delete] CRASH tenant={ctx['tenant_id']} tag_id={tag_id} error={e}")
         raise handle_http_error(e)
 
 
@@ -342,6 +347,7 @@ async def submit_review_by_booking(
     - Wrong employee: 404 | Not completed: 400 | Already reviewed: 409
     - No route assignment: driver_id / vehicle_id saved as null
     """
+    logger.info(f"[review.submit_booking] START tenant={ctx['tenant_id']} employee={ctx['employee_id']} booking_id={booking_id} overall_rating={payload.overall_rating}")
     try:
         tenant_id = ctx["tenant_id"]
         employee_id = ctx["employee_id"]
@@ -356,12 +362,14 @@ async def submit_review_by_booking(
             .first()
         )
         if not booking:
+            logger.warning(f"[review.submit_booking] 404 BOOKING_NOT_FOUND tenant={tenant_id} employee={employee_id} booking_id={booking_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error("Booking not found or access denied", "BOOKING_NOT_FOUND"),
             )
 
         if booking.status != BookingStatusEnum.COMPLETED:
+            logger.warning(f"[review.submit_booking] 400 NOT_COMPLETED tenant={tenant_id} employee={employee_id} booking_id={booking_id} status={booking.status.value}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ResponseWrapper.error(
@@ -371,12 +379,14 @@ async def submit_review_by_booking(
             )
 
         if db.query(RideReview).filter(RideReview.booking_id == booking_id).first():
+            logger.warning(f"[review.submit_booking] 409 ALREADY_EXISTS tenant={tenant_id} employee={employee_id} booking_id={booking_id}")
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=ResponseWrapper.error("You have already reviewed this ride", "REVIEW_ALREADY_EXISTS"),
             )
 
         participants = _resolve_trip_participants(db, booking_id)
+        logger.info(f"[review.submit_booking] participants resolved driver_id={participants['driver_id']} vehicle_id={participants['vehicle_id']} route_id={participants['route_id']}")
 
         review = RideReview(
             tenant_id=tenant_id,
@@ -398,8 +408,8 @@ async def submit_review_by_booking(
         db.refresh(review)
 
         logger.info(
-            f"[review.submit_booking] tenant={tenant_id} employee={employee_id} "
-            f"booking={booking_id} review={review.review_id}"
+            f"[review.submit_booking] OK tenant={tenant_id} employee={employee_id} "
+            f"booking={booking_id} review_id={review.review_id} overall_rating={review.overall_rating}"
         )
         return ResponseWrapper.success(
             data=_enrich_review(db, review),
@@ -409,7 +419,7 @@ async def submit_review_by_booking(
         raise
     except Exception as e:
         db.rollback()
-        logger.exception("Error submitting review by booking")
+        logger.exception(f"[review.submit_booking] CRASH tenant={ctx['tenant_id']} employee={ctx['employee_id']} booking_id={booking_id} error={e}")
         raise handle_http_error(e)
 
 
@@ -431,6 +441,7 @@ async def submit_review_by_route(
     - Route not in this tenant: 404 | Employee not on this route: 404
     - Ride not completed: 400 | Already reviewed: 409
     """
+    logger.info(f"[review.submit_route] START tenant={ctx['tenant_id']} employee={ctx['employee_id']} route_id={route_id} overall_rating={payload.overall_rating}")
     try:
         tenant_id = ctx["tenant_id"]
         employee_id = ctx["employee_id"]
@@ -444,6 +455,7 @@ async def submit_review_by_route(
             .first()
         )
         if not route:
+            logger.warning(f"[review.submit_route] 404 ROUTE_NOT_FOUND tenant={tenant_id} employee={employee_id} route_id={route_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error("Route not found", "ROUTE_NOT_FOUND"),
@@ -469,6 +481,7 @@ async def submit_review_by_route(
                 break
 
         if not employee_booking:
+            logger.warning(f"[review.submit_route] 404 BOOKING_NOT_FOUND_ON_ROUTE tenant={tenant_id} employee={employee_id} route_id={route_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error(
@@ -478,6 +491,7 @@ async def submit_review_by_route(
             )
 
         if employee_booking.status != BookingStatusEnum.COMPLETED:
+            logger.warning(f"[review.submit_route] 400 NOT_COMPLETED tenant={tenant_id} employee={employee_id} route_id={route_id} booking_id={employee_booking.booking_id} status={employee_booking.status.value}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ResponseWrapper.error(
@@ -491,6 +505,7 @@ async def submit_review_by_route(
             .filter(RideReview.booking_id == employee_booking.booking_id)
             .first()
         ):
+            logger.warning(f"[review.submit_route] 409 ALREADY_EXISTS tenant={tenant_id} employee={employee_id} route_id={route_id} booking_id={employee_booking.booking_id}")
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=ResponseWrapper.error("You have already reviewed this ride", "REVIEW_ALREADY_EXISTS"),
@@ -516,8 +531,8 @@ async def submit_review_by_route(
         db.refresh(review)
 
         logger.info(
-            f"[review.submit_route] tenant={tenant_id} employee={employee_id} "
-            f"route={route_id} booking={employee_booking.booking_id} review={review.review_id}"
+            f"[review.submit_route] OK tenant={tenant_id} employee={employee_id} "
+            f"route_id={route_id} booking_id={employee_booking.booking_id} review_id={review.review_id} overall_rating={review.overall_rating}"
         )
         return ResponseWrapper.success(
             data=_enrich_review(db, review),
@@ -527,7 +542,7 @@ async def submit_review_by_route(
         raise
     except Exception as e:
         db.rollback()
-        logger.exception("Error submitting review by route")
+        logger.exception(f"[review.submit_route] CRASH tenant={ctx['tenant_id']} employee={ctx['employee_id']} route_id={route_id} error={e}")
         raise handle_http_error(e)
 
 
@@ -551,6 +566,7 @@ async def get_my_review(
     - Booking doesn't belong to this employee: 404
     - Review not yet submitted: 404
     """
+    logger.info(f"[review.get_my] START tenant={ctx['tenant_id']} employee={ctx['employee_id']} booking_id={booking_id}")
     try:
         tenant_id = ctx["tenant_id"]
         employee_id = ctx["employee_id"]
@@ -565,6 +581,7 @@ async def get_my_review(
             .first()
         )
         if not booking:
+            logger.warning(f"[review.get_my] 404 BOOKING_NOT_FOUND tenant={tenant_id} employee={employee_id} booking_id={booking_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error("Booking not found or access denied", "BOOKING_NOT_FOUND"),
@@ -579,11 +596,13 @@ async def get_my_review(
             .first()
         )
         if not review:
+            logger.warning(f"[review.get_my] 404 REVIEW_NOT_FOUND tenant={tenant_id} employee={employee_id} booking_id={booking_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error("No review found for this booking", "REVIEW_NOT_FOUND"),
             )
 
+        logger.info(f"[review.get_my] OK tenant={tenant_id} employee={employee_id} booking_id={booking_id} review_id={review.review_id}")
         return ResponseWrapper.success(
             data=_enrich_review(db, review),
             message="Review fetched successfully",
@@ -591,7 +610,7 @@ async def get_my_review(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Error fetching employee review")
+        logger.exception(f"[review.get_my] CRASH tenant={ctx['tenant_id']} employee={ctx['employee_id']} booking_id={booking_id} error={e}")
         raise handle_http_error(e)
 
 
@@ -638,6 +657,11 @@ async def list_reviews(
     route_id             → reviews tied to a specific route
     min_rating / max_rating → filter by overall_rating (1-5)
     """
+    logger.info(
+        f"[review.list] START tenant={ctx['tenant_id']} page={page} per_page={per_page} "
+        f"from_date={from_date} to_date={to_date} driver_id={driver_id} "
+        f"employee_id={employee_id} route_id={route_id} min_rating={min_rating} max_rating={max_rating}"
+    )
     try:
         tenant_id = ctx["tenant_id"]
 
@@ -668,6 +692,7 @@ async def list_reviews(
             .all()
         )
 
+        logger.info(f"[review.list] OK tenant={tenant_id} total={total} page={page} returning={len(reviews)}")
         return ResponseWrapper.paginated(
             items=[_enrich_review(db, r) for r in reviews],
             total=total,
@@ -677,7 +702,7 @@ async def list_reviews(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Error listing reviews")
+        logger.exception(f"[review.list] CRASH tenant={ctx['tenant_id']} error={e}")
         raise handle_http_error(e)
 
 
@@ -701,6 +726,7 @@ async def get_booking_review(
     - Booking from a different tenant: 404
     - Review not yet submitted: 404
     """
+    logger.info(f"[review.get_booking] START tenant={ctx['tenant_id']} booking_id={booking_id}")
     try:
         tenant_id = ctx["tenant_id"]
 
@@ -710,6 +736,7 @@ async def get_booking_review(
             .first()
         )
         if not booking:
+            logger.warning(f"[review.get_booking] 404 BOOKING_NOT_FOUND tenant={tenant_id} booking_id={booking_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error("Booking not found", "BOOKING_NOT_FOUND"),
@@ -721,11 +748,13 @@ async def get_booking_review(
             .first()
         )
         if not review:
+            logger.warning(f"[review.get_booking] 404 REVIEW_NOT_FOUND tenant={tenant_id} booking_id={booking_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error("No review found for this booking", "REVIEW_NOT_FOUND"),
             )
 
+        logger.info(f"[review.get_booking] OK tenant={tenant_id} booking_id={booking_id} review_id={review.review_id}")
         return ResponseWrapper.success(
             data=_enrich_review(db, review),
             message="Review fetched successfully",
@@ -733,7 +762,7 @@ async def get_booking_review(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Error fetching booking review")
+        logger.exception(f"[review.get_booking] CRASH tenant={ctx['tenant_id']} booking_id={booking_id} error={e}")
         raise handle_http_error(e)
 
 
@@ -763,6 +792,7 @@ async def get_driver_reviews(
     - Driver not in this tenant: 404 | No reviews yet: empty list, null avg
     - date range start > end: empty list (DB handles naturally)
     """
+    logger.info(f"[review.driver_summary] START tenant={ctx['tenant_id']} driver_id={driver_id} page={page} per_page={per_page} start_date={start_date} end_date={end_date} route_id={route_id}")
     try:
         tenant_id = ctx["tenant_id"]
 
@@ -772,6 +802,7 @@ async def get_driver_reviews(
             .first()
         )
         if not driver:
+            logger.warning(f"[review.driver_summary] 404 DRIVER_NOT_FOUND tenant={tenant_id} driver_id={driver_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error("Driver not found", "DRIVER_NOT_FOUND"),
@@ -795,6 +826,7 @@ async def get_driver_reviews(
         offset = (page - 1) * per_page
         page_reviews = all_reviews[offset: offset + per_page]
 
+        logger.info(f"[review.driver_summary] OK tenant={tenant_id} driver_id={driver_id} driver_name='{driver.name}' total_reviews={total} avg_rating={agg['average_rating']}")
         return ResponseWrapper.success(
             data={
                 "summary": {
@@ -815,7 +847,7 @@ async def get_driver_reviews(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Error fetching driver reviews")
+        logger.exception(f"[review.driver_summary] CRASH tenant={ctx['tenant_id']} driver_id={driver_id} error={e}")
         raise handle_http_error(e)
 
 
@@ -844,11 +876,13 @@ async def get_vehicle_reviews(
     Edge cases:
     - Vehicle not found in tenant: 404 | No reviews yet: empty list, null avg
     """
+    logger.info(f"[review.vehicle_summary] START tenant={ctx['tenant_id']} vehicle_id={vehicle_id} page={page} per_page={per_page} start_date={start_date} end_date={end_date} route_id={route_id}")
     try:
         tenant_id = ctx["tenant_id"]
 
         vehicle = db.query(Vehicle).filter(Vehicle.vehicle_id == vehicle_id).first()
         if not vehicle:
+            logger.warning(f"[review.vehicle_summary] 404 VEHICLE_NOT_FOUND tenant={tenant_id} vehicle_id={vehicle_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error("Vehicle not found", "VEHICLE_NOT_FOUND"),
@@ -872,6 +906,7 @@ async def get_vehicle_reviews(
         offset = (page - 1) * per_page
         page_reviews = all_reviews[offset: offset + per_page]
 
+        logger.info(f"[review.vehicle_summary] OK tenant={tenant_id} vehicle_id={vehicle_id} rc_number='{vehicle.rc_number}' total_reviews={total} avg_rating={agg['average_rating']}")
         return ResponseWrapper.success(
             data={
                 "summary": {
@@ -892,5 +927,5 @@ async def get_vehicle_reviews(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Error fetching vehicle reviews")
+        logger.exception(f"[review.vehicle_summary] CRASH tenant={ctx['tenant_id']} vehicle_id={vehicle_id} error={e}")
         raise handle_http_error(e)
