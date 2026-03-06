@@ -185,16 +185,24 @@ def create_announcement_endpoint(
     db: Session = Depends(get_db),
 ):
     """Create a new announcement in DRAFT status. Use /publish to broadcast it."""
-    ann = create_announcement(
-        db=db,
-        tenant_id=auth["tenant_id"],
-        created_by=auth.get("user_id"),
-        payload=payload,
-    )
-    return ResponseWrapper.created(
-        data=_ann_to_dict(ann),
-        message="Announcement created successfully",
-    )
+    logger.info(f"[announcement.create] START tenant={auth['tenant_id']} user={auth.get('user_id')} title='{payload.title}' content_type={payload.content_type} target_type={payload.target_type}")
+    try:
+        ann = create_announcement(
+            db=db,
+            tenant_id=auth["tenant_id"],
+            created_by=auth.get("user_id"),
+            payload=payload,
+        )
+        logger.info(f"[announcement.create] OK tenant={auth['tenant_id']} announcement_id={ann.announcement_id} title='{ann.title}'")
+        return ResponseWrapper.created(
+            data=_ann_to_dict(ann),
+            message="Announcement created successfully",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[announcement.create] CRASH tenant={auth['tenant_id']} title='{payload.title}' error={e}")
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -259,29 +267,42 @@ def list_announcements_endpoint(
             )
 
     if date_field not in ("created_at", "published_at"):
+        logger.warning(f"[announcement.list] 422 INVALID_DATE_FIELD tenant={auth['tenant_id']} date_field={date_field!r}")
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="date_field must be 'created_at' or 'published_at'",
         )
 
-    items, total = list_announcements(
-        db=db,
-        tenant_id=auth["tenant_id"],
-        page=page,
-        page_size=page_size,
-        status_filter=status_filter,
-        content_type_filter=content_type,
-        target_type_filter=target_type,
-        from_date=_parse_date(from_date),
-        to_date=_parse_date(to_date),
-        date_field=date_field,
+    logger.info(
+        f"[announcement.list] START tenant={auth['tenant_id']} page={page} page_size={page_size} "
+        f"status={status_filter} content_type={content_type} target_type={target_type} "
+        f"from_date={from_date} to_date={to_date} date_field={date_field}"
     )
-    return ResponseWrapper.paginated(
-        items=[_ann_to_dict(a) for a in items],
-        total=total,
-        page=page,
-        per_page=page_size,
-    )
+    try:
+        items, total = list_announcements(
+            db=db,
+            tenant_id=auth["tenant_id"],
+            page=page,
+            page_size=page_size,
+            status_filter=status_filter,
+            content_type_filter=content_type,
+            target_type_filter=target_type,
+            from_date=_parse_date(from_date),
+            to_date=_parse_date(to_date),
+            date_field=date_field,
+        )
+        logger.info(f"[announcement.list] OK tenant={auth['tenant_id']} total={total} page={page} returning={len(items)}")
+        return ResponseWrapper.paginated(
+            items=[_ann_to_dict(a) for a in items],
+            total=total,
+            page=page,
+            per_page=page_size,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[announcement.list] CRASH tenant={auth['tenant_id']} error={e}")
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -295,8 +316,18 @@ def get_announcement_endpoint(
     db: Session = Depends(get_db),
 ):
     """Get full details for one announcement."""
-    ann = _get_or_404(db, announcement_id, auth["tenant_id"])
-    return ResponseWrapper.success(data=_ann_to_dict(ann))
+    logger.info(f"[announcement.get] START tenant={auth['tenant_id']} announcement_id={announcement_id}")
+    try:
+        ann = _get_or_404(db, announcement_id, auth["tenant_id"])
+        logger.info(f"[announcement.get] OK tenant={auth['tenant_id']} announcement_id={announcement_id} title='{ann.title}' status={_enum_val(ann.status)}")
+        return ResponseWrapper.success(data=_ann_to_dict(ann))
+    except HTTPException as e:
+        if e.status_code == 404:
+            logger.warning(f"[announcement.get] 404 NOT_FOUND tenant={auth['tenant_id']} announcement_id={announcement_id}")
+        raise
+    except Exception as e:
+        logger.exception(f"[announcement.get] CRASH tenant={auth['tenant_id']} announcement_id={announcement_id} error={e}")
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -311,15 +342,25 @@ def update_announcement_endpoint(
     db: Session = Depends(get_db),
 ):
     """Update a DRAFT announcement. Returns 400 if already published."""
-    ann = _get_or_404(db, announcement_id, auth["tenant_id"])
+    logger.info(f"[announcement.update] START tenant={auth['tenant_id']} announcement_id={announcement_id} fields={[k for k, v in payload.dict(exclude_unset=True).items()]}")
     try:
+        ann = _get_or_404(db, announcement_id, auth["tenant_id"])
         ann = update_announcement(db=db, ann=ann, payload=payload)
+        logger.info(f"[announcement.update] OK tenant={auth['tenant_id']} announcement_id={announcement_id} status={_enum_val(ann.status)}")
+        return ResponseWrapper.updated(
+            data=_ann_to_dict(ann),
+            message="Announcement updated successfully",
+        )
+    except HTTPException as e:
+        if e.status_code == 404:
+            logger.warning(f"[announcement.update] 404 NOT_FOUND tenant={auth['tenant_id']} announcement_id={announcement_id}")
+        raise
     except ValueError as exc:
+        logger.warning(f"[announcement.update] 400 INVALID tenant={auth['tenant_id']} announcement_id={announcement_id} reason={exc}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-    return ResponseWrapper.updated(
-        data=_ann_to_dict(ann),
-        message="Announcement updated successfully",
-    )
+    except Exception as e:
+        logger.exception(f"[announcement.update] CRASH tenant={auth['tenant_id']} announcement_id={announcement_id} error={e}")
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -341,15 +382,29 @@ def publish_announcement_endpoint(
       - Sends batch push notifications
       - Updates delivery counters
     """
-    ann = _get_or_404(db, announcement_id, auth["tenant_id"])
+    logger.info(f"[announcement.publish] START tenant={auth['tenant_id']} announcement_id={announcement_id}")
     try:
+        ann = _get_or_404(db, announcement_id, auth["tenant_id"])
+        logger.info(f"[announcement.publish] PUBLISHING tenant={auth['tenant_id']} announcement_id={announcement_id} title='{ann.title}' target_type={_enum_val(ann.target_type)}")
         ann = publish_announcement(db=db, ann=ann)
+        logger.info(
+            f"[announcement.publish] OK tenant={auth['tenant_id']} announcement_id={announcement_id} "
+            f"recipients={ann.total_recipients} push_ok={ann.success_count} push_fail={ann.failure_count} no_device={ann.no_device_count}"
+        )
+        return ResponseWrapper.success(
+            data=_ann_to_dict(ann),
+            message=f"Announcement published to {ann.total_recipients} recipient(s)",
+        )
+    except HTTPException as e:
+        if e.status_code == 404:
+            logger.warning(f"[announcement.publish] 404 NOT_FOUND tenant={auth['tenant_id']} announcement_id={announcement_id}")
+        raise
     except ValueError as exc:
+        logger.warning(f"[announcement.publish] 400 INVALID tenant={auth['tenant_id']} announcement_id={announcement_id} reason={exc}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-    return ResponseWrapper.success(
-        data=_ann_to_dict(ann),
-        message=f"Announcement published to {ann.total_recipients} recipient(s)",
-    )
+    except Exception as e:
+        logger.exception(f"[announcement.publish] CRASH tenant={auth['tenant_id']} announcement_id={announcement_id} error={e}")
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -363,9 +418,19 @@ def delete_announcement_endpoint(
     db: Session = Depends(get_db),
 ):
     """Soft-delete an announcement (is_active=False). DRAFT → CANCELLED."""
-    ann = _get_or_404(db, announcement_id, auth["tenant_id"])
-    delete_announcement(db=db, ann=ann)
-    return ResponseWrapper.deleted(message="Announcement deleted successfully")
+    logger.info(f"[announcement.delete] START tenant={auth['tenant_id']} announcement_id={announcement_id}")
+    try:
+        ann = _get_or_404(db, announcement_id, auth["tenant_id"])
+        delete_announcement(db=db, ann=ann)
+        logger.info(f"[announcement.delete] OK tenant={auth['tenant_id']} announcement_id={announcement_id} title='{ann.title}'")
+        return ResponseWrapper.deleted(message="Announcement deleted successfully")
+    except HTTPException as e:
+        if e.status_code == 404:
+            logger.warning(f"[announcement.delete] 404 NOT_FOUND tenant={auth['tenant_id']} announcement_id={announcement_id}")
+        raise
+    except Exception as e:
+        logger.exception(f"[announcement.delete] CRASH tenant={auth['tenant_id']} announcement_id={announcement_id} error={e}")
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -381,19 +446,29 @@ def list_announcement_recipients_endpoint(
     db: Session = Depends(get_db),
 ):
     """List per-user delivery status for a published announcement."""
-    ann = _get_or_404(db, announcement_id, auth["tenant_id"])
-    items, total = list_recipients(
-        db=db,
-        announcement_id=ann.announcement_id,
-        page=page,
-        page_size=page_size,
-    )
-    return ResponseWrapper.paginated(
-        items=[_rec_to_dict(r) for r in items],
-        total=total,
-        page=page,
-        per_page=page_size,
-    )
+    logger.info(f"[announcement.recipients] START tenant={auth['tenant_id']} announcement_id={announcement_id} page={page} page_size={page_size}")
+    try:
+        ann = _get_or_404(db, announcement_id, auth["tenant_id"])
+        items, total = list_recipients(
+            db=db,
+            announcement_id=ann.announcement_id,
+            page=page,
+            page_size=page_size,
+        )
+        logger.info(f"[announcement.recipients] OK tenant={auth['tenant_id']} announcement_id={announcement_id} total={total} page={page} returning={len(items)}")
+        return ResponseWrapper.paginated(
+            items=[_rec_to_dict(r) for r in items],
+            total=total,
+            page=page,
+            per_page=page_size,
+        )
+    except HTTPException as e:
+        if e.status_code == 404:
+            logger.warning(f"[announcement.recipients] 404 NOT_FOUND tenant={auth['tenant_id']} announcement_id={announcement_id}")
+        raise
+    except Exception as e:
+        logger.exception(f"[announcement.recipients] CRASH tenant={auth['tenant_id']} announcement_id={announcement_id} error={e}")
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -442,24 +517,36 @@ def employee_list_announcements(
                 detail=f"Invalid date format '{s}'. Use ISO format: YYYY-MM-DD",
             )
 
-    items, total = get_announcements_for_user(
-        db=db,
-        tenant_id=auth["tenant_id"],
-        recipient_type="employee",
-        recipient_user_id=auth["user_id"],
-        page=page,
-        page_size=page_size,
-        from_date=_parse_date(from_date),
-        to_date=_parse_date(to_date),
-        unread_only=unread_only,
-        content_type_filter=content_type,
+    logger.info(
+        f"[announcement.employee_list] START tenant={auth['tenant_id']} user_id={auth['user_id']} "
+        f"page={page} page_size={page_size} unread_only={unread_only} "
+        f"content_type={content_type} from_date={from_date} to_date={to_date}"
     )
-    return ResponseWrapper.paginated(
-        items=items,
-        total=total,
-        page=page,
-        per_page=page_size,
-    )
+    try:
+        items, total = get_announcements_for_user(
+            db=db,
+            tenant_id=auth["tenant_id"],
+            recipient_type="employee",
+            recipient_user_id=auth["user_id"],
+            page=page,
+            page_size=page_size,
+            from_date=_parse_date(from_date),
+            to_date=_parse_date(to_date),
+            unread_only=unread_only,
+            content_type_filter=content_type,
+        )
+        logger.info(f"[announcement.employee_list] OK tenant={auth['tenant_id']} user_id={auth['user_id']} total={total} page={page} returning={len(items)}")
+        return ResponseWrapper.paginated(
+            items=items,
+            total=total,
+            page=page,
+            per_page=page_size,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[announcement.employee_list] CRASH tenant={auth['tenant_id']} user_id={auth['user_id']} error={e}")
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -473,21 +560,30 @@ def employee_mark_announcement_read(
     db: Session = Depends(get_db),
 ):
     """Mark an announcement as read for the authenticated employee."""
-    rec = mark_announcement_read(
-        db=db,
-        announcement_id=announcement_id,
-        recipient_type="employee",
-        recipient_user_id=auth["user_id"],
-    )
-    if not rec:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Announcement not found for this user",
+    logger.info(f"[announcement.employee_read] START tenant={auth['tenant_id']} user_id={auth['user_id']} announcement_id={announcement_id}")
+    try:
+        rec = mark_announcement_read(
+            db=db,
+            announcement_id=announcement_id,
+            recipient_type="employee",
+            recipient_user_id=auth["user_id"],
         )
-    return ResponseWrapper.success(
-        data={"read_at": rec.read_at.isoformat() if rec.read_at else None},
-        message="Marked as read",
-    )
+        if not rec:
+            logger.warning(f"[announcement.employee_read] 404 NOT_FOUND tenant={auth['tenant_id']} user_id={auth['user_id']} announcement_id={announcement_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Announcement not found for this user",
+            )
+        logger.info(f"[announcement.employee_read] OK tenant={auth['tenant_id']} user_id={auth['user_id']} announcement_id={announcement_id} read_at={rec.read_at}")
+        return ResponseWrapper.success(
+            data={"read_at": rec.read_at.isoformat() if rec.read_at else None},
+            message="Marked as read",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[announcement.employee_read] CRASH tenant={auth['tenant_id']} user_id={auth['user_id']} announcement_id={announcement_id} error={e}")
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -536,24 +632,36 @@ def driver_list_announcements(
                 detail=f"Invalid date format '{s}'. Use ISO format: YYYY-MM-DD",
             )
 
-    items, total = get_announcements_for_user(
-        db=db,
-        tenant_id=auth["tenant_id"],
-        recipient_type="driver",
-        recipient_user_id=auth["user_id"],
-        page=page,
-        page_size=page_size,
-        from_date=_parse_date(from_date),
-        to_date=_parse_date(to_date),
-        unread_only=unread_only,
-        content_type_filter=content_type,
+    logger.info(
+        f"[announcement.driver_list] START tenant={auth['tenant_id']} user_id={auth['user_id']} "
+        f"page={page} page_size={page_size} unread_only={unread_only} "
+        f"content_type={content_type} from_date={from_date} to_date={to_date}"
     )
-    return ResponseWrapper.paginated(
-        items=items,
-        total=total,
-        page=page,
-        per_page=page_size,
-    )
+    try:
+        items, total = get_announcements_for_user(
+            db=db,
+            tenant_id=auth["tenant_id"],
+            recipient_type="driver",
+            recipient_user_id=auth["user_id"],
+            page=page,
+            page_size=page_size,
+            from_date=_parse_date(from_date),
+            to_date=_parse_date(to_date),
+            unread_only=unread_only,
+            content_type_filter=content_type,
+        )
+        logger.info(f"[announcement.driver_list] OK tenant={auth['tenant_id']} user_id={auth['user_id']} total={total} page={page} returning={len(items)}")
+        return ResponseWrapper.paginated(
+            items=items,
+            total=total,
+            page=page,
+            per_page=page_size,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[announcement.driver_list] CRASH tenant={auth['tenant_id']} user_id={auth['user_id']} error={e}")
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -567,18 +675,27 @@ def driver_mark_announcement_read(
     db: Session = Depends(get_db),
 ):
     """Mark an announcement as read for the authenticated driver."""
-    rec = mark_announcement_read(
-        db=db,
-        announcement_id=announcement_id,
-        recipient_type="driver",
-        recipient_user_id=auth["user_id"],
-    )
-    if not rec:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Announcement not found for this user",
+    logger.info(f"[announcement.driver_read] START tenant={auth['tenant_id']} user_id={auth['user_id']} announcement_id={announcement_id}")
+    try:
+        rec = mark_announcement_read(
+            db=db,
+            announcement_id=announcement_id,
+            recipient_type="driver",
+            recipient_user_id=auth["user_id"],
         )
-    return ResponseWrapper.success(
-        data={"read_at": rec.read_at.isoformat() if rec.read_at else None},
-        message="Marked as read",
-    )
+        if not rec:
+            logger.warning(f"[announcement.driver_read] 404 NOT_FOUND tenant={auth['tenant_id']} user_id={auth['user_id']} announcement_id={announcement_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Announcement not found for this user",
+            )
+        logger.info(f"[announcement.driver_read] OK tenant={auth['tenant_id']} user_id={auth['user_id']} announcement_id={announcement_id} read_at={rec.read_at}")
+        return ResponseWrapper.success(
+            data={"read_at": rec.read_at.isoformat() if rec.read_at else None},
+            message="Marked as read",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[announcement.driver_read] CRASH tenant={auth['tenant_id']} user_id={auth['user_id']} announcement_id={announcement_id} error={e}")
+        raise
