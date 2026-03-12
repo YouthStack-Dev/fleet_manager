@@ -304,7 +304,7 @@ async def submit_review_by_booking(
     booking_id: int,
     payload: RideReviewCreate,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["app-employee.read", "app-employee.write"])),
+    user_data=Depends(PermissionChecker(["employee_app.create"])),
 ):
     """
     Employee submits an optional review after a Completed ride.
@@ -403,7 +403,7 @@ async def submit_review_by_route(
     route_id: int,
     payload: RideReviewCreate,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["app-employee.read", "app-employee.write"])),
+    user_data=Depends(PermissionChecker(["employee_app.create"])),
 ):
     """
     Alternative: employee references the route instead of the booking.
@@ -529,7 +529,7 @@ async def submit_review_by_route(
 async def get_my_review(
     booking_id: int,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["app-employee.read", "app-employee.write"])),
+    user_data=Depends(PermissionChecker(["employee_app.read"])),
 ):
     """
     Employee reads the review they previously submitted.

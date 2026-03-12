@@ -72,7 +72,7 @@ async def trigger_alert(
     request: AlertTriggerRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_employee: dict = Depends(PermissionChecker(["app-employee.read", "app-employee.write", "booking.read"]))
+    current_employee: dict = Depends(PermissionChecker(["employee_app.create"]))
 ):
     """
     Trigger SOS alert from employee
@@ -240,7 +240,7 @@ def get_active_alerts(
     team_id: Optional[int] = Query(None, description="Filter by team (branch managers only)"),
     employee_id: Optional[int] = Query(None, description="Filter by employee (branch managers only)"),
     db: Session = Depends(get_db),
-    current_employee: dict = Depends(PermissionChecker(["app-employee.read", "app-employee.write", "booking.read"]))
+    current_employee: dict = Depends(PermissionChecker(["employee_app.read"]))
 ):
     """
     Get active alerts
@@ -323,7 +323,7 @@ def get_team_alerts(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    current_employee: dict = Depends(PermissionChecker(["app-employee.read", "app-employee.write", "booking.read"]))
+    current_employee: dict = Depends(PermissionChecker(["employee_app.read"]))
 ):
     """
     Get all team/tenant alerts (for branch managers and responders)
@@ -403,7 +403,7 @@ def get_my_alerts(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    current_employee: dict = Depends(PermissionChecker(["app-employee.read", "app-employee.write", "booking.read"]))
+    current_employee: dict = Depends(PermissionChecker(["employee_app.read"]))
 ):
     """
     Get employee's own alert history with filters
@@ -463,7 +463,7 @@ def get_my_alerts(
 def get_alert_details(
     alert_id: int,
     db: Session = Depends(get_db),
-    current_employee: dict = Depends(PermissionChecker(["app-employee.read", "app-employee.write", "booking.read"]))
+    current_employee: dict = Depends(PermissionChecker(["employee_app.read"]))
 ):
     """
     Get alert details by ID
@@ -537,7 +537,7 @@ async def acknowledge_alert(
     request: AlertAcknowledgeRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_employee: dict = Depends(PermissionChecker(["app-employee.read", "app-employee.write", "booking.read"]))
+    current_employee: dict = Depends(PermissionChecker(["employee_app.update"]))
 ):
     """
     Acknowledge alert (responder only)
@@ -658,7 +658,7 @@ async def close_alert(
     request: AlertCloseRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_employee: dict = Depends(PermissionChecker(["app-employee.read", "app-employee.write", "booking.read"]))
+    current_employee: dict = Depends(PermissionChecker(["employee_app.update"]))
 ):
     """
     Close alert with resolution
@@ -779,7 +779,7 @@ async def manual_escalate_alert(
     request: AlertEscalateRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_employee: dict = Depends(PermissionChecker(["app-employee.read", "app-employee.write", "booking.read"]))
+    current_employee: dict = Depends(PermissionChecker(["employee_app.create"]))
 ):
     """
     Manually escalate alert to higher level
@@ -906,7 +906,7 @@ async def manual_escalate_alert(
 def get_alert_timeline(
     alert_id: int,
     db: Session = Depends(get_db),
-    current_employee: dict = Depends(PermissionChecker(["app-employee.read", "app-employee.write", "booking.read"]))
+    current_employee: dict = Depends(PermissionChecker(["employee_app.read"]))
 ):
     """
     Get alert event timeline
@@ -1072,7 +1072,7 @@ async def send_escalation_notification(
 def delete_alert(
     alert_id: int,
     db: Session = Depends(get_db),
-    current_employee: dict = Depends(PermissionChecker(["app-employee.read", "app-employee.write", "booking.read"]))
+    current_employee: dict = Depends(PermissionChecker(["employee_app.delete"]))
 ):
     """
     Delete an alert

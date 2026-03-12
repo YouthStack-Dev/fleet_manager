@@ -16,7 +16,7 @@ Admin endpoints  (booking.read permission required — tenant_id from JWT)
   DELETE /announcements/{id}                 → soft-delete
   GET    /announcements/{id}/recipients      → per-user delivery tracking
 
-Employee app endpoints  (app-employee.read OR app-employee.write)
+Employee app endpoints  (employee_app.read / employee_app.create)
 ──────────────────────────────────────────────────────────────────
   GET    /employee/announcements             → list announcements I received
   POST   /employee/announcements/{id}/read   → mark as read
@@ -438,7 +438,7 @@ def employee_list_announcements(
     content_type: Optional[str] = Query(
         None, description="Filter by content type: text | image | video | audio | pdf | link"
     ),
-    user_data=Depends(PermissionChecker(["app-employee.read", "app-employee.write"])),
+    user_data=Depends(PermissionChecker(["employee_app.read"])),
     db: Session = Depends(get_db),
 ):
     """
@@ -503,7 +503,7 @@ def employee_list_announcements(
 @router.post("/employee/announcements/{announcement_id}/read")
 def employee_mark_announcement_read(
     announcement_id: int,
-    user_data=Depends(PermissionChecker(["app-employee.read", "app-employee.write"])),
+    user_data=Depends(PermissionChecker(["employee_app.create"])),
     db: Session = Depends(get_db),
 ):
     """Mark an announcement as read for the authenticated employee."""
