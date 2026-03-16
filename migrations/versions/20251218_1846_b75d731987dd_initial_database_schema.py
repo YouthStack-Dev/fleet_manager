@@ -35,66 +35,78 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('tenant_id')
     )
     
-    # Create permissions table
+    # Create iam_permissions table
     op.create_table(
-        'permissions',
+        'iam_permissions',
         sa.Column('permission_id', sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column('resource', sa.String(length=100), nullable=False),
-        sa.Column('action', sa.String(length=100), nullable=False),
-        sa.Column('description', sa.Text(), nullable=True),
+        sa.Column('module', sa.String(length=100), nullable=False),
+        sa.Column('action', sa.String(length=50), nullable=False),
+        sa.Column('description', sa.String(length=255), nullable=True),
+        sa.Column('is_active', sa.Boolean(), nullable=False, server_default='true'),
         sa.Column('created_at', sa.DateTime(), nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.Column('updated_at', sa.DateTime(), nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.PrimaryKeyConstraint('permission_id'),
-        sa.UniqueConstraint('resource', 'action', name='uq_permission_resource_action')
+        sa.UniqueConstraint('module', 'action', name='uq_permission_module_action')
     )
     
-    # Create roles table
+    # Create iam_roles table
     op.create_table(
-        'roles',
+        'iam_roles',
         sa.Column('role_id', sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column('tenant_id', sa.String(length=50), nullable=True),
-        sa.Column('role_name', sa.String(length=100), nullable=False),
-        sa.Column('description', sa.Text(), nullable=True),
-        sa.Column('is_system_role', sa.Boolean(), nullable=False, server_default='false'),
+        sa.Column('name', sa.String(length=100), nullable=False),
+        sa.Column('description', sa.String(length=255), nullable=True),
         sa.Column('is_active', sa.Boolean(), nullable=False, server_default='true'),
+        sa.Column('tenant_id', sa.String(length=50), nullable=True),
+        sa.Column('is_system_role', sa.Boolean(), nullable=False, server_default='false'),
         sa.Column('created_at', sa.DateTime(), nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.Column('updated_at', sa.DateTime(), nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.PrimaryKeyConstraint('role_id'),
-        sa.ForeignKeyConstraint(['tenant_id'], ['tenants.tenant_id'], ondelete='CASCADE')
+        sa.ForeignKeyConstraint(['tenant_id'], ['tenants.tenant_id'], ondelete='CASCADE'),
+        sa.UniqueConstraint('tenant_id', 'name', name='uq_role_tenant_name'),
+        sa.CheckConstraint(
+            "(is_system_role = TRUE AND tenant_id IS NULL) OR (is_system_role = FALSE AND tenant_id IS NOT NULL)",
+            name='ck_role_system_or_tenant'
+        )
     )
     
-    # Create policies table
+    # Create iam_policies table (package_id added in 20260316_policy_package migration)
     op.create_table(
-        'policies',
+        'iam_policies',
         sa.Column('policy_id', sa.Integer(), autoincrement=True, nullable=False),
         sa.Column('tenant_id', sa.String(length=50), nullable=True),
-        sa.Column('name', sa.String(length=200), nullable=False),
-        sa.Column('description', sa.Text(), nullable=True),
+        sa.Column('name', sa.String(length=100), nullable=False),
+        sa.Column('description', sa.String(length=255), nullable=True),
         sa.Column('is_active', sa.Boolean(), nullable=False, server_default='true'),
+        sa.Column('is_system_policy', sa.Boolean(), nullable=False, server_default='false'),
         sa.Column('created_at', sa.DateTime(), nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.Column('updated_at', sa.DateTime(), nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.PrimaryKeyConstraint('policy_id'),
-        sa.ForeignKeyConstraint(['tenant_id'], ['tenants.tenant_id'], ondelete='CASCADE')
+        sa.ForeignKeyConstraint(['tenant_id'], ['tenants.tenant_id'], ondelete='CASCADE'),
+        sa.UniqueConstraint('tenant_id', 'name', name='uq_policy_tenant_name'),
+        sa.CheckConstraint(
+            "(is_system_policy = TRUE AND tenant_id IS NULL) OR (is_system_policy = FALSE AND tenant_id IS NOT NULL)",
+            name='ck_policy_system_or_tenant'
+        )
     )
     
-    # Create role_policies association table
+    # Create iam_role_policy association table
     op.create_table(
-        'role_policies',
+        'iam_role_policy',
         sa.Column('role_id', sa.Integer(), nullable=False),
         sa.Column('policy_id', sa.Integer(), nullable=False),
         sa.PrimaryKeyConstraint('role_id', 'policy_id'),
-        sa.ForeignKeyConstraint(['role_id'], ['roles.role_id'], ondelete='CASCADE'),
-        sa.ForeignKeyConstraint(['policy_id'], ['policies.policy_id'], ondelete='CASCADE')
+        sa.ForeignKeyConstraint(['role_id'], ['iam_roles.role_id'], ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['policy_id'], ['iam_policies.policy_id'], ondelete='CASCADE')
     )
-    
-    # Create policy_permissions association table
+
+    # Create iam_policy_permission association table
     op.create_table(
-        'policy_permissions',
+        'iam_policy_permission',
         sa.Column('policy_id', sa.Integer(), nullable=False),
         sa.Column('permission_id', sa.Integer(), nullable=False),
         sa.PrimaryKeyConstraint('policy_id', 'permission_id'),
-        sa.ForeignKeyConstraint(['policy_id'], ['policies.policy_id'], ondelete='CASCADE'),
-        sa.ForeignKeyConstraint(['permission_id'], ['permissions.permission_id'], ondelete='CASCADE')
+        sa.ForeignKeyConstraint(['policy_id'], ['iam_policies.policy_id'], ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['permission_id'], ['iam_permissions.permission_id'], ondelete='CASCADE')
     )
     
     # Create teams table
@@ -136,7 +148,7 @@ def upgrade() -> None:
         sa.Column('updated_at', sa.DateTime(), nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.PrimaryKeyConstraint('employee_id'),
         sa.ForeignKeyConstraint(['tenant_id'], ['tenants.tenant_id'], ondelete='CASCADE'),
-        sa.ForeignKeyConstraint(['role_id'], ['roles.role_id'], ondelete='SET NULL'),
+        sa.ForeignKeyConstraint(['role_id'], ['iam_roles.role_id'], ondelete='SET NULL'),
         sa.ForeignKeyConstraint(['team_id'], ['teams.team_id'], ondelete='SET NULL'),
         sa.UniqueConstraint('tenant_id', 'phone', name='uq_employee_tenant_phone'),
         sa.UniqueConstraint('tenant_id', 'email', name='uq_employee_tenant_email')
@@ -178,7 +190,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('driver_id'),
         sa.ForeignKeyConstraint(['tenant_id'], ['tenants.tenant_id'], ondelete='CASCADE'),
         sa.ForeignKeyConstraint(['vendor_id'], ['vendors.vendor_id'], ondelete='CASCADE'),
-        sa.ForeignKeyConstraint(['role_id'], ['roles.role_id'], ondelete='SET NULL'),
+        sa.ForeignKeyConstraint(['role_id'], ['iam_roles.role_id'], ondelete='SET NULL'),
         sa.UniqueConstraint('tenant_id', 'phone', name='uq_driver_tenant_phone'),
         sa.UniqueConstraint('tenant_id', 'email', name='uq_driver_tenant_email')
     )
@@ -308,9 +320,9 @@ def downgrade() -> None:
     op.drop_table('vendors')
     op.drop_table('employees')
     op.drop_table('teams')
-    op.drop_table('policy_permissions')
-    op.drop_table('role_policies')
-    op.drop_table('policies')
-    op.drop_table('roles')
-    op.drop_table('permissions')
+    op.drop_table('iam_policy_permission')
+    op.drop_table('iam_role_policy')
+    op.drop_table('iam_policies')
+    op.drop_table('iam_roles')
+    op.drop_table('iam_permissions')
     op.drop_table('tenants')
