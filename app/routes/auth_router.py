@@ -524,6 +524,17 @@ async def employee_login(
                 ),
             )
 
+        # Employee app access check
+        if not employee.is_app_active:
+            logger.warning(f"🚫 Login failed - App access disabled for employee: {employee.employee_id} ({form_data.username})")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Your app access has been disabled for this company. Please contact your administrator.",
+                    error_code="APP_ACCESS_DISABLED",
+                ),
+            )
+
         # Extract roles & permissions from eager-loaded data (no additional queries)
         logger.debug(f"Processing roles and permissions for employee: {employee.employee_id} in tenant: {tenant.tenant_id}")
         roles = []
@@ -734,7 +745,7 @@ async def request_employee_otp(
         else:
             employees = db.query(Employee).filter(Employee.phone == form_data.username).options(joinedload(Employee.tenant)).all()
         
-        # Check if any employee account is active
+        # Check if any employee account is active (is_app_active is checked at tenant selection stage)
         active_employees = [emp for emp in employees if emp.is_active and emp.tenant.is_active]
         
         # If no valid employees found, return proper error
@@ -1013,15 +1024,15 @@ async def verify_employee_otp(
             .all()
         )
         
-        # Filter active employees
-        active_employees = [emp for emp in employees if emp.is_active and emp.tenant.is_active]
+        # Filter active employees with app access enabled
+        active_employees = [emp for emp in employees if emp.is_active and emp.tenant.is_active and emp.is_app_active]
         
         if not active_employees:
             logger.error(f"No active employees found after OTP verification: {form_data.username}")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
-                    message="All associated accounts are inactive",
+                    message="All associated accounts are inactive or app access has been disabled",
                     error_code="ACCOUNT_INACTIVE"
                 )
             )
@@ -1206,6 +1217,17 @@ async def select_employee_tenant(
                     message="User account is inactive",
                     error_code="ACCOUNT_INACTIVE"
                 )
+            )
+
+        # Employee app access check
+        if not employee.is_app_active:
+            logger.warning(f"🚫 App access disabled for employee: {employee.employee_id}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Your app access has been disabled for this company. Please contact your administrator.",
+                    error_code="APP_ACCESS_DISABLED",
+                ),
             )
         
         # Extract roles & permissions

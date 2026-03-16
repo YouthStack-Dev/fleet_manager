@@ -112,6 +112,7 @@ class EmployeeBase(BaseModel):
     longitude: Optional[float] = Field(None, ge=-180, le=180)
     gender: Optional[GenderEnum] = None
     is_active: bool = True
+    is_app_active: bool = True
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -131,6 +132,7 @@ class EmployeeBase(BaseModel):
                 "longitude": -122.4194,
                 "gender": "Male",
                 "is_active": True,
+                "is_app_active": True,
             }
         }
     )
@@ -152,6 +154,7 @@ class EmployeeCreate(BaseModel, BaseValidatorsMixin):
     longitude: Optional[float] = Field(None, ge=-180, le=180)
     gender: Optional[GenderEnum] = None
     is_active: bool = True
+    is_app_active: bool = True
     password: str  # Required when creating
     model_config = ConfigDict(
         json_schema_extra={
@@ -171,6 +174,7 @@ class EmployeeCreate(BaseModel, BaseValidatorsMixin):
                 "longitude": -122.4194,
                 "gender": "Male",
                 "is_active": True,
+                "is_app_active": True,
                 "password": "P@ssword123",
             }
         }
@@ -194,6 +198,7 @@ class EmployeeUpdate(BaseModel, BaseValidatorsMixin):
     gender: Optional[GenderEnum] = None
     password: Optional[str] = None
     is_active: Optional[bool] = None
+    is_app_active: Optional[bool] = None
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -213,6 +218,7 @@ class EmployeeUpdate(BaseModel, BaseValidatorsMixin):
                 "longitude": -122.4194,
                 "gender": "Male",
                 "is_active": True,
+                "is_app_active": True,
                 "password": "P@ssword123",
             }
         }
