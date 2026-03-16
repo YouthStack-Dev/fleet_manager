@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from typing import Optional, List, Dict, Any
 from app.database.session import get_db
 from app.models.employee import Employee
+from app.models.iam.role import Role
 from app.schemas.employee import EmployeeCreate, EmployeeUpdate, EmployeeResponse, EmployeePaginationResponse
 from app.utils.pagination import paginate_query
 from common_utils.auth.permission_checker import PermissionChecker
@@ -97,7 +98,26 @@ def create_employee(
                 ),
             )
 
-
+        # 🔒 Role validation: if a role_id is explicitly requested, make sure it belongs
+        #    to this tenant OR is a system role. Prevents cross-tenant role assignment.
+        if getattr(employee, "role_id", None):
+            requested_role = db.query(Role).filter(Role.role_id == employee.role_id).first()
+            if not requested_role:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message=f"Role with ID {employee.role_id} does not exist",
+                        error_code="INVALID_ROLE_ID",
+                    ),
+                )
+            if not requested_role.is_system_role and str(requested_role.tenant_id) != str(tenant_id):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ResponseWrapper.error(
+                        message=f"Role '{requested_role.name}' does not belong to tenant {tenant_id}",
+                        error_code="ROLE_TENANT_MISMATCH",
+                    ),
+                )
 
         db_employee = employee_crud.create_with_tenant(db=db, obj_in=employee, tenant_id=tenant_id)
         logger.debug(f"Created employee object: {db_employee}")

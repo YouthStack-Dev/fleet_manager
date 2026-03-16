@@ -27,7 +27,7 @@ from app.routes import (
     # Notifications
     push_notifications_router,
     # IAM
-    permission_router, policy_router, role_router,
+    permission_router, policy_router, policy_package_router, role_router,
     # Observability & reporting
     monitoring_router, audit_log_router, reports_router,
     # Ride Reviews
@@ -90,9 +90,10 @@ api_router.include_router(alert_config_router)
 api_router.include_router(push_notifications_router, prefix=V1)
 
 # IAM
-api_router.include_router(permission_router, prefix=f"{V1}/iam")
-api_router.include_router(policy_router,     prefix=f"{V1}/iam")
-api_router.include_router(role_router,       prefix=f"{V1}/iam")
+api_router.include_router(permission_router,     prefix=f"{V1}/iam")
+api_router.include_router(policy_router,         prefix=f"{V1}/iam")
+api_router.include_router(policy_package_router, prefix=f"{V1}/iam")
+api_router.include_router(role_router,           prefix=f"{V1}/iam")
 
 # Observability & reporting
 api_router.include_router(monitoring_router, prefix=V1)

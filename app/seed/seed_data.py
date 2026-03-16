@@ -93,6 +93,7 @@ def seed_iam(db: Session):
     modules = [
         "booking",
         "driver",
+        "employee_app",
         "app-driver",
         "employee",
         "route-booking",
@@ -118,6 +119,7 @@ def seed_iam(db: Session):
         "escort",
         "tenant_config",
         "alert",
+        "policy-package",
     ]
 
     actions = ["create", "read", "update", "delete"]

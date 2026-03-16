@@ -91,58 +91,84 @@ class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
         ).offset(skip).limit(limit).all()
     
     def get_employee_roles_and_permissions(self, db: Session, *, employee_id: int, tenant_id: str):
-        """Get employee with their roles and permissions for a specific tenant"""
-        from app.models.iam import Role, Policy  # Import here to avoid circular imports
-        
+        """
+        Get employee with their effective roles and permissions.
+
+        Permission resolution rules
+        ───────────────────────────
+        1. Load the tenant's PolicyPackage → build a set of allowed permission_ids.
+        2. Tenant role   → only permissions present in the tenant's package are granted.
+        3. System role   → only permissions that are in BOTH the system policy AND the
+                           tenant's package (intersection) are granted.
+        4. No package    → fall back to legacy behaviour (all role permissions granted)
+                           so existing tenants without a package are not broken.
+        """
+        from app.models.iam import Role, Policy
+        from app.models.iam.policy import PolicyPackage
+
         employee = db.query(Employee).filter(
             Employee.employee_id == employee_id,
             Employee.tenant_id == tenant_id,
             Employee.is_active == True
         ).first()
-        
+
         if not employee:
             return None, [], []
-        
-        # Get roles - handle both single role and multiple roles cases
-        roles = []
-        all_permissions = []
-        
-        # Check if employee has a single role or multiple roles
+
+        # ── Build the allowed permission_id set from the tenant's PackagePolicy ──
+        package = db.query(PolicyPackage).filter_by(tenant_id=tenant_id).first()
+        allowed_permission_ids: set | None = None   # None = no package → no filtering
+        if package:
+            allowed_permission_ids = set()
+            for pol in (package.policies or []):
+                for perm in (pol.permissions or []):
+                    allowed_permission_ids.add(perm.permission_id)
+
+        # ── Collect roles ──────────────────────────────────────────────────────
         if hasattr(employee, 'roles') and employee.roles:
-            # Multiple roles case - if roles is a collection
             try:
-                role_list = list(employee.roles) if employee.roles else []
+                role_list = list(employee.roles)
             except TypeError:
-                # Single role case - if roles is a single Role object
-                role_list = [employee.roles] if employee.roles else []
+                role_list = [employee.roles]
         elif hasattr(employee, 'role') and employee.role:
-            # Single role relationship
             role_list = [employee.role]
         else:
             role_list = []
-        
+
+        roles: list[str] = []
+        all_permissions: list[dict] = []
+
         for role in role_list:
-            if role and role.is_active and (role.tenant_id == tenant_id or role.is_system_role):
-                roles.append(role.name)
-                
-                # Get permissions from role policies
-                for policy in role.policies:
-                    for permission in policy.permissions:
-                        module, action = permission.module, permission.action
-                        existing = next((p for p in all_permissions if p["module"] == module), None)
-                        if existing:
-                            if action == "*":
-                                existing["action"] = ["create", "read", "update", "delete", "*"]
-                            elif action not in existing["action"]:
-                                existing["action"].append(action)
-                        else:
-                            actions = (
-                                ["create", "read", "update", "delete", "*"]
-                                if action == "*"
-                                else [action]
-                            )
-                            all_permissions.append({"module": module, "action": actions})
-        
+            if not role or not role.is_active:
+                continue
+            if role.tenant_id != tenant_id and not role.is_system_role:
+                continue   # ignore roles from other tenants
+
+            roles.append(role.name)
+
+            for policy in (role.policies or []):
+                for permission in (policy.permissions or []):
+                    # ── Package intersection filter ────────────────────────
+                    if allowed_permission_ids is not None:
+                        if permission.permission_id not in allowed_permission_ids:
+                            # Permission not in tenant package → skip
+                            continue
+
+                    module, action = permission.module, permission.action
+                    existing = next((p for p in all_permissions if p["module"] == module), None)
+                    if existing:
+                        if action == "*":
+                            existing["action"] = ["create", "read", "update", "delete", "*"]
+                        elif action not in existing["action"]:
+                            existing["action"].append(action)
+                    else:
+                        actions = (
+                            ["create", "read", "update", "delete", "*"]
+                            if action == "*"
+                            else [action]
+                        )
+                        all_permissions.append({"module": module, "action": actions})
+
         return employee, roles, all_permissions
 
     def is_employee_team_inactive(self, db: Session, employee_id: int) -> bool:

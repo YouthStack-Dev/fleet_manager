@@ -41,7 +41,7 @@ from app.routes.alert_config_router import router as alert_config_router
 from app.routes.push_notifications import router as push_notifications_router
 
 # ── IAM ───────────────────────────────────────────────────────
-from app.routes.iam import permission_router, policy_router, role_router
+from app.routes.iam import permission_router, policy_router, policy_package_router, role_router
 
 # ── Observability & reporting ─────────────────────────────────
 from app.routes.monitoring_router import router as monitoring_router

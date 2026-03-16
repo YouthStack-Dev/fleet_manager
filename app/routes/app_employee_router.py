@@ -33,7 +33,7 @@ router = APIRouter(prefix="/employee", tags=["Employee App"])
 # Dependencies & Utilities
 # ---------------------------
 
-def EmployeeAuth(user_data=Depends(PermissionChecker(["app-employee.read", "app-employee.write","booking.read"]))):
+def EmployeeAuth(user_data=Depends(PermissionChecker(["employee_app.read"]))):
     """
     Ensures the token belongs to an employee persona and returns (tenant_id, employee_id, user_id).
     """

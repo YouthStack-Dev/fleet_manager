@@ -3,10 +3,29 @@ from typing import Optional, List
 from datetime import datetime
 from app.schemas.iam.permission import PermissionResponse
 
+
+class PolicyPackageBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = Field(None, max_length=255)
+    tenant_id: str
+    # FK pointer to the primary policy — NULL until the first policy is created
+    default_policy_id: Optional[int] = None
+
+class PolicyPackageCreate(PolicyPackageBase):
+    pass
+
+class PolicyPackageResponse(PolicyPackageBase):
+    package_id: int
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
 class PolicyBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = Field(None, max_length=255)
     tenant_id: Optional[str] = None
+    package_id: Optional[int] = None
     is_system_policy: bool = False
     is_active: bool = True
 
@@ -24,7 +43,6 @@ class PolicyResponse(PolicyBase):
     permissions: List[PermissionResponse] = []
     created_at: datetime
     updated_at: datetime
-
     model_config = ConfigDict(from_attributes=True)
 
 class PolicyPaginationResponse(BaseModel):

@@ -73,105 +73,77 @@ def resolve_tenant_id(user_data: dict, tenant_id_from_request: Optional[str] = N
     
     return resolved_tenant_id
 
-def extract_user_permissions(user_data) -> set:
-    """Extract permission names from user_data"""
+def extract_user_permissions(user_data, db=None) -> set:
+    """
+    Extract permission names from user_data, resolving only those present in the tenant's PolicyPackage (if tenant).
+    """
     user_permissions_data = user_data.get("permissions", [])
     user_permissions = set()
-    
-    print(f"DEBUG - Raw permissions data: {user_permissions_data}")
-    
-    if user_permissions_data:
+    tenant_id = user_data.get("tenant_id")
+    if db and tenant_id:
+        # Only include permissions from the tenant's PolicyPackage
+        from app.models.iam.policy import PolicyPackage
+        package = db.query(PolicyPackage).filter_by(tenant_id=tenant_id).first()
+        allowed_permission_ids = set()
+        if package:
+            for policy in package.policies:
+                for perm in policy.permissions:
+                    allowed_permission_ids.add(perm.permission_id)
         for perm in user_permissions_data:
-            if isinstance(perm, dict):
-                # Handle the actual structure: {'module': 'role', 'action': ['create', 'read']}
-                module = perm.get("module", "")
-                actions = perm.get("action", [])
-                
+            module = perm.get("module", "")
+            actions = perm.get("action", [])
+            perm_id = perm.get("permission_id")
+            if perm_id and perm_id in allowed_permission_ids:
                 if module and actions:
                     for action in actions:
-                        permission_name = f"{module}.{action}"
-                        user_permissions.add(permission_name)
-                        print(f"DEBUG - Added permission: {permission_name}")
-                
-                # Also handle other possible structures
-                perm_name = perm.get("name") or perm.get("permission_name")
-                if perm_name:
-                    user_permissions.add(str(perm_name))
-                    print(f"DEBUG - Added permission (name): {perm_name}")
-            elif isinstance(perm, str):
-                user_permissions.add(perm)
-                print(f"DEBUG - Added permission (string): {perm}")
-            else:
-                if hasattr(perm, 'name'):
-                    user_permissions.add(str(perm.name))
-                    print(f"DEBUG - Added permission (attr name): {perm.name}")
-                elif hasattr(perm, 'permission_name'):
-                    user_permissions.add(str(perm.permission_name))
-                    print(f"DEBUG - Added permission (attr permission_name): {perm.permission_name}")
-    
-    print(f"DEBUG - Final extracted user permissions: {sorted(user_permissions)}")
+                        user_permissions.add(f"{module}.{action}")
+        return user_permissions
+    # Fallback: legacy extraction
+    for perm in user_permissions_data:
+        if isinstance(perm, dict):
+            module = perm.get("module", "")
+            actions = perm.get("action", [])
+            if module and actions:
+                for action in actions:
+                    user_permissions.add(f"{module}.{action}")
+            perm_name = perm.get("name") or perm.get("permission_name")
+            if perm_name:
+                user_permissions.add(str(perm_name))
+        elif isinstance(perm, str):
+            user_permissions.add(perm)
+        else:
+            if hasattr(perm, 'name'):
+                user_permissions.add(str(perm.name))
+            elif hasattr(perm, 'permission_name'):
+                user_permissions.add(str(perm.permission_name))
     return user_permissions
 
-def validate_policy_permissions(existing_policies, user_permissions: set, operation: str):
-    """Validate that user has all permissions in the policies they're trying to assign"""
-    # Extract all permissions from the policies being assigned
+def validate_policy_permissions(existing_policies, user_permissions: set, operation: str, db=None, tenant_id=None):
+    """
+    Validate that user has all permissions in the policies they're trying to assign, only considering those in the tenant's PolicyPackage.
+    """
     policy_permissions = set()
-    
-    print(f"DEBUG - Number of policies to check: {len(existing_policies)}")
-    
-    for i, policy in enumerate(existing_policies):
-        print(f"DEBUG - Policy {i+1}: ID={policy.policy_id}, Name={getattr(policy, 'name', 'N/A')}")
-        print(f"DEBUG - Policy permissions attribute: {policy.permissions}")
-        print(f"DEBUG - Policy permissions type: {type(policy.permissions)}")
-        
-        if policy.permissions:
-            print(f"DEBUG - Policy has {len(policy.permissions)} permissions")
-            for j, perm in enumerate(policy.permissions):
-                print(f"DEBUG - Permission {j+1}: {perm}, type: {type(perm)}")
-                
-                perm_name = None
-                
-                # Handle Permission objects with module and action attributes
-                if hasattr(perm, 'module') and hasattr(perm, 'action'):
-                    module = getattr(perm, 'module', '')
-                    action = getattr(perm, 'action', '')
-                    if module and action:
-                        perm_name = f"{module}.{action}"
-                        print(f"DEBUG - Constructed permission from module.action: {perm_name}")
-                # Fallback to other possible attributes
-                elif hasattr(perm, 'name'):
-                    perm_name = perm.name
-                    print(f"DEBUG - Found perm.name: {perm_name}")
-                elif hasattr(perm, 'permission_name'):
-                    perm_name = perm.permission_name
-                    print(f"DEBUG - Found perm.permission_name: {perm_name}")
-                elif isinstance(perm, str):
-                    perm_name = perm
-                    print(f"DEBUG - Permission is string: {perm_name}")
-                else:
-                    print(f"DEBUG - Could not extract permission name from: {perm}")
-                
-                if perm_name:
-                    policy_permissions.add(str(perm_name))
-                    print(f"DEBUG - Added policy permission: {perm_name}")
-        else:
-            print(f"DEBUG - Policy has no permissions or permissions is falsy")
-    
-    # Debug logging
-    print(f"DEBUG - Operation: {operation}")
-    print(f"DEBUG - User permissions: {sorted(user_permissions)}")
-    print(f"DEBUG - Policy permissions being assigned: {sorted(policy_permissions)}")
-    
-    # Check for admin override
+    allowed_permission_ids = set()
+    if db and tenant_id:
+        from app.models.iam.policy import PolicyPackage
+        package = db.query(PolicyPackage).filter_by(tenant_id=tenant_id).first()
+        if package:
+            for policy in package.policies:
+                for perm in policy.permissions:
+                    allowed_permission_ids.add(perm.permission_id)
+    for policy in existing_policies:
+        for perm in getattr(policy, "permissions", []) or []:
+            if not allowed_permission_ids or getattr(perm, "permission_id", None) in allowed_permission_ids:
+                module = getattr(perm, "module", None)
+                action = getattr(perm, "action", None)
+                if module and action:
+                    policy_permissions.add(f"{module}.{action}")
+    # Admin override
     admin_permission = f"admin.{operation}"
     if admin_permission in user_permissions:
-        print(f"DEBUG - Admin permission {admin_permission} found, allowing operation")
         return
-    
-    # Check for missing permissions
     missing_permissions = policy_permissions - user_permissions
     if missing_permissions:
-        print(f"DEBUG - Missing permissions: {sorted(missing_permissions)}")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=ResponseWrapper.error(
@@ -184,8 +156,90 @@ def validate_policy_permissions(existing_policies, user_permissions: set, operat
                 }
             )
         )
-    
-    print(f"DEBUG - Permission validation passed")
+
+
+def validate_role_policy_compatibility(
+    role_is_system: bool,
+    role_tenant_id: str | None,
+    policies: list,
+    db,
+) -> None:
+    """
+    Enforce structural compatibility between a role and the policies being attached to it.
+
+    Rules
+    ─────
+    System role  (is_system_role=True, tenant_id=NULL)
+        → May only receive system policies (is_system_policy=True).
+          At login the package intersection still applies, so system-policy
+          permissions are capped at whatever the tenant's package allows.
+
+    Tenant role  (is_system_role=False, tenant_id=X)
+        → May only receive tenant policies that
+            a) have is_system_policy=False
+            b) have tenant_id == role.tenant_id
+            c) belong to that tenant's PolicyPackage
+    """
+    from app.models.iam.policy import PolicyPackage
+
+    if role_is_system:
+        bad = [p.policy_id for p in policies if not p.is_system_policy]
+        if bad:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="System roles can only have system policies attached.",
+                    error_code="SYSTEM_ROLE_POLICY_MISMATCH",
+                    details={"non_system_policy_ids": bad},
+                ),
+            )
+        return  # system role + system policy → always OK
+
+    # ── Tenant role checks ────────────────────────────────────────────────
+    # 1. No system policies allowed
+    system_policies = [p.policy_id for p in policies if p.is_system_policy]
+    if system_policies:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ResponseWrapper.error(
+                message="Tenant roles cannot have system policies attached.",
+                error_code="TENANT_ROLE_SYSTEM_POLICY_MISMATCH",
+                details={"system_policy_ids": system_policies},
+            ),
+        )
+
+    # 2. All policies must belong to this tenant
+    wrong_tenant = [p.policy_id for p in policies if str(p.tenant_id) != str(role_tenant_id)]
+    if wrong_tenant:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ResponseWrapper.error(
+                message="Tenant roles can only have policies from the same tenant.",
+                error_code="POLICY_TENANT_MISMATCH",
+                details={"wrong_tenant_policy_ids": wrong_tenant},
+            ),
+        )
+
+    # 3. All policies must be inside the tenant's PolicyPackage
+    package = db.query(PolicyPackage).filter_by(tenant_id=role_tenant_id).first()
+    if package:
+        package_policy_ids = {p.policy_id for p in (package.policies or [])}
+        out_of_package = [p.policy_id for p in policies if p.policy_id not in package_policy_ids]
+        if out_of_package:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message=(
+                        "Some policies are not inside the tenant's policy package. "
+                        "Only package policies can be attached to tenant roles."
+                    ),
+                    error_code="POLICY_NOT_IN_PACKAGE",
+                    details={
+                        "out_of_package_policy_ids": out_of_package,
+                        "allowed_policy_ids": sorted(package_policy_ids),
+                    },
+                ),
+            )
 
 
 def serialize_permission(permission) -> str:
@@ -255,39 +309,51 @@ async def create_role(
     user_data=Depends(PermissionChecker(["role.create"], check_tenant=True))
 ):
     """Create a new role with associated policies"""
-    print(f"DEBUG - Creating role with policy_ids: {role.policy_ids}")
-    print(f"DEBUG - User data: {user_data}")
-    print(f"DEBUG - Role tenant_id: {role.tenant_id}, is_system_role: {role.is_system_role}")
-    
     user_permissions = extract_user_permissions(user_data)
-    
+
     # Handle tenant_id based on role type
     if role.is_system_role:
-        # System roles should NOT have a tenant_id
+        # System roles must NOT have a tenant_id
+        if user_data.get("user_type") != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Only admin users can create system roles",
+                    error_code="SYSTEM_ROLE_ADMIN_ONLY",
+                ),
+            )
         role.tenant_id = None
-        print(f"DEBUG - System role: setting tenant_id to None")
     else:
-        # Non-system roles MUST have a tenant_id
+        # Tenant roles must have a resolved tenant_id
         resolved_tenant_id = resolve_tenant_id(user_data, role.tenant_id)
         role.tenant_id = resolved_tenant_id
-        print(f"DEBUG - Non-system role: resolved tenant_id to {resolved_tenant_id}")
-    
-    # CRITICAL: Validate policy permissions BEFORE creating role
+
+    # Validate policy IDs and structural compatibility
     if role.policy_ids:
         existing_policies = db.query(Policy).filter(
             Policy.policy_id.in_(role.policy_ids)
         ).all()
         if len(existing_policies) != len(role.policy_ids):
+            found = {p.policy_id for p in existing_policies}
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ResponseWrapper.error(
                     message="One or more policy IDs are invalid",
                     error_code="INVALID_POLICY_IDS",
-                    details={"requested_policy_ids": role.policy_ids}
+                    details={"invalid_ids": list(set(role.policy_ids) - found)}
                 )
             )
-        
-        # This should block if user doesn't have the required permissions
+
+        # Structural check: system role → system policies only;
+        # tenant role → tenant policies in this tenant's package only
+        validate_role_policy_compatibility(
+            role_is_system=role.is_system_role,
+            role_tenant_id=role.tenant_id,
+            policies=existing_policies,
+            db=db,
+        )
+
+        # Caller must hold all permissions they're granting
         validate_policy_permissions(existing_policies, user_permissions, "create")
     
     try:
@@ -498,23 +564,32 @@ async def update_role(
                 )
             )
     
-    # CRITICAL: Validate policy permissions if policies are being updated
+    # Validate policies if being updated
     if role_update.policy_ids is not None:
         if role_update.policy_ids:
             existing_policies = db.query(Policy).filter(
                 Policy.policy_id.in_(role_update.policy_ids)
             ).all()
             if len(existing_policies) != len(role_update.policy_ids):
+                found = {p.policy_id for p in existing_policies}
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ResponseWrapper.error(
                         message="One or more policy IDs are invalid",
                         error_code="INVALID_POLICY_IDS",
-                        details={"requested_policy_ids": role_update.policy_ids}
+                        details={"invalid_ids": list(set(role_update.policy_ids) - found)}
                     )
                 )
-            
-            # This should block if user doesn't have the required permissions
+
+            # Structural check: uses the EXISTING role's type/tenant
+            validate_role_policy_compatibility(
+                role_is_system=role.is_system_role,
+                role_tenant_id=role.tenant_id,
+                policies=existing_policies,
+                db=db,
+            )
+
+            # Caller must hold all permissions they're granting
             validate_policy_permissions(existing_policies, user_permissions, "update")
     
     try:

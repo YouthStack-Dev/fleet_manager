@@ -6,7 +6,7 @@ from typing import Optional
 from app.crud.tenant import tenant_crud
 from app.database.session import get_db
 from app.models.iam.permission import Permission
-from app.models.iam.policy import Policy
+from app.models.iam.policy import Policy, PolicyPackage
 from app.models.iam.role import Role
 from app.models.tenant import Tenant
 from app.crud.tenant import tenant_crud
@@ -44,39 +44,29 @@ def create_tenant(
     user_data=Depends(PermissionChecker(["admin_tenant.create"], check_tenant=False)),
 ):
     """
-    Create a new tenant with associated default team, admin role, policy, and employee.
+    Create a new tenant with a default team and a policy package.
+
+    Roles and employees are created separately after the tenant exists.
 
     **Required permissions:** `admin_tenant.create`
 
     **Request body:**
-
     * `tenant_id`: Unique identifier for the tenant.
-    * `name`: Name of the tenant.
-    * `employee_name`: Name of the employee (tenant admin user).
-    * `employee_email`: Email of the employee (tenant admin user).
-    * `employee_phone`: Phone number of the employee (tenant admin user).
-    * `employee_password`: Password of the employee (tenant admin user) (optional).
-    * `employee_address`: Address of the employee (tenant admin user) (optional).
-    * `employee_longitude`: Longitude of the employee (tenant admin user) (optional).
-    * `employee_latitude`: Latitude of the employee (tenant admin user) (optional).
-    * `employee_gender`: Gender of the employee (tenant admin user) (optional).
-    * `employee_code`: Code of the employee (tenant admin user) (optional).
-    * `permission_ids`: List of permission IDs to attach to the admin role (optional).
+    * `name`: Tenant display name.
+    * `address`, `longitude`, `latitude`: Tenant location.
+    * `package_name`: Optional name for the auto-created policy package.
+    * `permission_ids`: Permissions to load into the tenant's default policy package.
 
     **Response:**
-
-    * `tenant`: Newly created tenant object.
-    * `team`: Newly created default team object.
-    * `admin_role`: Newly created admin role object.
-    * `admin_policy`: Newly created admin policy object.
-    * `employee`: Newly created employee object.
+    * `tenant`: Newly created tenant.
+    * `team`: Auto-created default team.
+    * `policy_package`: Auto-created package with `default_policy_id` set.
 
     **Status codes:**
-
     * `201 Created`: Tenant created successfully.
-    * `400 Bad Request`: Invalid request body or permission IDs.
-    * `409 Conflict`: Tenant with the same ID or name already exists.
-    * `500 Internal Server Error`: Unexpected server error while creating tenant.
+    * `400 Bad Request`: Invalid request body or unknown permission IDs.
+    * `409 Conflict`: Tenant ID or name already exists.
+    * `500 Internal Server Error`: Unexpected error.
     """
     logger.info(f"Create tenant request received: {tenant.model_dump()}")
 
@@ -151,111 +141,63 @@ def create_tenant(
             )
             logger.info(f"Default team created: {default_team.name}")
 
-            # --- Create Admin Role ---
-            admin_role_name = f"{new_tenant.tenant_id}_Admin"
-            admin_role = Role(
+            # --- Create PolicyPackage (the direct permission container for this tenant) ---
+            admin_package = PolicyPackage(
                 tenant_id=new_tenant.tenant_id,
-                name=admin_role_name,
-                description=f"Admin role for tenant {new_tenant.name}",
+                name=tenant.package_name or f"{new_tenant.tenant_id}_DefaultPackage",
+                description=f"Default policy package for tenant {new_tenant.name}",
+            )
+            db.add(admin_package)
+            db.flush()  # get package_id before inserting the policy
+            logger.info(f"Policy package created: id={admin_package.package_id} for tenant {new_tenant.tenant_id}")
+
+            # --- Create Default Policy inside the package (holds the permissions) ---
+            default_policy_name = f"{new_tenant.tenant_id}_DefaultPolicy"
+            default_policy = Policy(
+                tenant_id=new_tenant.tenant_id,
+                package_id=admin_package.package_id,
+                name=default_policy_name,
+                description=f"Default policy for tenant {new_tenant.name}",
                 is_active=True,
             )
-            db.add(admin_role)
-            db.flush()
-            logger.info(f"Admin role created: {admin_role_name}")
+            db.add(default_policy)
+            db.flush()  # get policy_id before setting the pointer
+            logger.info(f"Default policy created: {default_policy_name} (id={default_policy.policy_id})")
 
-            # --- Create Admin Policy ---
-            admin_policy_name = f"{new_tenant.tenant_id}_AdminPolicy"
-            admin_policy = Policy(
-                tenant_id=new_tenant.tenant_id,
-                name=admin_policy_name,
-                description=f"Admin policy for tenant {new_tenant.name}",
-                is_active=True,
+            # Point the package at its default policy — single atomic UPDATE via post_update.
+            admin_package.default_policy_id = default_policy.policy_id
+            logger.info(f"Package {admin_package.package_id} default_policy_id → {default_policy.policy_id}")
+
+            # --- Attach permissions to the default policy ---
+            permissions = (
+                db.query(Permission)
+                .filter(Permission.permission_id.in_(tenant.permission_ids))
+                .all()
             )
-            db.add(admin_policy)
-            db.flush()
-            logger.info(f"Tenant policy created: {admin_policy_name}")
-
-            # --- Attach permissions ---
-            if tenant.permission_ids:
-                permissions = (
-                    db.query(Permission)
-                    .filter(Permission.permission_id.in_(tenant.permission_ids))
-                    .all()
-                )
-
-                found_ids = {p.permission_id for p in permissions}
-                missing_ids = set(tenant.permission_ids) - found_ids
-                if missing_ids:
-                    logger.warning(
-                        f"Invalid permission IDs {list(missing_ids)} for tenant {new_tenant.tenant_id}"
-                    )
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail=ResponseWrapper.error(
-                            message="Some permission IDs are not found or invalid",
-                            error_code=status.HTTP_404_NOT_FOUND,
-                            details={"invalid_permission_ids": list(missing_ids)},
-                        ),
-                    )
-
-                admin_policy.permissions = permissions
-                logger.info(
-                    f"Attached permissions {[p.permission_id for p in permissions]} "
-                    f"({[p.module + ':' + p.action for p in permissions]}) "
-                    f"to policy {admin_policy_name}"
-                )
-
-            # --- Link Role to Policy ---
-            admin_role.policies.append(admin_policy)
-            logger.info(f"Linked role {admin_role_name} to policy {admin_policy_name}")
-
-            # --- Create Employee (Tenant Admin User) ---
-            employee_name = tenant.employee_name or f"Admin{new_tenant.name}"
-            employee_email = tenant.employee_email
-            employee_phone = tenant.employee_phone
-
-            if not employee_email or not employee_phone:
+            found_ids = {p.permission_id for p in permissions}
+            missing_ids = set(tenant.permission_ids) - found_ids
+            if missing_ids:
+                logger.warning(f"Invalid permission IDs {list(missing_ids)} for tenant {new_tenant.tenant_id}")
                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_404_NOT_FOUND,
                     detail=ResponseWrapper.error(
-                        message="Employee email and phone are mandatory",
-                        error_code=status.HTTP_400_BAD_REQUEST,
+                        message="Some permission IDs are not found or invalid",
+                        error_code=status.HTTP_404_NOT_FOUND,
+                        details={"invalid_permission_ids": list(missing_ids)},
                     ),
                 )
+            default_policy.permissions = permissions
+            logger.info(f"Attached {len(permissions)} permissions to {default_policy_name}")
 
-            employee_in = EmployeeCreate(
-                tenant_id=new_tenant.tenant_id,
-                team_id=default_team.team_id,
-                name=employee_name,
-                employee_code=tenant.employee_code or f"EMP{new_tenant.tenant_id}001",
-                email=employee_email,
-                password=tenant.employee_password or "default@123",
-                phone=employee_phone,
-                address=tenant.employee_address,
-                longitude=tenant.employee_longitude,
-                latitude=tenant.employee_latitude,
-                gender=tenant.employee_gender,
-                is_active=True,
-            )
-
-            new_employee = employee_crud.create_with_tenant(
-                db, obj_in=employee_in, role_id=admin_role.role_id, tenant_id=new_tenant.tenant_id
-            )
-            logger.info(
-                f"Employee created for tenant {new_tenant.tenant_id}: "
-                f"{new_employee.name} ({new_employee.email})"
-            )
-            
-            return new_tenant, default_team, admin_role, admin_policy, new_employee, employee_name, employee_email
+            return new_tenant, default_team, admin_package
         
         # Execute the tenant creation logic
         if use_explicit_transaction:
             with db.begin():
-                new_tenant, default_team, admin_role, admin_policy, new_employee, employee_name, employee_email = perform_tenant_creation()
+                new_tenant, default_team, admin_package = perform_tenant_creation()
         else:
             # Already in transaction (e.g., in tests), just execute directly
-            new_tenant, default_team, admin_role, admin_policy, new_employee, employee_name, employee_email = perform_tenant_creation()
-            # Commit within the existing transaction
+            new_tenant, default_team, admin_package = perform_tenant_creation()
             db.commit()
 
         # Cache the newly created tenant
@@ -267,33 +209,19 @@ def create_tenant(
         except Exception as cache_error:
             logger.warning(f"⚠️ Failed to cache new tenant: {cache_error}")
 
-        # --- Send Welcome Emails via Background Task ---
-        background_tasks.add_task(
-            send_tenant_welcome_emails,
-            tenant_data={
-                'name': new_tenant.name,
-                'tenant_id': new_tenant.tenant_id,
-                'admin_name': employee_name,
-                'admin_phone': tenant.employee_phone,
-            },
-            admin_email=employee_email,
-            admin_name=employee_name,
-            login_credentials={
-                'username': employee_email,
-                'password': tenant.employee_password or "default@123"
-            }
-        )
-
         # --- Response ---
         return ResponseWrapper.success(
             data={
                 "tenant": TenantResponse.model_validate(new_tenant),
                 "team": TeamResponse.model_validate(default_team),
-                "admin_role": RoleResponse.model_validate(admin_role),
-                "admin_policy": PolicyResponse.model_validate(admin_policy),
-                "employee": EmployeeResponse.model_validate(new_employee),
+                "policy_package": {
+                    "package_id": admin_package.package_id,
+                    "tenant_id": admin_package.tenant_id,
+                    "name": admin_package.name,
+                    "default_policy_id": admin_package.default_policy_id,
+                },
             },
-            message="Tenant, default team, admin role, policy, and employee created successfully. Welcome emails will be sent shortly.",
+            message="Tenant created with default team and policy package. Create roles and employees separately.",
         )
 
     except HTTPException:

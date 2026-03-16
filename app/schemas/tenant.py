@@ -1,7 +1,7 @@
 from datetime import datetime
 import re
-from typing import Optional, List, Literal
-from pydantic import BaseModel, EmailStr, Field, field_validator, validator, ConfigDict
+from typing import Optional, List
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 # Regex patterns
 PHONE_REGEX = r'^\+?[1-9]\d{1,14}$'  # E.164 format
@@ -58,74 +58,35 @@ class TenantCreate(BaseModel):
     longitude: float = Field(..., ge=-180, le=180, description="Longitude coordinate")
     latitude: float = Field(..., ge=-90, le=90, description="Latitude coordinate")
     is_active: bool = Field(default=True, description="Is tenant active?")
+    # Optional custom name for the auto-created policy package
+    package_name: Optional[str] = Field(None, max_length=100, description="Name for the tenant policy package")
     permission_ids: List[int] = Field(
-        ..., min_length=1, description="List of permission IDs to assign to tenant admin policy"
+        ..., min_length=1, description="Permission IDs to load into the tenant's default policy package"
     )
-    employee_email: EmailStr = Field(..., description="Admin employee email")
-    employee_phone: str = Field(..., min_length=7, max_length=20, description="Admin employee phone")
-    employee_password: str = Field(..., min_length=8, description="Admin employee password")
-    employee_name: Optional[str] = Field(None, max_length=150, description="Admin employee full name")
-    employee_address: Optional[str] = Field(None, max_length=255, description="Admin employee address")
-    employee_longitude: Optional[float] = Field(None, ge=-180, le=180, description="Employee longitude")
-    employee_latitude: Optional[float] = Field(None, ge=-90, le=90, description="Employee latitude")
-    employee_code: Optional[str] = Field(None, max_length=50, description="Custom employee code like EMP123")
-    employee_gender: Optional[Literal["Male", "Female", "Other"]] = Field(None, description="Employee gender")
-    @field_validator('employee_phone')
-    @classmethod
-    def validate_phone(cls, v):
-        if not re.match(PHONE_REGEX, v):
-            raise ValueError('Phone number must be in E.164 format (e.g., +1234567890)')
-        return v
+
     @field_validator("tenant_id")
     def validate_tenant_id(cls, v: str):
         if not re.match(USERNAME_REGEX, v):
             raise ValueError("Tenant ID must be 3–50 chars (letters, numbers, underscores)")
         return v
+
     @field_validator("name")
     def validate_name(cls, v: str):
         if not re.match(NAME_REGEX, v):
             raise ValueError("Name must be 2–50 chars, letters/spaces/hyphens/apostrophes only")
         return v
-    @field_validator('employee_name')
-    @classmethod
-    def validate_employee_name(cls, v):
-        if not re.match(NAME_REGEX, v):
-            raise ValueError('Name must be 2-50 characters long and can only contain letters, spaces, hyphens, and apostrophes')
-        return v
-
-    @field_validator('employee_code')
-    @classmethod
-    def validate_employee_code(cls, v):
-        if v and not re.match(USERNAME_REGEX, v):
-            raise ValueError('Employee code must be 3-20 characters long and can only contain alphanumeric characters and underscores')
-        return v
-
-    @field_validator('employee_password')
-    @classmethod
-    def validate_employee_password(cls, v):
-        if not re.match(PASSWORD_REGEX, v):
-            raise ValueError('Password must be at least 8 characters long and include at least one uppercase letter, one lowercase letter, one number, and one special character')
-        return v
 
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "tenant_id": "tenant_123",
+                "tenant_id": "acme",
                 "name": "Acme Corp",
                 "address": "123 Main St, Anytown, USA",
                 "longitude": -75.1652,
                 "latitude": 39.9526,
                 "is_active": True,
+                "package_name": "Acme Default Package",
                 "permission_ids": [1, 2, 3],
-                "employee_email": "john@example.com",
-                "employee_phone": "+1-234-567-8900",
-                "employee_password": "P@ssword123",
-                "employee_name": "John Doe",
-                "employee_address": "123 Main St, Anytown, USA",
-                "employee_longitude": -75.1652,
-                "employee_latitude": 39.9526,
-                "employee_code": "EMP123",
-                "employee_gender": "Male",
             }
         }
     )

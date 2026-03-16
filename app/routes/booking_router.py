@@ -29,10 +29,10 @@ from app.core.logging_config import get_logger
 logger = get_logger(__name__)
 router = APIRouter(prefix="/bookings", tags=["bookings"])
 
-# Custom dependency for booking update - allows either app-employee.update OR booking.update
+# Custom dependency for booking update - allows either employee_app.update OR booking.update
 async def BookingUpdatePermission(user_data: dict = Depends(validate_bearer_token(use_cache=True))):
     """
-    Custom dependency that allows either app-employee.update OR booking.update permission.
+    Custom dependency that allows either employee_app.update OR booking.update permission.
     Checks if user has at least one of the two permissions.
     """
     user_permissions = user_data.get("permissions", [])
@@ -53,17 +53,17 @@ async def BookingUpdatePermission(user_data: dict = Depends(validate_bearer_toke
             permission_strings.add(p)
     
     # Check if user has either permission
-    has_app_employee_update = "app-employee.update" in permission_strings
+    has_app_employee_update = "employee_app.update" in permission_strings
     has_booking_update = "booking.update" in permission_strings
     
     if not (has_app_employee_update or has_booking_update):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=ResponseWrapper.error(
-                message="Insufficient permissions. Required: app-employee.update or booking.update",
+                message="Insufficient permissions. Required: employee_app.update or booking.update",
                 error_code="INSUFFICIENT_PERMISSIONS",
                 details={
-                    "required_permissions": ["app-employee.update", "booking.update"],
+                    "required_permissions": ["employee_app.update", "booking.update"],
                     "user_permissions": sorted(permission_strings)
                 }
             ),
@@ -1082,7 +1082,7 @@ async def update_booking(
     - Validation: Employee can have only one booking per shift per date.
     
     Permission logic:
-    - app-employee.update: Employee can update only their own bookings
+    - employee_app.update: Employee can update only their own bookings
     - booking.update: Employee can update any booking in their tenant
     """
     try:
@@ -1103,8 +1103,8 @@ async def update_booking(
         # Check which permission the user has
         user_permissions = user_data.get("permissions", [])
         has_app_employee_update = any(
-            (isinstance(p, dict) and p.get("module") == "app-employee" and "update" in p.get("action", [])) or
-            (isinstance(p, str) and p == "app-employee.update")
+            (isinstance(p, dict) and p.get("module") == "employee_app" and "update" in p.get("action", [])) or
+            (isinstance(p, str) and p == "employee_app.update")
             for p in user_permissions
         )
         has_booking_update = any(
@@ -1133,8 +1133,8 @@ async def update_booking(
                 else:
                     logger.warning(f"[booking.update] Booking {booking_id} does not exist in database at all")
         else:
-            # Can only update their own bookings (app-employee.update)
-            logger.info(f"[booking.update] User has app-employee.update only - querying with filters: booking_id={booking_id}, employee_id={employee_id}, tenant_id={tenant_id}")
+            # Can only update their own bookings (employee_app.update)
+            logger.info(f"[booking.update] User has employee_app.update only - querying with filters: booking_id={booking_id}, employee_id={employee_id}, tenant_id={tenant_id}")
             booking = db.query(Booking).filter(
                 Booking.booking_id == booking_id,
                 Booking.employee_id == employee_id,
@@ -1164,7 +1164,7 @@ async def update_booking(
                         "booking_id": booking_id,
                         "tenant_id": tenant_id,
                         "employee_id": employee_id,
-                        "permission_type": "booking.update" if has_booking_update else "app-employee.update"
+                        "permission_type": "booking.update" if has_booking_update else "employee_app.update"
                     }
                 ),
             )
