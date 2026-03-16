@@ -141,53 +141,36 @@ def create_tenant(
             )
             logger.info(f"Default team created: {default_team.name}")
 
-            # --- Create PolicyPackage (the direct permission container for this tenant) ---
+            # --- Create PolicyPackage and attach permissions directly ---
+            permission_ids_list = list(tenant.permission_ids) if tenant.permission_ids else []
+            if permission_ids_list:
+                found_ids = {
+                    row.permission_id
+                    for row in db.query(Permission.permission_id)
+                    .filter(Permission.permission_id.in_(permission_ids_list))
+                    .all()
+                }
+                missing_ids = set(permission_ids_list) - found_ids
+                if missing_ids:
+                    logger.warning(f"Invalid permission IDs {list(missing_ids)} for tenant {new_tenant.tenant_id}")
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=ResponseWrapper.error(
+                            message="Some permission IDs are not found or invalid",
+                            error_code=status.HTTP_404_NOT_FOUND,
+                            details={"invalid_permission_ids": list(missing_ids)},
+                        ),
+                    )
+
             admin_package = PolicyPackage(
                 tenant_id=new_tenant.tenant_id,
                 name=tenant.package_name or f"{new_tenant.tenant_id}_DefaultPackage",
                 description=f"Default policy package for tenant {new_tenant.name}",
+                permission_ids=permission_ids_list,
             )
             db.add(admin_package)
-            db.flush()  # get package_id before inserting the policy
-            logger.info(f"Policy package created: id={admin_package.package_id} for tenant {new_tenant.tenant_id}")
-
-            # --- Create Default Policy inside the package (holds the permissions) ---
-            default_policy_name = f"{new_tenant.tenant_id}_DefaultPolicy"
-            default_policy = Policy(
-                tenant_id=new_tenant.tenant_id,
-                package_id=admin_package.package_id,
-                name=default_policy_name,
-                description=f"Default policy for tenant {new_tenant.name}",
-                is_active=True,
-            )
-            db.add(default_policy)
-            db.flush()  # get policy_id before setting the pointer
-            logger.info(f"Default policy created: {default_policy_name} (id={default_policy.policy_id})")
-
-            # Point the package at its default policy — single atomic UPDATE via post_update.
-            admin_package.default_policy_id = default_policy.policy_id
-            logger.info(f"Package {admin_package.package_id} default_policy_id → {default_policy.policy_id}")
-
-            # --- Attach permissions to the default policy ---
-            permissions = (
-                db.query(Permission)
-                .filter(Permission.permission_id.in_(tenant.permission_ids))
-                .all()
-            )
-            found_ids = {p.permission_id for p in permissions}
-            missing_ids = set(tenant.permission_ids) - found_ids
-            if missing_ids:
-                logger.warning(f"Invalid permission IDs {list(missing_ids)} for tenant {new_tenant.tenant_id}")
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=ResponseWrapper.error(
-                        message="Some permission IDs are not found or invalid",
-                        error_code=status.HTTP_404_NOT_FOUND,
-                        details={"invalid_permission_ids": list(missing_ids)},
-                    ),
-                )
-            default_policy.permissions = permissions
-            logger.info(f"Attached {len(permissions)} permissions to {default_policy_name}")
+            db.flush()
+            logger.info(f"Policy package created: id={admin_package.package_id}, {len(permission_ids_list)} permissions for tenant {new_tenant.tenant_id}")
 
             return new_tenant, default_team, admin_package
         
@@ -218,7 +201,7 @@ def create_tenant(
                     "package_id": admin_package.package_id,
                     "tenant_id": admin_package.tenant_id,
                     "name": admin_package.name,
-                    "default_policy_id": admin_package.default_policy_id,
+                    "permission_count": len(admin_package.permission_ids or []),
                 },
             },
             message="Tenant created with default team and policy package. Create roles and employees separately.",
@@ -445,24 +428,23 @@ def read_tenant(
 
         tenant = TenantResponse.model_validate(db_tenant, from_attributes=True)
 
-        # 👑 Fetch only the connected admin policy for this tenant
-        admin_policy = (
-            db.query(Policy)
-            .filter(
-                Policy.tenant_id == tenant_id,
-                Policy.name == f"{tenant_id}_AdminPolicy"
-            )
-            .first()
-        )
+        # Fetch the tenant's policy package for the response
+        policy_package = db.query(PolicyPackage).filter(
+            PolicyPackage.tenant_id == tenant_id
+        ).first()
 
-        admin_policy_data = None
-        if admin_policy:
-            admin_policy_data = PolicyResponse.model_validate(admin_policy, from_attributes=True)
+        policy_package_data = None
+        if policy_package:
+            policy_package_data = {
+                "package_id": policy_package.package_id,
+                "name": policy_package.name,
+                "permission_count": len(policy_package.permission_ids or []),
+            }
 
         return ResponseWrapper.success(
             data={
                 "tenant": tenant,
-                "admin_policy": admin_policy_data  # single policy, not a list
+                "policy_package": policy_package_data,
             },
             message="Tenant fetched successfully",
         )
@@ -536,23 +518,16 @@ def update_tenant(
         for key, value in tenant_fields.items():
             setattr(db_tenant, key, value)
 
-        updated_policy = None
-
-        # --- Handle policy updates (existing logic intact) ---
+        # --- Handle permission updates directly on the policy package ---
         if "permission_ids" in update_data and update_data["permission_ids"]:
-            admin_policy = (
-                db.query(Policy)
-                .filter(
-                    Policy.tenant_id == tenant_id,
-                    Policy.name == f"{tenant_id}_AdminPolicy"
-                )
-                .first()
-            )
-            if not admin_policy:
+            pkg = db.query(PolicyPackage).filter(
+                PolicyPackage.tenant_id == tenant_id
+            ).first()
+            if not pkg:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=ResponseWrapper.error(
-                        message=f"Admin policy not found for tenant '{tenant_id}'",
+                        message=f"Policy package not found for tenant '{tenant_id}'",
                         error_code=status.HTTP_404_NOT_FOUND,
                     ),
                 )
@@ -562,7 +537,6 @@ def update_tenant(
                 .filter(Permission.permission_id.in_(update_data["permission_ids"]))
                 .all()
             )
-
             found_ids = {p.permission_id for p in permissions}
             missing_ids = set(update_data["permission_ids"]) - found_ids
             if missing_ids:
@@ -576,18 +550,15 @@ def update_tenant(
                     ),
                 )
 
-            # Replace existing permissions with new set
-            admin_policy.permissions = permissions
+            pkg.permission_ids = [p.permission_id for p in permissions]
             logger.info(
-                f"Updated permissions {[p.permission_id for p in permissions]} "
-                f"for policy {admin_policy.name}"
+                f"Updated {len(permissions)} permissions directly on package {pkg.package_id} "
+                f"for tenant {tenant_id}"
             )
-
-            updated_policy = admin_policy
 
         db.commit()
         db.refresh(db_tenant)
-        
+
         # Invalidate and refresh tenant cache after update
         try:
             from app.utils.cache_manager import serialize_tenant_for_cache
@@ -598,37 +569,20 @@ def update_tenant(
         except Exception as cache_error:
             logger.warning(f"⚠️ Failed to refresh tenant cache: {cache_error}")
 
-        # --- ALWAYS fetch the admin policy for the response (no logic change) ---
-        admin_policy = (
-            db.query(Policy)
-            .filter(
-                Policy.tenant_id == tenant_id,
-                Policy.name == f"{tenant_id}_AdminPolicy"
-            )
-            .first()
-        )
-
-        # ✅ Prepare final response data (same structure as create_tenant)
-        policy_data = None
-        if admin_policy:
-            policy_data = PolicyResponse.model_validate(admin_policy)
-        else:
-            # Fetch current admin policy even if permissions weren't updated
-            admin_policy = (
-                db.query(Policy)
-                .filter(
-                    Policy.tenant_id == tenant_id,
-                    Policy.name == f"{tenant_id}_AdminPolicy"
-                )
-                .first()
-            )
-            if admin_policy:
-                policy_data = PolicyResponse.model_validate(admin_policy)
+        # Fetch the policy package for the response
+        pkg = db.query(PolicyPackage).filter(PolicyPackage.tenant_id == tenant_id).first()
+        policy_package_data = None
+        if pkg:
+            policy_package_data = {
+                "package_id": pkg.package_id,
+                "name": pkg.name,
+                "permission_count": len(pkg.permission_ids or []),
+            }
 
         return ResponseWrapper.success(
             data={
                 "tenant": TenantResponse.model_validate(db_tenant),
-                "admin_policy": policy_data,
+                "policy_package": policy_package_data,
             },
             message=f"Tenant '{tenant_id}' updated successfully",
         )

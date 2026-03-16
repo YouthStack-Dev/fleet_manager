@@ -539,17 +539,24 @@ async def employee_login(
         logger.debug(f"Processing roles and permissions for employee: {employee.employee_id} in tenant: {tenant.tenant_id}")
         roles = []
         all_permissions = []
-        
+
+        # Load package gate — package.permission_ids is the ceiling for this tenant
+        from app.models.iam.policy import PolicyPackage
+        _pkg = db.query(PolicyPackage).filter_by(tenant_id=tenant.tenant_id).first()
+        _allowed_ids = set(_pkg.permission_ids or []) if _pkg else None
+
         # Process role that is already loaded (single role relationship)
         role = employee.role
-        
+
         if role:
             if role and role.is_active and (role.tenant_id == tenant.tenant_id or role.is_system_role):
                 roles.append(role.name)
-                
+
                 # Get permissions from role policies (already eager-loaded)
                 for policy in role.policies:
                     for permission in policy.permissions:
+                        if _allowed_ids is not None and permission.permission_id not in _allowed_ids:
+                            continue  # not in tenant's package — skip
                         module, action = permission.module, permission.action
                         existing = next((p for p in all_permissions if p["module"] == module), None)
                         if existing:
@@ -690,6 +697,15 @@ async def employee_login(
 
         logger.info(f"🚀 Login successful for employee: {employee.employee_id} ({employee.email}) in tenant: {tenant.tenant_id}")
 
+        # Get company package permissions for frontend
+        from app.models.iam.policy import PolicyPackage, Permission
+        package_permissions = []
+        pkg = db.query(PolicyPackage).filter_by(tenant_id=tenant.tenant_id).first()
+        if pkg and pkg.permission_ids:
+            pkg_perms = db.query(Permission).filter(Permission.permission_id.in_(pkg.permission_ids)).all()
+            for perm in pkg_perms:
+                package_permissions.append({"module": perm.module, "action": [perm.action], "permission_id": perm.permission_id})
+
         response_data = {
             "access_token": access_token,
             "refresh_token": refresh_token,
@@ -698,6 +714,7 @@ async def employee_login(
                 "employee": employee_to_schema(employee),
                 "roles": roles,
                 "permissions": all_permissions,
+                "company_permissions": package_permissions,
                 "tenant": tenant_details
             }
         }
@@ -1233,15 +1250,22 @@ async def select_employee_tenant(
         # Extract roles & permissions
         roles = []
         all_permissions = []
-        
+
+        # Load package gate — package.permission_ids is the ceiling for this tenant
+        from app.models.iam.policy import PolicyPackage
+        _pkg = db.query(PolicyPackage).filter_by(tenant_id=tenant.tenant_id).first()
+        _allowed_ids = set(_pkg.permission_ids or []) if _pkg else None
+
         role = employee.role
-        
+
         if role:
             if role and role.is_active and (role.tenant_id == tenant.tenant_id or role.is_system_role):
                 roles.append(role.name)
-                
+
                 for policy in role.policies:
                     for permission in policy.permissions:
+                        if _allowed_ids is not None and permission.permission_id not in _allowed_ids:
+                            continue  # not in tenant's package — skip
                         module, action = permission.module, permission.action
                         existing = next((p for p in all_permissions if p["module"] == module), None)
                         if existing:
@@ -1386,6 +1410,14 @@ async def select_employee_tenant(
         
         login_method = "email" if is_email else "phone"
         logger.info(f"🚀 Tenant selection successful for employee: {employee.employee_id} ({login_method}) in tenant: {tenant.tenant_id}")
+
+        # Get company package permissions for frontend
+        from app.models.iam.policy import Permission
+        package_permissions = []
+        if _pkg and _pkg.permission_ids:
+            pkg_perms = db.query(Permission).filter(Permission.permission_id.in_(_pkg.permission_ids)).all()
+            for perm in pkg_perms:
+                package_permissions.append({"module": perm.module, "action": [perm.action], "permission_id": perm.permission_id})
         
         response_data = {
             "access_token": access_token,
@@ -1395,6 +1427,7 @@ async def select_employee_tenant(
                 "employee": employee_to_schema(employee),
                 "roles": roles,
                 "permissions": all_permissions,
+                "company_permissions": package_permissions,
                 "tenant": tenant_details
             }
         }
@@ -1813,6 +1846,15 @@ async def vendor_user_login(
             f"({vendor_user.email}) in tenant: {tenant.tenant_id}"
         )
 
+        # Get company package permissions for frontend
+        from app.models.iam.policy import PolicyPackage, Permission
+        package_permissions = []
+        pkg = db.query(PolicyPackage).filter_by(tenant_id=tenant.tenant_id).first()
+        if pkg and pkg.permission_ids:
+            pkg_perms = db.query(Permission).filter(Permission.permission_id.in_(pkg.permission_ids)).all()
+            for perm in pkg_perms:
+                package_permissions.append({"module": perm.module, "action": [perm.action], "permission_id": perm.permission_id})
+
         response_data = {
             "access_token": access_token,
             "refresh_token": refresh_token,
@@ -1820,7 +1862,8 @@ async def vendor_user_login(
             "user": {"vendor_user": VendorUserResponse.model_validate(vendor_user),
                      "vendor": VendorResponse.model_validate(vendor),
                      "roles": roles,
-                     "permissions": all_permissions
+                     "permissions": all_permissions,
+                     "company_permissions": package_permissions
                      },
         }
 
@@ -2979,6 +3022,15 @@ async def driver_select_tenant(
         
         # Get tenant info
         tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+
+        # Get company package permissions for frontend
+        from app.models.iam.policy import PolicyPackage, Permission
+        package_permissions = []
+        pkg = db.query(PolicyPackage).filter_by(tenant_id=tenant_id).first()
+        if pkg and pkg.permission_ids:
+            pkg_perms = db.query(Permission).filter(Permission.permission_id.in_(pkg.permission_ids)).all()
+            for perm in pkg_perms:
+                package_permissions.append({"module": perm.module, "action": [perm.action], "permission_id": perm.permission_id})
         
         logger.info(f"✅ [DRIVER LOGIN] Login SUCCESSFUL - Driver: {driver.name} (ID: {driver.driver_id}), Email: {driver.email}, Tenant: {tenant.name if tenant else tenant_id}, Vendor: {driver.vendor_id}, Device: {android_id[:8]}...{android_id[-4:]}, Roles: {roles}, Permissions: {len(all_permissions)} modules")
         
@@ -2994,6 +3046,7 @@ async def driver_select_tenant(
                     "tenant": TenantResponse.model_validate(tenant) if tenant else None,
                     "roles": roles,
                     "permissions": all_permissions,
+                    "company_permissions": package_permissions,
                 }
             }
         )
