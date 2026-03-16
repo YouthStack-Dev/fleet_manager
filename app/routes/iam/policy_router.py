@@ -135,20 +135,43 @@ async def create_policy(
                 )
             )
         logger.info("Authorization: PASSED (admin user)")
-        # System policies should NOT have a tenant_id
+        # System policies should NOT have a tenant_id or package_id
         policy.tenant_id = None
-        logger.info("System policy: tenant_id set to NULL")
+        policy.package_id = None
+        logger.info("System policy: tenant_id and package_id set to NULL")
     else:
         logger.info("Policy type: TENANT POLICY")
-        # Non-system policies MUST have a tenant_id
+        # Non-system policies MUST have a tenant_id and package_id
         logger.info("STEP 4: Resolving tenant ID for tenant policy")
         logger.info(f"Tenant ID from request payload: {policy.tenant_id if policy.tenant_id else 'None'}")
         resolved_tenant_id = resolve_tenant_id(user_data, policy.tenant_id)
         policy.tenant_id = resolved_tenant_id
         logger.info(f"✓ Tenant ID resolved and set: {resolved_tenant_id}")
         logger.info(f"Verifying policy object tenant_id: {policy.tenant_id}")
-    
-    # Verify all permission IDs exist
+        # Enforce package_id is provided
+        if not policy.package_id:
+            logger.error("✗ FAILED: package_id must be provided for tenant policies")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="package_id must be provided for tenant policies",
+                    error_code="PACKAGE_ID_REQUIRED"
+                )
+            )
+        # Validate package_id belongs to the tenant
+        from app.models.iam.policy import PolicyPackage
+        package = db.query(PolicyPackage).filter_by(package_id=policy.package_id, tenant_id=policy.tenant_id).first()
+        if not package:
+            logger.error(f"✗ FAILED: package_id {policy.package_id} does not belong to tenant {policy.tenant_id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="Invalid package_id for tenant",
+                    error_code="INVALID_PACKAGE_ID"
+                )
+            )
+
+    # Verify all permission IDs exist in the system
     logger.info("STEP 5: Validating permission IDs")
     if policy.permission_ids:
         logger.info(f"Checking {len(policy.permission_ids)} permission IDs: {policy.permission_ids}")
@@ -157,18 +180,58 @@ async def create_policy(
         ).all()
         logger.info(f"Found {len(existing_permissions)} valid permissions in database")
         if len(existing_permissions) != len(policy.permission_ids):
-            logger.error(f"VALIDATION FAILED: Invalid permission IDs provided")
-            logger.error(f"Requested: {policy.permission_ids}")
-            logger.error(f"Valid: {[p.permission_id for p in existing_permissions]}")
+            existing_ids = {p.permission_id for p in existing_permissions}
+            unknown_ids = list(set(policy.permission_ids) - existing_ids)
+            logger.error(f"VALIDATION FAILED: Unknown permission IDs: {unknown_ids}")
             logger.info("="*50)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ResponseWrapper.error(
                     message="One or more permission IDs are invalid",
-                    error_code="INVALID_PERMISSION_IDS"
+                    error_code="INVALID_PERMISSION_IDS",
+                    details={"invalid_ids": unknown_ids}
                 )
             )
-        logger.info("Permission validation: PASSED")
+        logger.info("Permission existence check: PASSED")
+
+        # STEP 5b: For tenant policies, all requested permissions MUST be
+        # within the tenant's package permission set.
+        # We enforce this at write time so the DB stays clean — no point
+        # storing permissions that the package gate will block at login anyway.
+        if not is_system_policy and policy.package_id:
+            from app.models.iam.policy import PolicyPackage
+            pkg = db.query(PolicyPackage).filter_by(
+                package_id=policy.package_id, tenant_id=policy.tenant_id
+            ).first()
+            if pkg:
+                # Collect all permission_ids allowed by the package
+                package_permission_ids: set[int] = set()
+                for pol in (pkg.policies or []):
+                    for perm in (pol.permissions or []):
+                        package_permission_ids.add(perm.permission_id)
+
+                out_of_package = set(policy.permission_ids) - package_permission_ids
+                if out_of_package:
+                    logger.error(
+                        f"VALIDATION FAILED: Permissions {list(out_of_package)} are not in "
+                        f"the tenant's package (package_id={policy.package_id})"
+                    )
+                    logger.info("="*50)
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=ResponseWrapper.error(
+                            message=(
+                                "Some permissions are outside the tenant's policy package. "
+                                "Only permissions that exist in the package can be added to a tenant policy."
+                            ),
+                            error_code="OUT_OF_PACKAGE_PERMISSIONS",
+                            details={
+                                "out_of_package_ids": list(out_of_package),
+                                "allowed_ids": sorted(package_permission_ids),
+                            }
+                        )
+                    )
+                logger.info("Package boundary check: PASSED — all permissions are within the package")
     else:
         logger.info("No permission IDs provided - creating policy without permissions")
     
@@ -520,18 +583,55 @@ async def update_policy(
             ).all()
             logger.info(f"Found {len(existing_permissions)} valid permissions")
             if len(existing_permissions) != len(policy_update.permission_ids):
-                logger.error(f"VALIDATION FAILED: Invalid permission IDs")
-                logger.error(f"Requested: {policy_update.permission_ids}")
-                logger.error(f"Valid: {[p.permission_id for p in existing_permissions]}")
+                existing_ids = {p.permission_id for p in existing_permissions}
+                unknown_ids = list(set(policy_update.permission_ids) - existing_ids)
+                logger.error(f"VALIDATION FAILED: Unknown permission IDs: {unknown_ids}")
                 logger.info("="*50)
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ResponseWrapper.error(
                         message="One or more permission IDs are invalid",
-                        error_code="INVALID_PERMISSION_IDS"
+                        error_code="INVALID_PERMISSION_IDS",
+                        details={"invalid_ids": unknown_ids}
                     )
                 )
-            logger.info("✓ Permission IDs validated")
+            logger.info("✓ Permission existence check: PASSED")
+
+            # STEP 4b: For tenant policies, all permissions must be within the package boundary.
+            # Same rule as create — the package is the ceiling.
+            if not policy.is_system_policy and policy.package_id:
+                from app.models.iam.policy import PolicyPackage
+                pkg = db.query(PolicyPackage).filter_by(
+                    package_id=policy.package_id, tenant_id=policy.tenant_id
+                ).first()
+                if pkg:
+                    package_permission_ids: set[int] = set()
+                    for pol in (pkg.policies or []):
+                        for perm in (pol.permissions or []):
+                            package_permission_ids.add(perm.permission_id)
+
+                    out_of_package = set(policy_update.permission_ids) - package_permission_ids
+                    if out_of_package:
+                        logger.error(
+                            f"VALIDATION FAILED: Permissions {list(out_of_package)} are not in "
+                            f"the tenant's package (package_id={policy.package_id})"
+                        )
+                        logger.info("="*50)
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=ResponseWrapper.error(
+                                message=(
+                                    "Some permissions are outside the tenant's policy package. "
+                                    "Only permissions that exist in the package can be added to a tenant policy."
+                                ),
+                                error_code="OUT_OF_PACKAGE_PERMISSIONS",
+                                details={
+                                    "out_of_package_ids": list(out_of_package),
+                                    "allowed_ids": sorted(package_permission_ids),
+                                }
+                            )
+                        )
+                    logger.info("✓ Package boundary check: PASSED — all permissions are within the package")
         else:
             logger.info("Clearing all permissions (empty array provided)")
     else:

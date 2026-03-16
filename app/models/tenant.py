@@ -2,6 +2,7 @@ from sqlalchemy import Column, Integer, String, Boolean, DateTime, Numeric, Time
 from app.database.session import Base
 from sqlalchemy.orm import relationship
 
+
 class Tenant(Base):
     __tablename__ = "tenants"
     __table_args__ = {'extend_existing': True}
@@ -21,7 +22,6 @@ class Tenant(Base):
     employees = relationship("Employee", back_populates="tenant", cascade="all, delete-orphan")
     shifts = relationship("Shift", back_populates="tenant", cascade="all, delete-orphan")
     bookings = relationship("Booking", back_populates="tenant", cascade="all, delete-orphan")
-    # policy = relationship("Policy", back_populates="tenant", cascade="all, delete-orphan")
     cutoff = relationship("Cutoff", back_populates="tenant", uselist=False, cascade="all, delete-orphan")
     drivers = relationship("Driver", back_populates="tenant")
 
@@ -34,4 +34,7 @@ class Tenant(Base):
     config = relationship("TenantConfig", back_populates="tenant", uselist=False, cascade="all, delete-orphan")
 
     roles = relationship("Role", back_populates="tenant")
+
+    # New: One-to-one relationship to PolicyPackage
+    policy_package = relationship("PolicyPackage", back_populates="tenant", uselist=False, cascade="all, delete-orphan")
 

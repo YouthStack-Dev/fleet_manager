@@ -119,6 +119,7 @@ def seed_iam(db: Session):
         "escort",
         "tenant_config",
         "alert",
+        "policy-package",
     ]
 
     actions = ["create", "read", "update", "delete"]

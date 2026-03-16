@@ -12,8 +12,9 @@ class CRUDPolicy(CRUDBase[Policy, PolicyCreate, PolicyUpdate]):
             name=obj_in.name,
             description=obj_in.description,
             tenant_id=obj_in.tenant_id,
+            package_id=obj_in.package_id,
             is_system_policy=obj_in.is_system_policy,
-            is_active=obj_in.is_active
+            is_active=obj_in.is_active,
         )
         db.add(db_obj)
         db.flush()  # Flush to get the policy_id
@@ -24,7 +25,7 @@ class CRUDPolicy(CRUDBase[Policy, PolicyCreate, PolicyUpdate]):
                 Permission.permission_id.in_(obj_in.permission_ids)
             ).all()
             db_obj.permissions = permissions
-            
+        
         db.commit()
         db.refresh(db_obj)
         return db_obj

@@ -3,7 +3,8 @@ from app.schemas.iam.permission import (
     PermissionResponse, PermissionPaginationResponse
 )
 from app.schemas.iam.policy import (
-    PolicyBase, PolicyCreate, PolicyUpdate, PolicyResponse, PolicyPaginationResponse
+    PolicyBase, PolicyCreate, PolicyUpdate, PolicyResponse, PolicyPaginationResponse,
+    PolicyPackageBase, PolicyPackageCreate, PolicyPackageResponse,
 )
 from app.schemas.iam.role import (
     RoleBase, RoleCreate, RoleUpdate, RoleResponse, RolePaginationResponse
