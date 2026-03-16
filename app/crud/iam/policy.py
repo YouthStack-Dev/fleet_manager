@@ -12,7 +12,6 @@ class CRUDPolicy(CRUDBase[Policy, PolicyCreate, PolicyUpdate]):
             name=obj_in.name,
             description=obj_in.description,
             tenant_id=obj_in.tenant_id,
-            package_id=obj_in.package_id,
             is_system_policy=obj_in.is_system_policy,
             is_active=obj_in.is_active,
         )

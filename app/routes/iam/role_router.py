@@ -84,11 +84,7 @@ def extract_user_permissions(user_data, db=None) -> set:
         # Only include permissions from the tenant's PolicyPackage
         from app.models.iam.policy import PolicyPackage
         package = db.query(PolicyPackage).filter_by(tenant_id=tenant_id).first()
-        allowed_permission_ids = set()
-        if package:
-            for policy in package.policies:
-                for perm in policy.permissions:
-                    allowed_permission_ids.add(perm.permission_id)
+        allowed_permission_ids = set(package.permission_ids or []) if package else set()
         for perm in user_permissions_data:
             module = perm.get("module", "")
             actions = perm.get("action", [])
@@ -128,9 +124,7 @@ def validate_policy_permissions(existing_policies, user_permissions: set, operat
         from app.models.iam.policy import PolicyPackage
         package = db.query(PolicyPackage).filter_by(tenant_id=tenant_id).first()
         if package:
-            for policy in package.policies:
-                for perm in policy.permissions:
-                    allowed_permission_ids.add(perm.permission_id)
+            allowed_permission_ids = set(package.permission_ids or [])
     for policy in existing_policies:
         for perm in getattr(policy, "permissions", []) or []:
             if not allowed_permission_ids or getattr(perm, "permission_id", None) in allowed_permission_ids:
@@ -220,23 +214,26 @@ def validate_role_policy_compatibility(
             ),
         )
 
-    # 3. All policies must be inside the tenant's PolicyPackage
+    # 3. All permissions in attached policies must be within the tenant's package permission_ids
     package = db.query(PolicyPackage).filter_by(tenant_id=role_tenant_id).first()
     if package:
-        package_policy_ids = {p.policy_id for p in (package.policies or [])}
-        out_of_package = [p.policy_id for p in policies if p.policy_id not in package_policy_ids]
-        if out_of_package:
+        allowed_ids = set(package.permission_ids or [])
+        violating_policies = [
+            p.policy_id for p in policies
+            if {perm.permission_id for perm in (p.permissions or [])} - allowed_ids
+        ]
+        if violating_policies:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ResponseWrapper.error(
                     message=(
-                        "Some policies are not inside the tenant's policy package. "
-                        "Only package policies can be attached to tenant roles."
+                        "Some policies contain permissions outside the tenant's policy package. "
+                        "Only permissions allowed by the package can be used in tenant roles."
                     ),
-                    error_code="POLICY_NOT_IN_PACKAGE",
+                    error_code="POLICY_PERMISSIONS_EXCEED_PACKAGE",
                     details={
-                        "out_of_package_policy_ids": out_of_package,
-                        "allowed_policy_ids": sorted(package_policy_ids),
+                        "violating_policy_ids": violating_policies,
+                        "allowed_permission_ids": sorted(allowed_ids),
                     },
                 ),
             )

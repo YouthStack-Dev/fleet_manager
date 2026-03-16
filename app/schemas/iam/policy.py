@@ -8,8 +8,6 @@ class PolicyPackageBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = Field(None, max_length=255)
     tenant_id: str
-    # FK pointer to the primary policy — NULL until the first policy is created
-    default_policy_id: Optional[int] = None
 
 class PolicyPackageCreate(PolicyPackageBase):
     pass
@@ -25,7 +23,6 @@ class PolicyBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = Field(None, max_length=255)
     tenant_id: Optional[str] = None
-    package_id: Optional[int] = None
     is_system_policy: bool = False
     is_active: bool = True
 

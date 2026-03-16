@@ -246,6 +246,11 @@ class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
         else:
             role_list = []
 
+        # Load package gate — package.permission_ids is the ceiling for this tenant
+        from app.models.iam.policy import PolicyPackage
+        _pkg = db.query(PolicyPackage).filter_by(tenant_id=tenant_id).first()
+        _allowed_ids = set(_pkg.permission_ids or []) if _pkg else None
+
         for role in role_list:
             if not role or not role.is_active:
                 continue
@@ -255,6 +260,8 @@ class CRUDDriver(CRUDBase[Driver, DriverCreate, DriverUpdate]):
             # Collect permissions from role policies
             for policy in role.policies:
                 for permission in policy.permissions:
+                    if _allowed_ids is not None and permission.permission_id not in _allowed_ids:
+                        continue  # not in tenant's package — skip
                     module = permission.module
                     action = permission.action
 

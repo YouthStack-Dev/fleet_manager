@@ -34,6 +34,7 @@ class Employee(Base):
     longitude = Column(Numeric(9, 6))
     gender = Column(Enum(GenderEnum, native_enum=False))
     is_active = Column(Boolean, default=True, nullable=False)
+    is_app_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 

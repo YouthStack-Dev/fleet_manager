@@ -119,10 +119,7 @@ class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
         package = db.query(PolicyPackage).filter_by(tenant_id=tenant_id).first()
         allowed_permission_ids: set | None = None   # None = no package → no filtering
         if package:
-            allowed_permission_ids = set()
-            for pol in (package.policies or []):
-                for perm in (pol.permissions or []):
-                    allowed_permission_ids.add(perm.permission_id)
+            allowed_permission_ids = set(package.permission_ids or [])
 
         # ── Collect roles ──────────────────────────────────────────────────────
         if hasattr(employee, 'roles') and employee.roles:

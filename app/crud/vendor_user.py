@@ -103,9 +103,19 @@ class CRUDVendorUser(CRUDBase[VendorUser, VendorUserCreate, VendorUserUpdate]):
         roles = [role.name]
         all_permissions = []
 
+        # Load package gate for this vendor's tenant
+        from app.models.vendor import Vendor as _Vendor
+        from app.models.iam.policy import PolicyPackage
+        _vendor_obj = db.query(_Vendor).filter_by(vendor_id=vendor_user.vendor_id).first()
+        _tenant_id = _vendor_obj.tenant_id if _vendor_obj else None
+        _pkg = db.query(PolicyPackage).filter_by(tenant_id=_tenant_id).first() if _tenant_id else None
+        _allowed_ids = set(_pkg.permission_ids or []) if _pkg else None
+
         # Fetch permissions via policies
         for policy in role.policies:
             for permission in policy.permissions:
+                if _allowed_ids is not None and permission.permission_id not in _allowed_ids:
+                    continue  # not in tenant's package — skip
                 module, action = permission.module, permission.action
                 existing = next((p for p in all_permissions if p["module"] == module), None)
                 if existing:
