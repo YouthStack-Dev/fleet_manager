@@ -1,7 +1,7 @@
 """add admin table
 
 Revision ID: a1b2c3d4e5f6
-Revises: 20260316_1200_refactor_package_direct_permissions
+Revises: 20260316_pkg_direct_perms
 Create Date: 2026-04-02 14:20:00.000000
 
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = 'a1b2c3d4e5f6'
-down_revision = '20260316_1200_refactor_package_direct_permissions'
+down_revision = '20260316_pkg_direct_perms'
 branch_labels = None
 depends_on = None
 
