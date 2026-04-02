@@ -4,4 +4,4 @@
 docker compose down
 
 # Start services with fresh containers
-docker compose up -d
+docker compose up -d 
