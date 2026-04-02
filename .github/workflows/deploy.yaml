@@ -73,7 +73,7 @@ jobs:
           host: ${{ secrets.VPS_IP }}
           username: ${{ secrets.VPS_USERNAME }}
           password: ${{ secrets.VPS_PASSWORD }}
-          port: 65002
+          port: 22
           source: "docker-compose_${{ env.ENV }}.yaml,docker-compose.monitoring.yml,monitoring_start.sh,monitoring_stop.sh,cleanup_docker.sh,deploy_prod_cleanup.sh,monitoring/"
           target: "~/"
 
@@ -84,7 +84,7 @@ jobs:
           host: ${{ secrets.VPS_IP }}
           username: ${{ secrets.VPS_USERNAME }}
           password: ${{ secrets.VPS_PASSWORD }}
-          port: 65002
+          port: 22
           script: |
             # Create service.prod.env on VPS with secrets
             mkdir -p ~/app/firebase
