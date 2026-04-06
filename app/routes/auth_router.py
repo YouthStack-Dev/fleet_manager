@@ -698,7 +698,8 @@ async def employee_login(
         logger.info(f"🚀 Login successful for employee: {employee.employee_id} ({employee.email}) in tenant: {tenant.tenant_id}")
 
         # Get company package permissions for frontend
-        from app.models.iam.policy import PolicyPackage, Permission
+        from app.models.iam.policy import PolicyPackage
+        from app.models.iam.permission import Permission
         package_permissions = []
         pkg = db.query(PolicyPackage).filter_by(tenant_id=tenant.tenant_id).first()
         if pkg and pkg.permission_ids:
@@ -1412,7 +1413,7 @@ async def select_employee_tenant(
         logger.info(f"🚀 Tenant selection successful for employee: {employee.employee_id} ({login_method}) in tenant: {tenant.tenant_id}")
 
         # Get company package permissions for frontend
-        from app.models.iam.policy import Permission
+        from app.models.iam.permission import Permission
         package_permissions = []
         if _pkg and _pkg.permission_ids:
             pkg_perms = db.query(Permission).filter(Permission.permission_id.in_(_pkg.permission_ids)).all()
@@ -1847,7 +1848,8 @@ async def vendor_user_login(
         )
 
         # Get company package permissions for frontend
-        from app.models.iam.policy import PolicyPackage, Permission
+        from app.models.iam.policy import PolicyPackage
+        from app.models.iam.permission import Permission
         package_permissions = []
         pkg = db.query(PolicyPackage).filter_by(tenant_id=tenant.tenant_id).first()
         if pkg and pkg.permission_ids:
@@ -3024,7 +3026,8 @@ async def driver_select_tenant(
         tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
 
         # Get company package permissions for frontend
-        from app.models.iam.policy import PolicyPackage, Permission
+        from app.models.iam.policy import PolicyPackage
+        from app.models.iam.permission import Permission
         package_permissions = []
         pkg = db.query(PolicyPackage).filter_by(tenant_id=tenant_id).first()
         if pkg and pkg.permission_ids:
