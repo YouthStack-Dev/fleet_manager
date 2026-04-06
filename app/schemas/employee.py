@@ -17,10 +17,28 @@ class GenderEnum(str, Enum):
     FEMALE = "Female"
     OTHER = "Other"
 
+    @classmethod
+    def _missing_(cls, value: object):
+        """Accept case-insensitive values, e.g. 'female' → Female."""
+        if isinstance(value, str):
+            for member in cls:
+                if member.value.lower() == value.lower():
+                    return member
+        return None
+
 class SpecialNeedsEnum(str, Enum):
     WHEELCHAIR = "Wheelchair"
     PREGNANT = "Pregnant"
     OTHER = "Other"
+
+    @classmethod
+    def _missing_(cls, value: object):
+        """Accept case-insensitive values, e.g. 'wheelchair' → Wheelchair."""
+        if isinstance(value, str):
+            for member in cls:
+                if member.value.lower() == value.lower():
+                    return member
+        return None
 
 
 class BaseValidatorsMixin:
@@ -33,7 +51,7 @@ class BaseValidatorsMixin:
         return v
     @field_validator("address")
     def validate_address(cls, v: Optional[str]):
-        if v and not re.match(r'^[a-zA-Z0-9\s.,#-]{1,250}$', v):
+        if v and len(v) > 250:
             raise ValueError("Address must be 250 characters or less")
         return v
 
@@ -62,6 +80,16 @@ class BaseValidatorsMixin:
                 "Password must have min 8 chars, at least one uppercase, one lowercase, one number, and one special char"
             )
         return v
+
+    @field_validator("latitude", "longitude", mode="before")
+    def coerce_coordinates(cls, v):
+        """Accept numeric strings like '13.0634127' in addition to floats."""
+        if v is None:
+            return v
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            raise ValueError("Coordinate must be a valid number")
 
     @field_validator("latitude", "longitude")
     def validate_coordinates(cls, v: float, info: ValidationInfo):
