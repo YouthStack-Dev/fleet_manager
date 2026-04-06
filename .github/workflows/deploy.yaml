@@ -156,25 +156,15 @@ jobs:
             echo "Waiting for containers to be ready..."
             sleep 10
 
-            # Check current migration state before upgrade
-            echo "Current migration state:"
-            docker exec service_manager python migrate.py current || echo "No migrations applied yet"
-
-            # Show pending migrations
-            echo "Migration history:"
-            docker exec service_manager python migrate.py history
-
-            # Run database migrations
-            echo "Running database migrations..."
-            docker exec service_manager python migrate.py upgrade head || {
-              echo "❌ Migration failed! Rolling back deployment..."
+            # ✅ Migrations run automatically inside the app on startup (lifespan hook).
+            # We only need to verify the final state here.
+            echo "Verifying migration state after startup..."
+            sleep 5
+            docker exec service_manager python migrate.py current || {
+              echo "❌ Could not verify migration state. Container logs:"
               docker compose -f ~/docker-compose_${{ env.ENV }}.yaml logs service_manager
               exit 1
             }
-
-            # Verify migration
-            echo "Verifying migration status..."
-            docker exec service_manager python migrate.py current
 
             # Verify database tables
             echo "Verifying database tables..."

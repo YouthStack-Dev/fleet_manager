@@ -3,7 +3,7 @@ Core / utility endpoints that live outside any domain-specific router.
 
 Routes exposed:
     GET  /              – welcome message
-    GET  /health        – liveness probe
+    GET  /health        – liveness + DB connectivity + migration state
     GET  /db-tables     – list all public DB tables with column & row counts
     POST /seed-database – seed initial data (supports ?force=true)
     POST /create-tables – create all tables via SQLAlchemy models
@@ -48,8 +48,53 @@ async def root():
 
 
 @router.get("/health")
-async def health_check():
-    return {"status": "ok", "message": "I Am Alive!!"}
+def health_check(db: Session = Depends(get_db)):
+    """
+    Liveness + readiness probe.
+
+    Returns:
+    - status: "ok" | "degraded"
+    - db: "connected" | "error"
+    - migration: current revision string or "error"
+    - migrated_to_head: true when all migrations have been applied
+    """
+    from alembic.config import Config as AlembicConfig
+    from alembic.script import ScriptDirectory
+    from alembic.runtime.migration import MigrationContext
+
+    # ── DB connectivity ────────────────────────────────────────
+    db_status = "connected"
+    current_rev = "unknown"
+    head_rev = "unknown"
+    migrated_to_head = False
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception as exc:
+        db_status = f"error: {exc}"
+
+    # ── Migration state ────────────────────────────────────────
+    try:
+        current_rev = db.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar() or "none"
+        cfg = AlembicConfig("alembic.ini")
+        script = ScriptDirectory.from_config(cfg)
+        head_rev = script.get_current_head()
+        migrated_to_head = current_rev == head_rev
+    except Exception as exc:
+        current_rev = f"error: {exc}"
+
+    overall = "ok" if db_status == "connected" and migrated_to_head else "degraded"
+
+    return {
+        "status": overall,
+        "db": db_status,
+        "migration": {
+            "current": current_rev,
+            "head": head_rev,
+            "up_to_date": migrated_to_head,
+        },
+    }
 
 
 # ──────────────────────────────────────────────────────────────

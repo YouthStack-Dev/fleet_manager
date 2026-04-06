@@ -4,6 +4,10 @@ import os
 import sys
 from contextlib import asynccontextmanager
 
+# ── Alembic migrations ─────────────────────────────────────────
+from alembic.config import Config as AlembicConfig
+from alembic import command as alembic_command
+
 # Ensure project root is on sys.path before any local imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -32,12 +36,32 @@ logger.info("🚀 Fleet Manager starting — env: %s", settings)
 
 
 # ──────────────────────────────────────────────────────────────
+# Auto-migration on startup
+# ──────────────────────────────────────────────────────────────
+def run_migrations() -> None:
+    """
+    Apply all pending Alembic migrations before the app accepts traffic.
+    Crashes the process on failure so the container restarts instead of
+    serving requests against a stale schema.
+    """
+    try:
+        logger.info("⏳ Running database migrations…")
+        cfg = AlembicConfig("alembic.ini")
+        alembic_command.upgrade(cfg, "head")
+        logger.info("✅ Migrations are up to date")
+    except Exception as exc:
+        logger.critical("❌ Migration failed — aborting startup: %s", exc)
+        raise  # let the container crash & restart
+
+
+# ──────────────────────────────────────────────────────────────
 # Lifespan — startup & shutdown
 # ──────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle application startup and graceful shutdown."""
     logger.info("🌟 Application starting up…")
+    run_migrations()
 
     # Database monitoring disabled - uncomment to re-enable
     # from app.database.session import engine
