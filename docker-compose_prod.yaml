@@ -22,7 +22,7 @@ services:
   service_manager:
     image: dheerajkumarp/fleet_service_manager:latest
     container_name: service_manager
-    restart: always
+    restart: on-failure:3
     env_file:
       - ./service.prod.env
     environment:
