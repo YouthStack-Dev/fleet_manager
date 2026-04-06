@@ -19,26 +19,6 @@ services:
       timeout: 3s
       retries: 5
 
-  postgres:
-    container_name: fleet_postgres
-    image: postgres:15
-    restart: unless-stopped
-    ports:
-      - "5434:5432"
-    environment:
-      POSTGRES_USER: fleetadmin
-      POSTGRES_PASSWORD: fleetpass
-      POSTGRES_DB: fleet_db
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    networks:
-      - fleet-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fleetadmin -d fleet_db"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   service_manager:
     image: dheerajkumarp/fleet_service_manager:latest
     container_name: service_manager
@@ -63,7 +43,7 @@ services:
       - FRONTEND_URL=https://your-production-domain.com
       # Twilio configuration is loaded from service.prod.env (GitHub secrets)
       # Database and other settings
-      - DATABASE_URL=postgresql://fleetadmin:fleetpass@fleet_postgres:5432/fleet_db
+      - DATABASE_URL=postgresql://fleetadmin:fleetpass@host.docker.internal:5432/fleet_db
       - REDIS_HOST=redis_server
       - REDIS_PORT=6379
       - REDIS_DB=0
@@ -85,10 +65,10 @@ services:
       # Optional legacy uploads path (remove if unused)
       - /var/lib/fleet/uploads:/app/uploaded_files
 
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       redis_server:
-        condition: service_healthy
-      postgres:
         condition: service_healthy
     ports:
       - "8100:8000"      # public port for service_manager
@@ -100,5 +80,4 @@ networks:
     driver: bridge
 
 volumes:
-  postgres_data:
   redis_data:
