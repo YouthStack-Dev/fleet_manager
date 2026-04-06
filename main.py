@@ -44,12 +44,21 @@ def run_migrations() -> None:
     Crashes the process on failure so the container restarts instead of
     serving requests against a stale schema.
     """
+    import sys, traceback as tb
     try:
         logger.info("⏳ Running database migrations…")
         cfg = AlembicConfig("alembic.ini")
         alembic_command.upgrade(cfg, "head")
         logger.info("✅ Migrations are up to date")
     except Exception as exc:
+        # Print directly to stderr with flush — ensures the error is always
+        # visible in `docker logs` even if the custom logger buffer is lost
+        # on crash.
+        print("\n" + "="*60, file=sys.stderr, flush=True)
+        print(f"❌ MIGRATION FAILED: {exc}", file=sys.stderr, flush=True)
+        tb.print_exc(file=sys.stderr)
+        sys.stderr.flush()
+        print("="*60 + "\n", file=sys.stderr, flush=True)
         logger.critical("❌ Migration failed — aborting startup: %s", exc)
         raise  # let the container crash & restart
 
