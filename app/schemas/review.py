@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # ──────────────────────────────────────────────────────────────
@@ -48,6 +48,16 @@ class ReviewTagCreate(BaseModel):
         if v not in ("driver", "vehicle"):
             raise ValueError("tag_type must be 'driver' or 'vehicle'")
         return v
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "tag_type": "driver",
+                "tag_name": "Punctual",
+                "display_order": 1
+            }
+        }
+    )
 
 
 class ReviewTagResponse(BaseModel):
@@ -117,6 +127,20 @@ class RideReviewCreate(BaseModel):
         if all(f is None or f == [] for f in fields):
             raise ValueError("Review must contain at least one rating, tag, or comment")
         return self
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "overall_rating": 4,
+                "driver_rating": 5,
+                "driver_tags": ["Punctual", "Polite"],
+                "driver_comment": "Driver arrived on time and was very courteous.",
+                "vehicle_rating": 4,
+                "vehicle_tags": ["Clean", "Comfortable"],
+                "vehicle_comment": "Vehicle was clean and AC was working well."
+            }
+        }
+    )
 
 
 # ──────────────────────────────────────────────────────────────

@@ -42,6 +42,20 @@ class VendorUserCreate(VendorUserBase):
             raise ValueError('Password must be at least 8 characters with at least one uppercase letter, one lowercase letter, one number, and one special character')
         return v
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "Amit Singh",
+                "email": "amit.singh@vendor.com",
+                "phone": "+919988776655",
+                "vendor_id": 3,
+                "role_id": 2,
+                "is_active": True,
+                "password": "Vendor@Pass1"
+            }
+        }
+    )
+
 class VendorUserUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[EmailStr] = None
@@ -71,6 +85,17 @@ class VendorUserUpdate(BaseModel):
         if v is not None and not re.match(PASSWORD_REGEX, v):
             raise ValueError('Password must be at least 8 characters with at least one uppercase letter, one lowercase letter, one number, and one special character')
         return v
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "Amit Singh",
+                "phone": "+919988776655",
+                "role_id": 3,
+                "is_active": True
+            }
+        }
+    )
 
 class VendorUserResponse(BaseModel):
     vendor_user_id: int

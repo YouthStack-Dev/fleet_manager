@@ -1,4 +1,4 @@
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 from datetime import datetime, time
 from typing import Optional
 
@@ -25,6 +25,21 @@ class TenantConfigCreate(TenantConfigBase):
     """Schema for creating tenant config"""
     tenant_id: str
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "tenant_id": "tenant_123",
+                "escort_required_start_time": "22:00:00",
+                "escort_required_end_time": "06:00:00",
+                "escort_required_for_women": True,
+                "login_boarding_otp": True,
+                "login_deboarding_otp": True,
+                "logout_boarding_otp": True,
+                "logout_deboarding_otp": False
+            }
+        }
+    )
+
 class TenantConfigUpdate(BaseModel):
     """Schema for updating tenant config"""
     escort_required_start_time: Optional[time] = None
@@ -43,6 +58,18 @@ class TenantConfigUpdate(BaseModel):
         if v is not None and not isinstance(v, time):
             raise ValueError('Time must be a valid time object')
         return v
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "escort_required_start_time": "21:00:00",
+                "escort_required_end_time": "05:30:00",
+                "escort_required_for_women": True,
+                "login_boarding_otp": True,
+                "logout_deboarding_otp": True
+            }
+        }
+    )
 
 class TenantConfigResponse(TenantConfigBase):
     """Schema for tenant config response"""

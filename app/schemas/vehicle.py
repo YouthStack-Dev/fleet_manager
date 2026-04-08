@@ -22,7 +22,23 @@ class VehicleBase(BaseModel):
     is_active: bool = True
 
 class VehicleCreate(VehicleBase):
-    pass
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "vehicle_type_id": 1,
+                "vendor_id": 2,
+                "rc_number": "KA05MX1234",
+                "driver_id": 10,
+                "rc_expiry_date": "2027-12-31",
+                "description": "Toyota Innova — white",
+                "puc_expiry_date": "2026-06-30",
+                "fitness_expiry_date": "2026-09-30",
+                "insurance_expiry_date": "2026-12-31",
+                "permit_expiry_date": "2027-03-31",
+                "is_active": True
+            }
+        }
+    )
 
 class VehicleUpdate(BaseModel):
     vehicle_type_id: Optional[int] = None
@@ -41,6 +57,18 @@ class VehicleUpdate(BaseModel):
     permit_expiry_date: Optional[date] = None
     permit_url: Optional[str] = None
     is_active: Optional[bool] = None
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "driver_id": 12,
+                "rc_expiry_date": "2028-06-30",
+                "puc_expiry_date": "2027-06-30",
+                "insurance_expiry_date": "2027-12-31",
+                "is_active": True
+            }
+        }
+    )
 
 class VehicleResponse(VehicleBase):
     vehicle_id: int

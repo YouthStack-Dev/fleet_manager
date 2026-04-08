@@ -128,6 +128,30 @@ class DriverCreate(BaseModel):
     induction_date: date
     induction_url: Optional[str]
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "vendor_id": 2,
+                "name": "Ravi Kumar",
+                "code": "DRV001",
+                "email": "ravi.kumar@example.com",
+                "phone": "9876543210",
+                "gender": "Male",
+                "password": "SecurePass@123",
+                "date_of_birth": "1990-06-15",
+                "date_of_joining": "2023-01-10",
+                "permanent_address": "123 Main Street, Bangalore 560001",
+                "current_address": "456 Park Avenue, Bangalore 560002",
+                "license_number": "KA0519820012345",
+                "license_expiry_date": "2028-06-30",
+                "badge_number": "B2024-001",
+                "badge_expiry_date": "2027-12-31",
+                "alt_govt_id_number": "1234-5678-9012",
+                "alt_govt_id_type": "Aadhaar",
+                "induction_date": "2023-01-10"
+            }
+        }
+    )
 
 
 # ---------- UPDATE ----------
@@ -193,6 +217,22 @@ class DriverUpdate(BaseModel):
     
     # Android device management
     active_android_id: Optional[str] = None
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "Ravi Kumar",
+                "phone": "9876543210",
+                "email": "ravi.kumar@example.com",
+                "gender": "Male",
+                "license_number": "KA0519820012345",
+                "license_expiry_date": "2028-06-30",
+                "badge_number": "B2024-001",
+                "badge_expiry_date": "2027-12-31",
+                "is_active": True
+            }
+        }
+    )
 
 
 # ---------- RESPONSE ----------

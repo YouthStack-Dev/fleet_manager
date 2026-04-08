@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.announcement import (
     AnnouncementChannel,
@@ -65,7 +65,18 @@ class AnnouncementCreate(BaseModel):
             "Select any combination e.g. ['push','sms','email','in_app']"
         ),
     )
-
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "title": "Office Closure Notice",
+                "body": "The office will be closed on 26th Jan due to Republic Day.",
+                "content_type": "TEXT",
+                "target_type": "all_employees",
+                "target_ids": None,
+                "channels": ["push", "in_app"]
+            }
+        }
+    )
 
 class AnnouncementUpdate(BaseModel):
     """Body for  PUT /announcements/{id}  — DRAFT status only."""
@@ -81,6 +92,16 @@ class AnnouncementUpdate(BaseModel):
     channels: Optional[List[AnnouncementChannel]] = Field(
         None,
         description="Update delivery channels (DRAFT status only)",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "title": "Updated: Office Closure Notice",
+                "body": "The office will be closed on 26th Jan. Bus service will NOT run.",
+                "channels": ["push", "sms", "in_app"]
+            }
+        }
     )
 
 

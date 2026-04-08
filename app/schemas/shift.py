@@ -44,6 +44,20 @@ class ShiftCreate(BaseModel):
         except ValueError:
             raise ValueError("shift_time must be in HH:MM format")
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "shift_code": "SHIFT_MRN_001",
+                "log_type": "IN",
+                "shift_time": "09:00",
+                "pickup_type": "Pickup",
+                "gender": "Female",
+                "waiting_time_minutes": 5,
+                "is_active": True
+            }
+        }
+    )
+
 class ShiftUpdate(BaseModel):
     shift_code: Optional[str] = None
     log_type: Optional[ShiftLogTypeEnum] = None
@@ -61,7 +75,21 @@ class ShiftUpdate(BaseModel):
             return datetime.strptime(v, "%H:%M").time()
         except ValueError:
             raise ValueError("shift_time must be in HH:MM format")
-        
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "shift_code": "SHIFT_EVE_002",
+                "log_type": "OUT",
+                "shift_time": "18:30",
+                "pickup_type": "Nodal",
+                "gender": None,
+                "waiting_time_minutes": 10,
+                "is_active": True
+            }
+        }
+    )
+
 class ShiftResponse(ShiftBase):
     shift_id: int
     created_at: datetime

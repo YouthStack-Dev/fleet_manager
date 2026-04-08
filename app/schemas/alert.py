@@ -24,7 +24,20 @@ class AlertTriggerRequest(BaseModel):
     trigger_notes: Optional[str] = Field(None, max_length=1000, description="Additional notes from employee")
     evidence_urls: Optional[List[str]] = Field(None, description="URLs to uploaded evidence (photos, recordings)")
     
-    model_config = ConfigDict(use_enum_values=True)
+    model_config = ConfigDict(
+        use_enum_values=True,
+        json_schema_extra={
+            "example": {
+                "booking_id": 123,
+                "alert_type": "SOS",
+                "severity": "CRITICAL",
+                "current_latitude": 12.9716,
+                "current_longitude": 77.5946,
+                "trigger_notes": "Driver behaving suspiciously",
+                "evidence_urls": ["https://storage.example.com/evidence/photo1.jpg"]
+            }
+        }
+    )
 
 
 class AlertAcknowledgeRequest(BaseModel):
@@ -32,12 +45,31 @@ class AlertAcknowledgeRequest(BaseModel):
     acknowledged_by: str = Field(..., max_length=100, description="Name/ID of responder")
     notes: Optional[str] = Field(None, max_length=500, description="Acknowledgment notes")
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "acknowledged_by": "Security Officer Ramesh",
+                "notes": "Contacted employee, en route to location"
+            }
+        }
+    )
+
 
 class AlertCloseRequest(BaseModel):
     """Request to close an alert"""
     closed_by: int = Field(..., description="User ID of person closing")
     resolution_notes: str = Field(..., max_length=2000, description="Detailed resolution notes")
     is_false_alarm: bool = Field(False, description="Mark as false alarm")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "closed_by": 7,
+                "resolution_notes": "Employee confirmed safe. Driver counselled. Issue resolved.",
+                "is_false_alarm": False
+            }
+        }
+    )
 
 
 class AlertEscalateRequest(BaseModel):
@@ -47,6 +79,17 @@ class AlertEscalateRequest(BaseModel):
     escalated_to: str = Field(..., max_length=200, description="Email/phone of escalation recipient")
     reason: str = Field(..., max_length=500, description="Reason for escalation")
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "escalated_by": "Ops Manager Sunita",
+                "escalation_level": 2,
+                "escalated_to": "security.head@company.com",
+                "reason": "No response after 10 minutes, escalating to security head"
+            }
+        }
+    )
+
 
 class AlertUpdateRequest(BaseModel):
     """Request to update alert status/details"""
@@ -54,7 +97,16 @@ class AlertUpdateRequest(BaseModel):
     severity: Optional[AlertSeverityEnum] = Field(None, description="New severity")
     resolution_notes: Optional[str] = Field(None, max_length=2000, description="Resolution notes")
     
-    model_config = ConfigDict(use_enum_values=True)
+    model_config = ConfigDict(
+        use_enum_values=True,
+        json_schema_extra={
+            "example": {
+                "status": "ACKNOWLEDGED",
+                "severity": "HIGH",
+                "resolution_notes": "Situation is under control, monitoring ongoing"
+            }
+        }
+    )
 
 
 # Response Schemas
