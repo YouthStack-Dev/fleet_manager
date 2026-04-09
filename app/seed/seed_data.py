@@ -7,14 +7,17 @@ logger = logging.getLogger(__name__)
 def seed_admins(db: Session):
     """
     Seed admin users for existing roles (idempotent).
+    Also seeds named SuperAdmin accounts with small emails.
     """
     roles = db.query(Role).filter(Role.name.in_(["SuperAdmin", "Admin"])).all()
     if not roles:
         logger.warning("No roles found for admin seeding, skipping.")
         return
 
+    roles_map = {role.name: role for role in roles}
+
+    # ── Generic role-based admins ──────────────────────────────
     for role in roles:
-        # Check if admin with this role already exists
         existing = db.query(Admin).filter(Admin.role_id == role.role_id).first()
         if existing:
             logger.info(f"Admin for role {role.name} already exists, skipping.")
@@ -28,10 +31,36 @@ def seed_admins(db: Session):
             "role_id": role.role_id,
             "is_active": True
         }
-
         admin = Admin(**admin_data)
         db.add(admin)
         logger.info(f"Admin '{admin.name}' created for role {role.name}.")
+
+    # ── Named SuperAdmin accounts ──────────────────────────────
+    superadmin_role = roles_map.get("SuperAdmin")
+    if superadmin_role:
+        named_admins = [
+            {"name": "Deepa",   "email": "deepa@admin.com",   "phone": "9000000001"},
+            {"name": "Madhu",   "email": "madhu@admin.com",   "phone": "9000000002"},
+            {"name": "Sai",     "email": "sai@admin.com",     "phone": "9000000003"},
+            {"name": "Tharun",  "email": "tharun@admin.com",  "phone": "9000000004"},
+            {"name": "Dheeraj", "email": "dheeraj@admin.com", "phone": "9000000005"},
+            {"name": "Ankitha", "email": "ankitha@admin.com", "phone": "9000000006"},
+        ]
+        for entry in named_admins:
+            existing = db.query(Admin).filter(Admin.email == entry["email"]).first()
+            if existing:
+                logger.info(f"Admin '{entry['email']}' already exists, skipping.")
+                continue
+            admin = Admin(
+                name=entry["name"],
+                email=entry["email"],
+                phone=entry["phone"],
+                password="e86f78a8a3caf0b60d8e74e5942aa6d86dc150cd3c03338aef25b7d2d7e3acc7",  # Admin@123
+                role_id=superadmin_role.role_id,
+                is_active=True,
+            )
+            db.add(admin)
+            logger.info(f"SuperAdmin '{entry['email']}' created.")
 
     db.commit()
     logger.info("✅ Admin seeding completed successfully.")
