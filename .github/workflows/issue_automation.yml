@@ -1,0 +1,224 @@
+name: 🔁 Issue Lifecycle Automation
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Triggers on every issue lifecycle event
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  issues:
+    types: [opened, assigned, labeled, closed, reopened]
+
+permissions:
+  issues: write
+  repository-projects: write
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # JOB 1 — Label transitions
+  # Keeps status labels clean & in-sync with the issue state.
+  # ───────────────────────────────────────────────────────────────────────────
+  label-transitions:
+    name: 🏷 Sync Status Labels
+    runs-on: ubuntu-latest
+    steps:
+
+      # ── Opened → status: open ──────────────────────────────────────────────
+      - name: "[opened] Add status: open"
+        if: github.event.action == 'opened'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: ['status: open'],
+            });
+
+      # ── Assigned → status: assigned, remove status: open ──────────────────
+      - name: "[assigned] Switch to status: assigned"
+        if: github.event.action == 'assigned'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['status: assigned'] });
+
+            for (const label of ['status: open']) {
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: label }); }
+              catch (_) { /* label may not be present */ }
+            }
+
+      # ── Closed → status: done, strip workflow labels ───────────────────────
+      - name: "[closed] Switch to status: done"
+        if: github.event.action == 'closed'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['status: done'] });
+
+            for (const label of ['status: open', 'status: assigned', 'in-progress', 'testing']) {
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: label }); }
+              catch (_) { /* ok */ }
+            }
+
+      # ── Reopened → in-progress, strip done/testing labels, notify assignees ──
+      - name: "[reopened] Switch to in-progress + notify"
+        if: github.event.action == 'reopened'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['in-progress'] });
+
+            for (const label of ['status: done', 'testing', 'status: assigned', 'status: open']) {
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: label }); }
+              catch (_) { /* ok */ }
+            }
+
+            // Tag the assigned developer(s)
+            const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number });
+            const mentions = issue.assignees.map(a => `@${a.login}`).join(', ');
+            const who = mentions || '_No one assigned yet — please assign a developer._';
+
+            await github.rest.issues.createComment({
+              owner, repo, issue_number,
+              body: [
+                '## 🔄 Issue Reopened',
+                '',
+                `**Developer:** ${who}`,
+                '',
+                'The tester has marked this issue as **not resolved**. Please:',
+                '1. Review the tester\'s comments above',
+                '2. Fix, deploy to staging, and update this issue',
+                '3. Re-add the `testing` label when ready for re-verification',
+              ].join('\n'),
+            });
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # JOB 2 — GitHub Projects v2 board automation
+  #
+  # SETUP REQUIRED (one-time, per repo):
+  #   1. Create a GitHub Project (v2) with these Status columns:
+  #        Open · Assigned · In Progress · Testing · Done
+  #   2. Go to repo Settings → Secrets and variables → Actions → Variables
+  #      Add: GITHUB_PROJECT_NUMBER = <your project number>
+  #   3. Go to Secrets → Add secret:
+  #      PROJECT_PAT = <Personal Access Token with scopes: repo + project>
+  #
+  # If PROJECT_PAT is not set, the job uses GITHUB_TOKEN (may lack project scope).
+  # ───────────────────────────────────────────────────────────────────────────
+  project-board:
+    name: 📋 Move Card on Project Board
+    runs-on: ubuntu-latest
+    # Skip entirely if project number is not configured
+    if: vars.GITHUB_PROJECT_NUMBER != ''
+    steps:
+
+      - name: Move issue to correct column
+        uses: actions/github-script@v7
+        env:
+          PROJECT_NUMBER: ${{ vars.GITHUB_PROJECT_NUMBER }}
+          # Use PROJECT_PAT (project-scoped PAT) when available, fall back to GITHUB_TOKEN
+          GH_TOKEN: ${{ secrets.PROJECT_PAT || secrets.GITHUB_TOKEN }}
+        with:
+          github-token: ${{ secrets.PROJECT_PAT || secrets.GITHUB_TOKEN }}
+          script: |
+            const action     = context.payload.action;
+            const labelName  = context.payload.label?.name ?? '';
+            const issueId    = context.payload.issue.node_id;
+            const org        = context.repo.owner;
+            const projectNum = parseInt(process.env.PROJECT_NUMBER || '0');
+
+            if (!projectNum) {
+              core.warning('GITHUB_PROJECT_NUMBER variable not set. Skipping board update.');
+              return;
+            }
+
+            // ── Map event → board column ──────────────────────────────────
+            const STATUS_MAP = {
+              opened:   'Open',
+              assigned: 'Assigned',
+              closed:   'Done',
+              reopened: 'In Progress',
+            };
+
+            let desiredStatus = STATUS_MAP[action] ?? null;
+
+            // Label-based overrides
+            if (action === 'labeled') {
+              if (labelName === 'in-progress') desiredStatus = 'In Progress';
+              else if (labelName === 'testing') desiredStatus = 'Testing';
+            }
+
+            if (!desiredStatus) {
+              core.info(`No board move needed for action="${action}" label="${labelName}"`);
+              return;
+            }
+            core.info(`Target column: "${desiredStatus}"`);
+
+            // ── 1. Fetch project + Status field options ───────────────────
+            let projectData;
+            try {
+              projectData = await github.graphql(`
+                query($org: String!, $num: Int!) {
+                  organization(login: $org) {
+                    projectV2(number: $num) {
+                      id
+                      fields(first: 30) {
+                        nodes {
+                          ... on ProjectV2SingleSelectField {
+                            id name
+                            options { id name }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `, { org, num: projectNum });
+            } catch (err) {
+              core.warning(`Could not fetch project (check PROJECT_PAT scope): ${err.message}`);
+              return;
+            }
+
+            const project     = projectData?.organization?.projectV2;
+            if (!project) { core.warning(`Project ${projectNum} not found under org "${org}".`); return; }
+
+            const statusField = project.fields.nodes.find(f => f.name === 'Status');
+            if (!statusField) { core.warning('No "Status" single-select field found on project.'); return; }
+
+            const option = statusField.options.find(o => o.name === desiredStatus);
+            if (!option) {
+              core.warning(`Option "${desiredStatus}" not found. Available: ${statusField.options.map(o=>o.name).join(', ')}`);
+              return;
+            }
+
+            // ── 2. Add issue to project (idempotent) ─────────────────────
+            const addResult = await github.graphql(`
+              mutation($pid: ID!, $cid: ID!) {
+                addProjectV2ItemById(input: { projectId: $pid, contentId: $cid }) {
+                  item { id }
+                }
+              }
+            `, { pid: project.id, cid: issueId });
+
+            const itemId = addResult.addProjectV2ItemById.item.id;
+
+            // ── 3. Set Status field value ─────────────────────────────────
+            await github.graphql(`
+              mutation($pid: ID!, $iid: ID!, $fid: ID!, $oid: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $pid, itemId: $iid, fieldId: $fid,
+                  value: { singleSelectOptionId: $oid }
+                }) { projectV2Item { id } }
+              }
+            `, { pid: project.id, iid: itemId, fid: statusField.id, oid: option.id });
+
+            core.info(`✅ Issue card moved to "${desiredStatus}"`);

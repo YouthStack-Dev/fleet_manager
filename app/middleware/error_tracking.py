@@ -2,13 +2,14 @@
 Enhanced Error Tracking Middleware
 Captures all errors, request details, and stores them for debugging
 """
+import asyncio
 import traceback
 import time
 import json
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from fastapi import Request, Response
+from fastapi import Request, Response, HTTPException as FastAPIHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.logging_config import get_logger
 from app.utils.cache_manager import cache
@@ -143,6 +144,24 @@ class ErrorTrackingMiddleware(BaseHTTPMiddleware):
             
             # Log error with full context
             error_tracker.log_error(e, request, response_time, user_info)
-            
+
+            # ── Auto-report unhandled exceptions to GitHub ──────────────
+            # HTTPExceptions are intentional (4xx / known 5xx) — skip them.
+            if not isinstance(e, FastAPIHTTPException):
+                try:
+                    from app.utils.github_issue_reporter import report_error_to_github
+                    asyncio.create_task(
+                        report_error_to_github(
+                            title=f"[Auto] {type(e).__name__}: {str(e)[:120]}",
+                            traceback_str=traceback.format_exc(),
+                            error_type=type(e).__name__,
+                            path=request.url.path,
+                            method=request.method,
+                            extra={"user": str(user_info) if user_info else "unknown"},
+                        )
+                    )
+                except Exception:
+                    pass  # Never let the reporter crash the request cycle
+
             # Re-raise the exception to be handled by FastAPI's exception handlers
             raise

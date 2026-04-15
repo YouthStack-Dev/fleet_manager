@@ -1,0 +1,107 @@
+name: 🐛 Bug Report
+description: Report a bug in ETS Fleet Manager
+title: "[BUG] "
+labels: ["bug", "status: open"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 🐛 Bug Report
+        Fill in all required fields. Incomplete reports may be closed without action.
+
+  - type: input
+    id: summary
+    attributes:
+      label: 📋 Summary
+      description: One-line, clear description of what is broken.
+      placeholder: "e.g. Driver assignment fails with 500 when team has no active routes"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: source
+    attributes:
+      label: 🔍 Source
+      description: Where does the bug occur?
+      options:
+        - backend
+        - frontend
+        - both
+        - unknown
+    validations:
+      required: true
+
+  - type: dropdown
+    id: environment
+    attributes:
+      label: 🌍 Environment
+      description: Where did you encounter this bug?
+      options:
+        - staging
+        - production
+        - local
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: 🚨 Priority
+      description: How urgent is this?
+      options:
+        - "critical — same day fix (system down / data loss)"
+        - "high — within 24 hrs (feature broken for all users)"
+        - "medium — 2–3 days (partial impact)"
+        - "low — backlog (minor / cosmetic)"
+    validations:
+      required: true
+
+  - type: input
+    id: endpoint
+    attributes:
+      label: 🔗 API Endpoint (backend bugs)
+      description: The exact API path and method.
+      placeholder: "POST /api/v1/drivers/assign"
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 🔁 Steps to Reproduce
+      description: Exact steps so any dev can reproduce this on staging.
+      placeholder: |
+        1. Login as Admin
+        2. Navigate to Drivers → Assign
+        3. Select driver ID 42 and route ID 7
+        4. Click "Assign"
+        5. Error appears
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: ✅ Expected Result
+      placeholder: "Driver should be assigned to route 7 and status changes to DRIVER_ASSIGNED"
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: ❌ Actual Result
+      placeholder: "500 Internal Server Error — 'This Session's transaction has been rolled back'"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 📎 Logs / API Response / Screenshots
+      description: Paste raw JSON, stack traces, or screenshots. Be specific.
+      render: shell
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 💬 Additional Context
+      description: Any relevant info — recent deployments, similar issues, workarounds.
