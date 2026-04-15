@@ -1,11 +1,11 @@
-version: "3.9"
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Staging Stack  –  isolated from prod, runs alongside it on the same VPS
-#   App port  : 8200 (prod uses 8100)
+#   App port  : 8300 (prod uses 8100)
 #   Redis port: 6380 (prod uses 6379)
 #   Postgres  : containerised, port 5433 (prod uses host postgres on 5432)
 # ─────────────────────────────────────────────────────────────────────────────
+
+name: fleet-staging
 
 services:
 
@@ -93,7 +93,7 @@ services:
       postgres_staging:
         condition: service_healthy
     ports:
-      - "8200:8000"
+      - "8300:8000"
     networks:
       - fleet-staging-network
 
