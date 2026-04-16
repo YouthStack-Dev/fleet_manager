@@ -77,6 +77,11 @@ async def lifespan(app: FastAPI):
     setup_logging(force_configure=True)
     logger.info("🌟 Application starting up…")
     run_migrations()
+    # Alembic's fileConfig() call inside migrations resets Python's logging config
+    # (disable_existing_loggers=True by default), wiping all our handlers and
+    # disabling every pre-existing logger.  Restore our config immediately after.
+    setup_logging(force_configure=True)
+    logger.info("✅ Logging restored after migrations")
 
     # Database monitoring disabled - uncomment to re-enable
     # from app.database.session import engine
