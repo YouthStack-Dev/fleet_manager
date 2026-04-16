@@ -2088,20 +2088,13 @@ async def refresh_token(
         logger.debug(f"[REFRESH] Permissions refreshed - {len(roles)} roles, {len(permissions)} permissions")
         
         # Generate new access token with fresh permissions
-        token_data = {
-            "user_id": str(user_id),
-            "user_type": user_type,
-            "roles": roles,
-            "permissions": permissions
-        }
-        
-        if tenant_id:
-            token_data["tenant_id"] = str(tenant_id)
-        
-        if vendor_id:
-            token_data["vendor_id"] = str(vendor_id)
-        
-        new_access_token = create_access_token(**token_data)
+        new_access_token = create_access_token(
+            user_id=str(user_id),
+            user_type=user_type,
+            tenant_id=str(tenant_id) if tenant_id else None,
+            vendor_id=str(vendor_id) if vendor_id else None,
+            custom_claims={"roles": roles, "permissions": permissions}
+        )
         
         logger.info(f"✅ [REFRESH] Token refreshed successfully - User: {user_id}, Type: {user_type}, Tenant: {tenant_id}")
         
