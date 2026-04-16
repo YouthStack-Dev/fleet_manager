@@ -37,9 +37,6 @@ OAUTH2_ENV = settings.ENV
 X_INTROSPECT_SECRET = settings.X_INTROSPECT_SECRET
 OAUTH2_URL = settings.OAUTH2_URL
 
-print(f"Running in {OAUTH2_ENV} mode")
-print(f"OAUTH2_URL = {OAUTH2_URL}")
-
 # Redis connection settings - use centralized settings
 REDIS_HOST = settings.REDIS_HOST
 REDIS_PORT = settings.REDIS_PORT

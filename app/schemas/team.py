@@ -10,10 +10,31 @@ class TeamBase(BaseModel):
 class TeamCreate(TeamBase):
     tenant_id: Optional[str] = None
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "Engineering Team",
+                "description": "Team handling engineering shift bookings",
+                "is_active": True,
+                "tenant_id": "tenant_123"
+            }
+        }
+    )
+
 class TeamUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     is_active: Optional[bool] = None
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "Updated Engineering Team",
+                "description": "Updated team description",
+                "is_active": True
+            }
+        }
+    )
 
 class TeamResponse(TeamBase):
     team_id: int

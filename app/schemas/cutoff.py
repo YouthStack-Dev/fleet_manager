@@ -33,9 +33,36 @@ class CutoffBase(BaseModel):
 class CutoffCreate(CutoffBase):
     tenant_id: str
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "tenant_id": "tenant_123",
+                "booking_login_cutoff": "2:00",
+                "cancel_login_cutoff": "1:00",
+                "booking_logout_cutoff": "2:00",
+                "cancel_logout_cutoff": "1:00",
+                "medical_emergency_booking_cutoff": "0:30",
+                "adhoc_booking_cutoff": "1:30",
+                "allow_adhoc_booking": True,
+                "allow_medical_emergency_booking": True
+            }
+        }
+    )
+
 
 class CutoffUpdate(CutoffBase):
     tenant_id: Optional[str] = None  # Optional for updates
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "booking_login_cutoff": "3:00",
+                "cancel_login_cutoff": "1:30",
+                "allow_adhoc_booking": False,
+                "allow_medical_emergency_booking": True
+            }
+        }
+    )
 
 
 class CutoffOut(BaseModel):

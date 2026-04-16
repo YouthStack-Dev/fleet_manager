@@ -69,8 +69,19 @@ def run_migrations() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle application startup and graceful shutdown."""
+    # Re-initialise logging HERE — uvicorn resets Python's logging config
+    # during its own startup (via dictConfig), wiping our StreamHandler.
+    # Calling setup_logging() inside lifespan guarantees our handler is
+    # restored *after* uvicorn has finished its own log setup, so every
+    # logger.info/debug/warning call at request-time actually reaches stdout.
+    setup_logging(force_configure=True)
     logger.info("🌟 Application starting up…")
     run_migrations()
+    # Alembic's fileConfig() call inside migrations resets Python's logging config
+    # (disable_existing_loggers=True by default), wiping all our handlers and
+    # disabling every pre-existing logger.  Restore our config immediately after.
+    setup_logging(force_configure=True)
+    logger.info("✅ Logging restored after migrations")
 
     # Database monitoring disabled - uncomment to re-enable
     # from app.database.session import engine
@@ -154,4 +165,12 @@ app.include_router(api_router)
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # log_config=None prevents uvicorn from calling logging.config.dictConfig(),
+    # which would otherwise wipe our StreamHandler and disable all existing loggers
+    # after the lifespan startup hook completes.
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        log_config=None,
+    )

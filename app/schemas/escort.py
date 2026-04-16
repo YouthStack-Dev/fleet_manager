@@ -1,4 +1,4 @@
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 from typing import Optional
 from datetime import datetime
 
@@ -30,10 +30,34 @@ class EscortCreate(EscortBase):
             raise ValueError('Gender must be MALE, FEMALE, or OTHER')
         return v.upper() if v else v
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "vendor_id": 3,
+                "name": "Priya Sharma",
+                "phone": "9123456780",
+                "email": "priya.sharma@example.com",
+                "address": "22 Garden Road, Pune 411001",
+                "gender": "FEMALE",
+                "is_active": True,
+                "is_available": True,
+                "password": "Escort@2024"
+            }
+        }
+    )
+
 
 class EscortSetPassword(BaseModel):
     """Body for the admin set-password endpoint."""
     new_password: str
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "new_password": "NewSecure@2024"
+            }
+        }
+    )
 
 
 class EscortUpdate(BaseModel):
@@ -57,6 +81,19 @@ class EscortUpdate(BaseModel):
         if v and v.upper() not in ['MALE', 'FEMALE', 'OTHER']:
             raise ValueError('Gender must be MALE, FEMALE, or OTHER')
         return v.upper() if v else v
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "Priya Sharma",
+                "phone": "9123456780",
+                "email": "priya.sharma@example.com",
+                "gender": "FEMALE",
+                "is_active": True,
+                "is_available": True
+            }
+        }
+    )
 
 
 class EscortResponse(EscortBase):

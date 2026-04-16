@@ -84,9 +84,6 @@ def hashkey(value: str) -> str:
 
 # Use centralized logging configuration
 logger = get_logger(__name__)
-
-# Test log to verify logging is working
-print(f"AUTH ROUTER: Logger configured - {__name__}", flush=True)
 logger.info("🔐 Auth router module loaded successfully")
 
 router = APIRouter(
@@ -160,7 +157,12 @@ def refresh_permissions_from_db(db: Session, user_id: str, user_type: str, tenan
                                 })
             
             logger.info(f"✅ Refreshed employee {user_id}: {len(roles)} roles, {len(all_permissions)} permissions")
-            return {"roles": roles, "permissions": all_permissions}
+            return {
+                "roles": roles,
+                "permissions": all_permissions,
+                "tenant_id": str(employee.tenant_id),
+                "vendor_id": None,
+            }
         
         elif user_type == "vendor":
             vendor_user = db.query(VendorUser).filter(
@@ -177,9 +179,18 @@ def refresh_permissions_from_db(db: Session, user_id: str, user_type: str, tenan
             _, roles, all_permissions = vendor_user_crud.get_roles_and_permissions(
                 db, vendor_user_id=vendor_user.vendor_user_id, vendor_id=vendor_user.vendor_id
             )
-            
+
+            # resolve tenant via vendor
+            vendor_obj = db.query(Vendor).filter(Vendor.vendor_id == vendor_user.vendor_id).first()
+            resolved_tenant_id = str(vendor_obj.tenant_id) if vendor_obj else None
+
             logger.info(f"✅ Refreshed vendor user {user_id}: {len(roles)} roles, {len(all_permissions)} permissions")
-            return {"roles": roles, "permissions": all_permissions}
+            return {
+                "roles": roles,
+                "permissions": all_permissions,
+                "tenant_id": resolved_tenant_id,
+                "vendor_id": str(vendor_user.vendor_id),
+            }
         
         elif user_type == "admin":
             admin = db.query(Admin).filter(Admin.admin_id == int(user_id)).first()
@@ -196,7 +207,12 @@ def refresh_permissions_from_db(db: Session, user_id: str, user_type: str, tenan
             )
             
             logger.info(f"✅ Refreshed admin {user_id}: {len(roles)} roles, {len(all_permissions)} permissions")
-            return {"roles": roles, "permissions": all_permissions}
+            return {
+                "roles": roles,
+                "permissions": all_permissions,
+                "tenant_id": None,
+                "vendor_id": None,
+            }
         
         elif user_type == "driver":
             driver = db.query(Driver).filter(Driver.driver_id == int(user_id)).first()
@@ -213,7 +229,12 @@ def refresh_permissions_from_db(db: Session, user_id: str, user_type: str, tenan
             )
             
             logger.info(f"✅ Refreshed driver {user_id}: {len(roles)} roles, {len(all_permissions)} permissions")
-            return {"roles": roles, "permissions": all_permissions}
+            return {
+                "roles": roles,
+                "permissions": all_permissions,
+                "tenant_id": str(driver.tenant_id),
+                "vendor_id": str(driver.vendor_id),
+            }
         
         elif user_type == "escort":
             escort = db.query(Escort).filter(Escort.escort_id == int(user_id)).first()
@@ -227,7 +248,12 @@ def refresh_permissions_from_db(db: Session, user_id: str, user_type: str, tenan
             
             # Escorts have no IAM permission model
             logger.info(f"✅ Refreshed escort {user_id}: active, no permission model")
-            return {"roles": [], "permissions": []}
+            return {
+                "roles": [],
+                "permissions": [],
+                "tenant_id": str(escort.tenant_id) if escort.tenant_id else None,
+                "vendor_id": str(escort.vendor_id) if escort.vendor_id else None,
+            }
         
         else:
             logger.error(f"Unknown user_type during permission refresh: {user_type}")
@@ -698,7 +724,8 @@ async def employee_login(
         logger.info(f"🚀 Login successful for employee: {employee.employee_id} ({employee.email}) in tenant: {tenant.tenant_id}")
 
         # Get company package permissions for frontend
-        from app.models.iam.policy import PolicyPackage, Permission
+        from app.models.iam.policy import PolicyPackage
+        from app.models.iam.permission import Permission
         package_permissions = []
         pkg = db.query(PolicyPackage).filter_by(tenant_id=tenant.tenant_id).first()
         if pkg and pkg.permission_ids:
@@ -1412,7 +1439,7 @@ async def select_employee_tenant(
         logger.info(f"🚀 Tenant selection successful for employee: {employee.employee_id} ({login_method}) in tenant: {tenant.tenant_id}")
 
         # Get company package permissions for frontend
-        from app.models.iam.policy import Permission
+        from app.models.iam.permission import Permission
         package_permissions = []
         if _pkg and _pkg.permission_ids:
             pkg_perms = db.query(Permission).filter(Permission.permission_id.in_(_pkg.permission_ids)).all()
@@ -1668,8 +1695,9 @@ async def switch_employee_tenant(
             user_type="employee",
         )
         refresh_token = create_refresh_token(
-            user_id=str(target_employee.employee_id),
+            user_id=str(employee.employee_id),
             user_type="employee",
+            custom_claims={"tenant_id": str(employee.tenant_id)},
         )
         
         tenant_details = {
@@ -1838,7 +1866,8 @@ async def vendor_user_login(
         )
         refresh_token = create_refresh_token(
             user_id=str(vendor_user.vendor_user_id),
-            user_type="vendor"
+            user_type="vendor",
+            custom_claims={"tenant_id": str(tenant.tenant_id), "vendor_id": str(vendor.vendor_id)},
         )
 
         logger.info(
@@ -1847,7 +1876,8 @@ async def vendor_user_login(
         )
 
         # Get company package permissions for frontend
-        from app.models.iam.policy import PolicyPackage, Permission
+        from app.models.iam.policy import PolicyPackage
+        from app.models.iam.permission import Permission
         package_permissions = []
         pkg = db.query(PolicyPackage).filter_by(tenant_id=tenant.tenant_id).first()
         if pkg and pkg.permission_ids:
@@ -2085,34 +2115,71 @@ async def refresh_token(
         
         roles = permission_data.get("roles", [])
         permissions = permission_data.get("permissions", [])
+        # Always use DB-sourced tenant_id/vendor_id — never trust the refresh token for these
+        tenant_id = permission_data.get("tenant_id") or tenant_id
+        vendor_id = permission_data.get("vendor_id") or vendor_id
         
-        logger.debug(f"[REFRESH] Permissions refreshed - {len(roles)} roles, {len(permissions)} permissions")
+        logger.debug(f"[REFRESH] Permissions refreshed - {len(roles)} roles, {len(permissions)} permissions, tenant={tenant_id}")
         
-        # Generate new access token with fresh permissions
-        token_data = {
+        # Generate a new opaque token (same as login flow)
+        new_opaque_token = secrets.token_hex(16)
+
+        current_time = int(time.time())
+        expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
+        ttl = expiry_time - current_time
+
+        # Build token payload to store in Redis (mirrors login payload)
+        token_payload = {
             "user_id": str(user_id),
             "user_type": user_type,
+            "opaque_token": new_opaque_token,
             "roles": roles,
-            "permissions": permissions
+            "permissions": permissions,
+            "iat": current_time,
+            "exp": expiry_time,
         }
-        
         if tenant_id:
-            token_data["tenant_id"] = str(tenant_id)
-        
+            token_payload["tenant_id"] = str(tenant_id)
         if vendor_id:
-            token_data["vendor_id"] = str(vendor_id)
-        
-        new_access_token = create_access_token(**token_data)
-        
+            token_payload["vendor_id"] = str(vendor_id)
+
+        # Store new opaque token in Redis (invalidates previous one implicitly by new key)
+        oauth_accessor = Oauth2AsAccessor()
+        oauth_accessor.store_opaque_token(new_opaque_token, token_payload, ttl)
+
+        # Update the single-session pointer so the new opaque token is the active one
+        # (same keys used during login: employee_session:{id}, driver_session:{id})
+        if oauth_accessor.use_redis:
+            try:
+                r = oauth_accessor.redis_manager.client
+                if user_type == "employee":
+                    r.setex(f"employee_session:{user_id}", ttl, new_opaque_token)
+                elif user_type == "driver":
+                    r.setex(f"driver_session:{user_id}", ttl, new_opaque_token)
+                logger.debug(f"[REFRESH] Session pointer updated in Redis for {user_type} {user_id}")
+            except Exception as re:
+                logger.warning(f"[REFRESH] Failed to update session pointer in Redis: {re}")
+
+        # Build new access token - identical structure to login
+        new_access_token = create_access_token(
+            user_id=str(user_id),
+            user_type=user_type,
+            tenant_id=str(tenant_id) if tenant_id else None,
+            vendor_id=str(vendor_id) if vendor_id else None,
+            opaque_token=new_opaque_token,
+        )
+
         logger.info(f"✅ [REFRESH] Token refreshed successfully - User: {user_id}, Type: {user_type}, Tenant: {tenant_id}")
-        
+
         return ResponseWrapper.success(
             message="Token refreshed successfully",
             data={
                 "access_token": new_access_token,
                 "refresh_token": refresh_token,  # Return same refresh token
                 "token_type": "bearer",
-                "expires_in": TOKEN_EXPIRY_HOURS * 3600
+                "expires_in": TOKEN_EXPIRY_HOURS * 3600,
+                "roles": roles,
+                "permissions": permissions,
             }
         )
         
@@ -3017,14 +3084,16 @@ async def driver_select_tenant(
         
         refresh_token = create_refresh_token(
             user_id=str(driver.driver_id),
-            user_type="driver"
+            user_type="driver",
+            custom_claims={"tenant_id": str(tenant_id), "vendor_id": str(driver.vendor_id)},
         )
         
         # Get tenant info
         tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
 
         # Get company package permissions for frontend
-        from app.models.iam.policy import PolicyPackage, Permission
+        from app.models.iam.policy import PolicyPackage
+        from app.models.iam.permission import Permission
         package_permissions = []
         pkg = db.query(PolicyPackage).filter_by(tenant_id=tenant_id).first()
         if pkg and pkg.permission_ids:

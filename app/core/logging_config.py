@@ -41,11 +41,7 @@ class ColoredFormatter(logging.Formatter):
         self.use_colors = self._should_use_colors(use_colors)
         self.format_string = format_string
         
-        # Debug color detection with a simple test
-        if self.use_colors:
-            print(f"\033[32mCOLORS ENABLED\033[0m - Testing: \033[31mRED\033[0m \033[33mYELLOW\033[0m \033[36mCYAN\033[0m", flush=True)
-        else:
-            print("COLORS DISABLED", flush=True)
+
     
     def _should_use_colors(self, use_colors: bool) -> bool:
         """Simplified color detection - more aggressive for terminals"""
@@ -53,27 +49,20 @@ class ColoredFormatter(logging.Formatter):
         # Explicitly disabled
         if not use_colors:
             return False
-            
+
         # Force disable colors if explicitly set
         if os.environ.get('NO_COLOR', '').lower() in ('1', 'true', 'yes'):
-            print("Colors DISABLED via NO_COLOR environment variable", flush=True)
             return False
-        
+
         # Force enable colors if explicitly set
         if os.environ.get('FORCE_COLOR', '').lower() in ('1', 'true', 'yes'):
-            print("Colors FORCED via FORCE_COLOR environment variable", flush=True)
             return True
-            
-        # For most terminals and environments, just enable colors
-        # This is more aggressive - assume colors work unless proven otherwise
-        
-        # Check if we're in a known non-color environment
+
+        # Disable for dumb terminals
         if os.environ.get('TERM') == 'dumb':
-            print("Colors DISABLED - TERM=dumb", flush=True)
             return False
-            
-        # Enable colors for all other cases (be optimistic)
-        print("Colors ENABLED - terminal environment detected", flush=True)
+
+        # Enable colors for all other cases
         return True
     
     def format(self, record):
@@ -144,11 +133,14 @@ def setup_logging(
         for handler in root_logger.handlers[:]:
             root_logger.removeHandler(handler)
         
-        # Clear all module-level loggers too
+        # Clear all module-level loggers and re-enable any disabled by uvicorn's dictConfig
         for name in logging.Logger.manager.loggerDict:
             module_logger = logging.getLogger(name)
             for handler in module_logger.handlers[:]:
                 module_logger.removeHandler(handler)
+            # uvicorn's dictConfig sets disable_existing_loggers=True which disables
+            # all pre-existing loggers. We must re-enable them here.
+            module_logger.disabled = False
         
         # Set log level
         numeric_level = getattr(logging, log_level, logging.DEBUG)
@@ -169,39 +161,19 @@ def setup_logging(
         # Add handler to root logger
         root_logger.addHandler(console_handler)
         
-        # Print setup message with direct color codes (not through logger yet)
-        if formatter.use_colors:
-            print(f"\n\033[32mLOGGING SETUP: Configured with level {log_level} (numeric: {numeric_level}) - Colors: Enabled\033[0m\n", 
-                  file=sys.stdout, flush=True)
-        else:
-            print(f"\nLOGGING SETUP: Configured with level {log_level} (numeric: {numeric_level}) - Colors: Disabled\n", 
-                  file=sys.stdout, flush=True)
-        
-        # Test the logger immediately with different levels to show colors
-        root_logger.debug("Debug logging is enabled")
-        root_logger.info("Root logger configured successfully")
-        root_logger.warning("Warning level logging is active")
-        root_logger.error("Error level logging test (this is just a test)")
+        root_logger.debug("Logging configured: level=%s colors=%s", log_level, formatter.use_colors)
 
 def get_logger(name: str) -> logging.Logger:
     """
     Get a logger instance with the given name.
     """
     logger = logging.getLogger(name)
-    # Ensure it inherits from root logger and doesn't have its own handlers
     logger.handlers = []
     logger.propagate = True
-    
-    # Test log immediately with direct color output
-    print(f"\033[94mLOGGER CREATED: {name}\033[0m\n", file=sys.stdout, flush=True)
-    
+    logger.disabled = False  # ensure uvicorn's disable_existing_loggers doesn't silence this
     return logger
 
-# Test colors immediately when module loads
-print(f"\n\033[36mIMPORTING LOGGING CONFIG\033[0m", file=sys.stdout, flush=True)
-print(f"Color test: \033[32mGREEN\033[0m \033[33mYELLOW\033[0m \033[31mRED\033[0m \033[36mCYAN\033[0m", flush=True)
 
 setup_logging(force_configure=True)
-print(f"\033[32mLOGGING CONFIG IMPORTED\033[0m\n", file=sys.stdout, flush=True)
 
 

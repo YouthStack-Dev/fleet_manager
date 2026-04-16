@@ -70,18 +70,47 @@ class BookingCreate(BaseModel):
     booking_dates: List[date] 
     shift_id: int
     booking_type: Optional[BookingTypeEnum] = BookingTypeEnum.REGULAR
+
     @field_validator("booking_date", check_fields=False)
     def validate_booking_date_not_past(cls, v):
         if v < date.today():
             raise ValueError("Booking date cannot be in the past")
         return v
-    
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "employee_id": 5,
+                "booking_dates": ["2026-04-15", "2026-04-16", "2026-04-17"],
+                "shift_id": 3,
+                "booking_type": "regular"
+            }
+        }
+    )
+
 class UpdateBookingRequest(BaseModel):
     shift_id: Optional[int] = None
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "shift_id": 4
+            }
+        }
+    )
 
 class BookingUpdate(BaseModel):
     status: Optional[BookingStatusEnum] = None
     reason: Optional[str] = None
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "status": "Cancelled",
+                "reason": "Employee working from home"
+            }
+        }
+    )
 
 
 class BookingResponse(BookingBase):

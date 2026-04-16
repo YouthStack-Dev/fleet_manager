@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - staging
   workflow_dispatch:
     inputs:
       branch:
@@ -36,15 +37,23 @@ jobs:
         with:
           ref: ${{ github.event.inputs.branch || github.ref_name }}
 
-      # 2️⃣ Set environment (prod/dev)
+      # 2️⃣ Set environment (prod/staging/dev)
       - name: Set environment based on branch
         id: set_env
         run: |
           BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
           if [ "$BRANCH" = "main" ]; then
-            echo "ENV=prod" >> $GITHUB_ENV
+            echo "ENV=prod"                    >> $GITHUB_ENV
+            echo "IMAGE_TAG=latest"            >> $GITHUB_ENV
+            echo "CONTAINER_NAME=service_manager" >> $GITHUB_ENV
+          elif [ "$BRANCH" = "staging" ]; then
+            echo "ENV=staging"                       >> $GITHUB_ENV
+            echo "IMAGE_TAG=staging"                 >> $GITHUB_ENV
+            echo "CONTAINER_NAME=service_manager_staging" >> $GITHUB_ENV
           elif [[ "$BRANCH" == dev-* ]]; then
-            echo "ENV=dev" >> $GITHUB_ENV
+            echo "ENV=dev"                        >> $GITHUB_ENV
+            echo "IMAGE_TAG=dev"                  >> $GITHUB_ENV
+            echo "CONTAINER_NAME=service_manager_dev" >> $GITHUB_ENV
           else
             echo "Invalid branch: $BRANCH"
             exit 1
@@ -86,14 +95,39 @@ jobs:
           password: ${{ secrets.VPS_PASSWORD }}
           port: 22
           script: |
-            # Create service.prod.env on VPS with secrets
+            # ── 🔐 Firebase key (shared between prod and staging) ────────────
             mkdir -p ~/app/firebase
-            # 🔐 Write Firebase service account key from GitHub secret
             echo "${{ secrets.FIREBASE_KEY_JSON }}" | base64 -d > ~/app/firebase/firebase_key.json
             chmod 600 ~/app/firebase/firebase_key.json
             echo "✅ Firebase key written to ~/app/firebase/firebase_key.json"
-            cat <<EOF > ~/service.prod.env
-            # Firebase Configuration
+
+            # ── Write environment-specific env file ──────────────────────────
+            if [ "${{ env.ENV }}" = "staging" ]; then
+              echo "📝 Writing service.staging.env ..."
+              cat <<EOF > ~/service.staging.env
+            FIREBASE_KEY_PATH=/app/firebase/firebase_key.json
+            FIREBASE_DATABASE_URL=https://ets-1-ccb71-default-rtdb.firebaseio.com
+            DATABASE_URL=postgresql://fleetstaging:stagingpass@postgres_staging:5432/fleet_db_staging
+            REDIS_HOST=redis_staging
+            REDIS_PORT=6379
+            REDIS_DB=0
+            REDIS_PASSWORD=redispassword
+            USE_REDIS=1
+            TOKEN_EXPIRY_HOURS=${{ secrets.TOKEN_EXPIRY_HOURS || '1' }}
+            TWILIO_ENABLED=${{ secrets.TWILIO_ENABLED || 'false' }}
+            TWILIO_ACCOUNT_SID=${{ secrets.TWILIO_ACCOUNT_SID }}
+            TWILIO_AUTH_TOKEN=${{ secrets.TWILIO_AUTH_TOKEN }}
+            TWILIO_PHONE_NUMBER=${{ secrets.TWILIO_PHONE_NUMBER }}
+            TWILIO_VERIFY_SERVICE_SID=${{ secrets.TWILIO_VERIFY_SERVICE_SID }}
+            ENV=staging
+            STORAGE_TYPE=filesystem
+            PROD_SERVER_STORAGE_PATH=/var/lib/fleet/staging-storage
+            MAX_FILE_SIZE_MB=10
+            EOF
+              echo "✅ service.staging.env written"
+            else
+              echo "📝 Writing service.prod.env ..."
+              cat <<EOF > ~/service.prod.env
             FIREBASE_KEY_PATH=/app/firebase/firebase_key.json
             FIREBASE_DATABASE_URL=https://ets-1-ccb71-default-rtdb.firebaseio.com
             DATABASE_URL=postgresql://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@host.docker.internal:5432/fleet_db
@@ -103,38 +137,48 @@ jobs:
             REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
             USE_REDIS=1
             TOKEN_EXPIRY_HOURS=${{ secrets.TOKEN_EXPIRY_HOURS || '1' }}
-            
-            # Twilio SMS Configuration
             TWILIO_ENABLED=${{ secrets.TWILIO_ENABLED || 'false' }}
             TWILIO_ACCOUNT_SID=${{ secrets.TWILIO_ACCOUNT_SID }}
             TWILIO_AUTH_TOKEN=${{ secrets.TWILIO_AUTH_TOKEN }}
             TWILIO_PHONE_NUMBER=${{ secrets.TWILIO_PHONE_NUMBER }}
             TWILIO_VERIFY_SERVICE_SID=${{ secrets.TWILIO_VERIFY_SERVICE_SID }}
-            
-            # Storage configuration
             ENV=production
             STORAGE_TYPE=filesystem
             PROD_SERVER_STORAGE_PATH=/var/lib/fleet/storage
             MAX_FILE_SIZE_MB=10
-            
             EOF
+              echo "✅ service.prod.env written"
+            fi
 
-            # Make scripts executable
             chmod +x ~/*.sh 2>/dev/null || true
 
-            # Backup database before deployment
-            echo "Creating database backup..."
-            mkdir -p ~/backups
-            BACKUP_FILE=~/backups/backup_$(date +%Y%m%d_%H%M%S).sql
-            sudo -u postgres pg_dump fleet_db > $BACKUP_FILE || {
-              echo "⚠️ Warning: Backup failed, but continuing deployment"
-            }
-            echo "Backup saved to: $BACKUP_FILE"
+            # ── Backup (prod only – staging has its own containerised DB) ────
+            if [ "${{ env.ENV }}" = "prod" ]; then
+              echo "Creating database backup..."
+              mkdir -p ~/backups
+              BACKUP_FILE=~/backups/backup_$(date +%Y%m%d_%H%M%S).sql
+              sudo -u postgres pg_dump fleet_db > $BACKUP_FILE || {
+                echo "⚠️  Warning: Backup failed, continuing deployment"
+              }
+              echo "Backup saved to: $BACKUP_FILE"
+            fi
 
-            # Stop containers
-            docker compose -f ~/docker-compose_${{ env.ENV }}.yaml down
+            # ── Stop running containers (with orphan cleanup) ────────────────
+            docker compose -f ~/docker-compose_${{ env.ENV }}.yaml down --remove-orphans 2>/dev/null || true
 
-            # Conditional cleanup based on inputs
+            # ── Force-remove any containers left over from a failed run ──────
+            # This handles the case where a previous deploy failed mid-way and
+            # left containers that compose no longer tracks (name conflicts).
+            if [ "${{ env.ENV }}" = "staging" ]; then
+              for cname in service_manager_staging redis_staging postgres_staging; do
+                if docker ps -a --format '{{.Names}}' | grep -q "^${cname}$"; then
+                  echo "🧹 Removing leftover container: ${cname}"
+                  docker rm -f "${cname}" || true
+                fi
+              done
+            fi
+
+            # ── Optional volume / image cleanup ─────────────────────────────
             if [ "${{ github.event.inputs.remove_volumes }}" = "true" ]; then
               echo "Removing volumes (database will be reset)..."
               docker compose -f ~/docker-compose_${{ env.ENV }}.yaml down -v
@@ -146,28 +190,28 @@ jobs:
               docker image prune -f
             fi
 
-            # Pull latest image
+            # ── Pull the image built for this environment ────────────────────
             docker pull dheerajkumarp/fleet_service_manager:${{ env.IMAGE_TAG }}
 
-            # Deploy new version
+            # ── Bring stack up ───────────────────────────────────────────────
             docker compose -f ~/docker-compose_${{ env.ENV }}.yaml up -d
 
-            # Wait for containers to be healthy
             echo "Waiting for containers to be ready..."
             sleep 10
 
-            # ✅ Migrations run automatically inside the app on startup (lifespan hook).
-            # We only need to verify the final state here.
+            # ── Verify migrations ────────────────────────────────────────────
             echo "Verifying migration state after startup..."
             sleep 5
-            docker exec service_manager python migrate.py current || {
+            docker exec ${{ env.CONTAINER_NAME }} python migrate.py current || {
               echo "❌ Could not verify migration state. Container logs:"
-              docker compose -f ~/docker-compose_${{ env.ENV }}.yaml logs service_manager
+              docker compose -f ~/docker-compose_${{ env.ENV }}.yaml logs ${{ env.CONTAINER_NAME }}
               exit 1
             }
 
-            # Verify database tables
-            echo "Verifying database tables..."
-            sudo -u postgres psql -d fleet_db -c "\dt" || echo "Could not verify tables"
+            # ── Extra table check for prod only ─────────────────────────────
+            if [ "${{ env.ENV }}" = "prod" ]; then
+              echo "Verifying database tables..."
+              sudo -u postgres psql -d fleet_db -c "\dt" || echo "Could not verify tables"
+            fi
 
-            echo "Deployment completed successfully!"
+            echo "✅ ${{ env.ENV }} deployment completed successfully!"

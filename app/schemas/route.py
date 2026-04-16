@@ -42,10 +42,55 @@ class RouteManagementCreate(BaseModel):
     route_code: str
     bookings: List[RouteManagementBookingCreate]
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "route_id": "RT001",
+                "tenant_id": "tenant_123",
+                "route_code": "MNG-BLR-001",
+                "bookings": [
+                    {
+                        "booking_id": 101,
+                        "stop_order": 1,
+                        "estimated_pickup_time": "08:15",
+                        "estimated_drop_time": "09:00",
+                        "distance_from_previous": 0.0,
+                        "cumulative_distance": 0.0
+                    },
+                    {
+                        "booking_id": 102,
+                        "stop_order": 2,
+                        "estimated_pickup_time": "08:30",
+                        "estimated_drop_time": "09:15",
+                        "distance_from_previous": 5.2,
+                        "cumulative_distance": 5.2
+                    }
+                ]
+            }
+        }
+    )
+
 class RouteManagementUpdate(BaseModel):
     total_distance_km: Optional[float] = None
     total_time_minutes: Optional[float] = None
     bookings: Optional[List[RouteManagementBookingCreate]] = None
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "total_distance_km": 22.5,
+                "total_time_minutes": 55.0,
+                "bookings": [
+                    {
+                        "booking_id": 103,
+                        "stop_order": 3,
+                        "estimated_pickup_time": "08:45",
+                        "estimated_drop_time": "09:30"
+                    }
+                ]
+            }
+        }
+    )
 
 class RouteManagementResponse(RouteManagementBase):
     status: RouteStatusEnum
