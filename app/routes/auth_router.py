@@ -2087,13 +2087,12 @@ async def refresh_token(
         
         logger.debug(f"[REFRESH] Permissions refreshed - {len(roles)} roles, {len(permissions)} permissions")
         
-        # Generate new access token with fresh permissions
+        # Generate new access token - same structure as login (no roles/permissions in token)
         new_access_token = create_access_token(
             user_id=str(user_id),
             user_type=user_type,
             tenant_id=str(tenant_id) if tenant_id else None,
             vendor_id=str(vendor_id) if vendor_id else None,
-            custom_claims={"roles": roles, "permissions": permissions}
         )
         
         logger.info(f"✅ [REFRESH] Token refreshed successfully - User: {user_id}, Type: {user_type}, Tenant: {tenant_id}")
@@ -2104,7 +2103,9 @@ async def refresh_token(
                 "access_token": new_access_token,
                 "refresh_token": refresh_token,  # Return same refresh token
                 "token_type": "bearer",
-                "expires_in": TOKEN_EXPIRY_HOURS * 3600
+                "expires_in": TOKEN_EXPIRY_HOURS * 3600,
+                "roles": roles,
+                "permissions": permissions,
             }
         )
         
