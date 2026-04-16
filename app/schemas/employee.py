@@ -44,6 +44,26 @@ class SpecialNeedsEnum(str, Enum):
 class BaseValidatorsMixin:
     """Reusable validators for Employee models."""
 
+    @field_validator("email", mode="before")
+    def normalize_email(cls, v):
+        """Always store emails in lowercase to prevent duplicate accounts differing only by case."""
+        if v and isinstance(v, str):
+            return v.strip().lower()
+        return v
+
+    @field_validator("gender", mode="before")
+    def normalize_gender(cls, v):
+        """Accept any case (male/MALE/Male) and blank/whitespace → None."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return None
+            # Normalize to title-case so it matches GenderEnum values (Male/Female/Other)
+            return v.capitalize()
+        return v
+
     @field_validator("phone")
     def validate_phone(cls, v: str):
         if not re.match(PHONE_REGEX, v):
