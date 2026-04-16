@@ -807,12 +807,23 @@ async def create_routes(
             )
 
         if routes_created == 0 and len(cluster_data) > 0:
-            message = (
-                f"No routes could be created: Google Maps returned no directions for all {len(cluster_data)} cluster(s). "
-                f"Check that drop_latitude/drop_longitude on the bookings are valid coordinates."
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "route_generation_failed",
+                    "message": (
+                        f"Could not create any routes: Google Maps returned no directions for all "
+                        f"{len(cluster_data)} cluster(s). The drop point coordinates stored for this shift "
+                        f"appear to be invalid or unreachable. Please update the drop point address and try again."
+                    ),
+                    "routes_created": 0,
+                    "routes_failed": routes_failed,
+                    "hint": "Check the drop_latitude / drop_longitude set on the shift or booking drop point.",
+                }
             )
-        elif routes_failed > 0:
-            message = f"Partially created: {routes_created} route(s) saved, {routes_failed} cluster(s) failed (Google Maps ZERO_RESULTS)"
+
+        if routes_failed > 0:
+            message = f"Partially created: {routes_created} route(s) saved, {routes_failed} cluster(s) failed (Google Maps ZERO_RESULTS). Check drop point coordinates."
         else:
             message = "Successfully generated route suggestions for unrouted bookings"
 
