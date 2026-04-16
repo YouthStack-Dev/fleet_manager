@@ -84,9 +84,6 @@ def hashkey(value: str) -> str:
 
 # Use centralized logging configuration
 logger = get_logger(__name__)
-
-# Test log to verify logging is working
-print(f"AUTH ROUTER: Logger configured - {__name__}", flush=True)
 logger.info("🔐 Auth router module loaded successfully")
 
 router = APIRouter(

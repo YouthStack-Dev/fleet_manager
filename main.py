@@ -69,6 +69,12 @@ def run_migrations() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle application startup and graceful shutdown."""
+    # Re-initialise logging HERE — uvicorn resets Python's logging config
+    # during its own startup (via dictConfig), wiping our StreamHandler.
+    # Calling setup_logging() inside lifespan guarantees our handler is
+    # restored *after* uvicorn has finished its own log setup, so every
+    # logger.info/debug/warning call at request-time actually reaches stdout.
+    setup_logging(force_configure=True)
     logger.info("🌟 Application starting up…")
     run_migrations()
 

@@ -24,7 +24,6 @@ if not os.path.exists(firebase_key_path):
                                     "Check your docker-compose volume mount.")
 
 def init_firebase():
-    print("Firebase key path:", firebase_key_path)
     if not os.path.exists(firebase_key_path):
         raise FileNotFoundError(f"Firebase key not found at: {firebase_key_path}")
     try:

@@ -1,5 +1,9 @@
 FROM python:3.11-slim
 
+# Never buffer stdout/stderr — every log line is visible in docker logs immediately
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONFAULTHANDLER=1
+
 # Install system dependencies including build tools for Python packages
 RUN apt-get update && apt-get install -y \
     postgresql-client \
