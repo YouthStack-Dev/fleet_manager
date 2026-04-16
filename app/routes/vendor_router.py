@@ -218,15 +218,16 @@ def create_vendor(
 
 def send_vendor_created_notifications(vendor_data: dict):
     """Background task to send vendor creation email and SMS."""
+    import asyncio
     try:
         email_service = get_email_service()
         sms_service = get_sms_service()
 
-        # Send Email
-        email_success = email_service.send_vendor_created_email(
+        # Send Email (async method — must be driven with asyncio.run in this sync thread)
+        email_success = asyncio.run(email_service.send_vendor_created_email(
             admin_email=vendor_data["admin_email"],
             vendor_data=vendor_data,
-        )
+        ))
 
         if email_success:
             logger.info(f"Vendor creation email sent: {vendor_data['vendor_id']}")
