@@ -1,0 +1,106 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Staging Stack  –  isolated from prod, runs alongside it on the same VPS
+#   App port  : 8300 (prod uses 8100)
+#   Redis port: 6380 (prod uses 6379)
+#   Postgres  : containerised, port 5433 (prod uses host postgres on 5432)
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: fleet-staging
+
+services:
+
+  redis_staging:
+    image: redis:7.4-alpine
+    container_name: redis_staging
+    restart: always
+    ports:
+      - "6380:6379"
+    command: redis-server --requirepass redispassword --appendonly yes
+    volumes:
+      - redis_staging_data:/data
+    networks:
+      - fleet-staging-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  postgres_staging:
+    image: postgres:15
+    container_name: postgres_staging
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: fleetstaging
+      POSTGRES_PASSWORD: stagingpass
+      POSTGRES_DB: fleet_db_staging
+    volumes:
+      - postgres_staging_data:/var/lib/postgresql/data
+    networks:
+      - fleet-staging-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fleetstaging -d fleet_db_staging"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  service_manager_staging:
+    image: dheerajkumarp/fleet_service_manager:staging
+    container_name: service_manager_staging
+    restart: on-failure:3
+    env_file:
+      - ./service.staging.env
+    environment:
+      # Email configuration (safe to keep inline for staging)
+      - EMAIL_ENABLED=true
+      - SMTP_SERVER=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USERNAME=dheerajkumarp777@gmail.com
+      - SMTP_PASSWORD=orls draa fbxo neox
+      - SMTP_USE_TLS=true
+      - SMTP_USE_SSL=false
+      - SENDER_EMAIL=dheerajkumarp777@gmail.com
+      - SENDER_NAME=Fleet Manager Staging
+      - SUPPORT_EMAIL=dheerajkumarp777@gmail.com
+      - EMAIL_RETRY_ATTEMPTS=3
+      - EMAIL_RETRY_DELAY=5
+      - EMAIL_QUEUE_ENABLED=false
+      - FRONTEND_URL=http://staging.your-domain.com
+      # DB, Redis and storage override via env_file (service.staging.env)
+      - DATABASE_URL=postgresql://fleetstaging:stagingpass@postgres_staging:5432/fleet_db_staging
+      - REDIS_HOST=redis_staging
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - REDIS_PASSWORD=redispassword
+      - USE_REDIS=1
+      - TOKEN_EXPIRY_HOURS=1
+      - ENV=staging
+      - STORAGE_TYPE=filesystem
+      - PROD_SERVER_STORAGE_PATH=/var/lib/fleet/staging-storage
+      - MAX_FILE_SIZE_MB=10
+
+    volumes:
+      # Shared Firebase key (same key used for staging)
+      - ./app/firebase/firebase_key.json:/app/app/firebase/firebase_key.json:ro
+      # Isolated staging storage path — does NOT overlap with prod
+      - /var/lib/fleet/staging-storage:/var/lib/fleet/staging-storage
+
+    depends_on:
+      redis_staging:
+        condition: service_healthy
+      postgres_staging:
+        condition: service_healthy
+    ports:
+      - "8300:8000"
+    networks:
+      - fleet-staging-network
+
+networks:
+  fleet-staging-network:
+    driver: bridge
+
+volumes:
+  redis_staging_data:
+  postgres_staging_data:

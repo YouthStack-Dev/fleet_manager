@@ -1,0 +1,90 @@
+name: ✨ Feature Request
+description: Propose a new feature or enhancement
+title: "[FEATURE] "
+labels: ["feature", "status: open"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## ✨ Feature Request
+        Use this template for new features or enhancements.
+        Please be as specific as possible about the requirement.
+
+  - type: input
+    id: title
+    attributes:
+      label: 🎯 Feature Title
+      description: Short, clear title for the feature.
+      placeholder: "e.g. Bulk employee import via CSV"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: source
+    attributes:
+      label: 🔍 Area
+      description: Which part of the system does this affect?
+      options:
+        - backend
+        - frontend
+        - both
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: 🚨 Priority
+      options:
+        - "high — blocking other work or client committed"
+        - "medium — needed this sprint"
+        - "low — nice to have / future sprint"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 📋 Description
+      description: What needs to be built? Describe in full detail.
+    validations:
+      required: true
+
+  - type: textarea
+    id: business
+    attributes:
+      label: 💼 Business Requirement
+      description: Why is this needed? What problem does it solve? Who asked for it?
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: ✅ Expected Outcome
+      description: What does success look like once this is built?
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 🎯 Acceptance Criteria
+      description: Specific, testable checklist for the tester.
+      placeholder: |
+        - [ ] Admin can upload a CSV with columns: name, email, employee_code, team_id
+        - [ ] Invalid rows show inline errors (not crash)
+        - [ ] Success summary shown after import (X added, Y failed)
+        - [ ] Duplicate employee_code in same tenant is rejected
+
+  - type: textarea
+    id: api_design
+    attributes:
+      label: 🔗 API / UI Design Notes (optional)
+      description: Any endpoint, payload, or UI wireframe ideas.
+      placeholder: "POST /api/v1/employees/bulk-import — multipart/form-data"
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 💬 Additional Context
