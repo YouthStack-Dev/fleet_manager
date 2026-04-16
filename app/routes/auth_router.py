@@ -157,7 +157,12 @@ def refresh_permissions_from_db(db: Session, user_id: str, user_type: str, tenan
                                 })
             
             logger.info(f"✅ Refreshed employee {user_id}: {len(roles)} roles, {len(all_permissions)} permissions")
-            return {"roles": roles, "permissions": all_permissions}
+            return {
+                "roles": roles,
+                "permissions": all_permissions,
+                "tenant_id": str(employee.tenant_id),
+                "vendor_id": None,
+            }
         
         elif user_type == "vendor":
             vendor_user = db.query(VendorUser).filter(
@@ -174,9 +179,18 @@ def refresh_permissions_from_db(db: Session, user_id: str, user_type: str, tenan
             _, roles, all_permissions = vendor_user_crud.get_roles_and_permissions(
                 db, vendor_user_id=vendor_user.vendor_user_id, vendor_id=vendor_user.vendor_id
             )
-            
+
+            # resolve tenant via vendor
+            vendor_obj = db.query(Vendor).filter(Vendor.vendor_id == vendor_user.vendor_id).first()
+            resolved_tenant_id = str(vendor_obj.tenant_id) if vendor_obj else None
+
             logger.info(f"✅ Refreshed vendor user {user_id}: {len(roles)} roles, {len(all_permissions)} permissions")
-            return {"roles": roles, "permissions": all_permissions}
+            return {
+                "roles": roles,
+                "permissions": all_permissions,
+                "tenant_id": resolved_tenant_id,
+                "vendor_id": str(vendor_user.vendor_id),
+            }
         
         elif user_type == "admin":
             admin = db.query(Admin).filter(Admin.admin_id == int(user_id)).first()
@@ -193,7 +207,12 @@ def refresh_permissions_from_db(db: Session, user_id: str, user_type: str, tenan
             )
             
             logger.info(f"✅ Refreshed admin {user_id}: {len(roles)} roles, {len(all_permissions)} permissions")
-            return {"roles": roles, "permissions": all_permissions}
+            return {
+                "roles": roles,
+                "permissions": all_permissions,
+                "tenant_id": None,
+                "vendor_id": None,
+            }
         
         elif user_type == "driver":
             driver = db.query(Driver).filter(Driver.driver_id == int(user_id)).first()
@@ -210,7 +229,12 @@ def refresh_permissions_from_db(db: Session, user_id: str, user_type: str, tenan
             )
             
             logger.info(f"✅ Refreshed driver {user_id}: {len(roles)} roles, {len(all_permissions)} permissions")
-            return {"roles": roles, "permissions": all_permissions}
+            return {
+                "roles": roles,
+                "permissions": all_permissions,
+                "tenant_id": str(driver.tenant_id),
+                "vendor_id": str(driver.vendor_id),
+            }
         
         elif user_type == "escort":
             escort = db.query(Escort).filter(Escort.escort_id == int(user_id)).first()
@@ -224,7 +248,12 @@ def refresh_permissions_from_db(db: Session, user_id: str, user_type: str, tenan
             
             # Escorts have no IAM permission model
             logger.info(f"✅ Refreshed escort {user_id}: active, no permission model")
-            return {"roles": [], "permissions": []}
+            return {
+                "roles": [],
+                "permissions": [],
+                "tenant_id": str(escort.tenant_id) if escort.tenant_id else None,
+                "vendor_id": str(escort.vendor_id) if escort.vendor_id else None,
+            }
         
         else:
             logger.error(f"Unknown user_type during permission refresh: {user_type}")
@@ -2086,8 +2115,11 @@ async def refresh_token(
         
         roles = permission_data.get("roles", [])
         permissions = permission_data.get("permissions", [])
+        # Always use DB-sourced tenant_id/vendor_id — never trust the refresh token for these
+        tenant_id = permission_data.get("tenant_id") or tenant_id
+        vendor_id = permission_data.get("vendor_id") or vendor_id
         
-        logger.debug(f"[REFRESH] Permissions refreshed - {len(roles)} roles, {len(permissions)} permissions")
+        logger.debug(f"[REFRESH] Permissions refreshed - {len(roles)} roles, {len(permissions)} permissions, tenant={tenant_id}")
         
         # Generate a new opaque token (same as login flow)
         new_opaque_token = secrets.token_hex(16)
@@ -2114,6 +2146,19 @@ async def refresh_token(
         # Store new opaque token in Redis (invalidates previous one implicitly by new key)
         oauth_accessor = Oauth2AsAccessor()
         oauth_accessor.store_opaque_token(new_opaque_token, token_payload, ttl)
+
+        # Update the single-session pointer so the new opaque token is the active one
+        # (same keys used during login: employee_session:{id}, driver_session:{id})
+        if oauth_accessor.use_redis:
+            try:
+                r = oauth_accessor.redis_manager.client
+                if user_type == "employee":
+                    r.setex(f"employee_session:{user_id}", ttl, new_opaque_token)
+                elif user_type == "driver":
+                    r.setex(f"driver_session:{user_id}", ttl, new_opaque_token)
+                logger.debug(f"[REFRESH] Session pointer updated in Redis for {user_type} {user_id}")
+            except Exception as re:
+                logger.warning(f"[REFRESH] Failed to update session pointer in Redis: {re}")
 
         # Build new access token - identical structure to login
         new_access_token = create_access_token(
