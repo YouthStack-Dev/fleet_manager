@@ -133,11 +133,14 @@ def setup_logging(
         for handler in root_logger.handlers[:]:
             root_logger.removeHandler(handler)
         
-        # Clear all module-level loggers too
+        # Clear all module-level loggers and re-enable any disabled by uvicorn's dictConfig
         for name in logging.Logger.manager.loggerDict:
             module_logger = logging.getLogger(name)
             for handler in module_logger.handlers[:]:
                 module_logger.removeHandler(handler)
+            # uvicorn's dictConfig sets disable_existing_loggers=True which disables
+            # all pre-existing loggers. We must re-enable them here.
+            module_logger.disabled = False
         
         # Set log level
         numeric_level = getattr(logging, log_level, logging.DEBUG)
@@ -167,6 +170,7 @@ def get_logger(name: str) -> logging.Logger:
     logger = logging.getLogger(name)
     logger.handlers = []
     logger.propagate = True
+    logger.disabled = False  # ensure uvicorn's disable_existing_loggers doesn't silence this
     return logger
 
 

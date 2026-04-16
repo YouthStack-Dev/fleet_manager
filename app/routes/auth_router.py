@@ -1666,8 +1666,9 @@ async def switch_employee_tenant(
             user_type="employee",
         )
         refresh_token = create_refresh_token(
-            user_id=str(target_employee.employee_id),
+            user_id=str(employee.employee_id),
             user_type="employee",
+            custom_claims={"tenant_id": str(employee.tenant_id)},
         )
         
         tenant_details = {
@@ -1836,7 +1837,8 @@ async def vendor_user_login(
         )
         refresh_token = create_refresh_token(
             user_id=str(vendor_user.vendor_user_id),
-            user_type="vendor"
+            user_type="vendor",
+            custom_claims={"tenant_id": str(tenant.tenant_id), "vendor_id": str(vendor.vendor_id)},
         )
 
         logger.info(
@@ -2087,31 +2089,52 @@ async def refresh_token(
         
         logger.debug(f"[REFRESH] Permissions refreshed - {len(roles)} roles, {len(permissions)} permissions")
         
-        # Generate new access token with fresh permissions
-        token_data = {
+        # Generate a new opaque token (same as login flow)
+        new_opaque_token = secrets.token_hex(16)
+
+        current_time = int(time.time())
+        expiry_time = current_time + (TOKEN_EXPIRY_HOURS * 3600)
+        ttl = expiry_time - current_time
+
+        # Build token payload to store in Redis (mirrors login payload)
+        token_payload = {
             "user_id": str(user_id),
             "user_type": user_type,
+            "opaque_token": new_opaque_token,
             "roles": roles,
-            "permissions": permissions
+            "permissions": permissions,
+            "iat": current_time,
+            "exp": expiry_time,
         }
-        
         if tenant_id:
-            token_data["tenant_id"] = str(tenant_id)
-        
+            token_payload["tenant_id"] = str(tenant_id)
         if vendor_id:
-            token_data["vendor_id"] = str(vendor_id)
-        
-        new_access_token = create_access_token(**token_data)
-        
+            token_payload["vendor_id"] = str(vendor_id)
+
+        # Store new opaque token in Redis (invalidates previous one implicitly by new key)
+        oauth_accessor = Oauth2AsAccessor()
+        oauth_accessor.store_opaque_token(new_opaque_token, token_payload, ttl)
+
+        # Build new access token - identical structure to login
+        new_access_token = create_access_token(
+            user_id=str(user_id),
+            user_type=user_type,
+            tenant_id=str(tenant_id) if tenant_id else None,
+            vendor_id=str(vendor_id) if vendor_id else None,
+            opaque_token=new_opaque_token,
+        )
+
         logger.info(f"✅ [REFRESH] Token refreshed successfully - User: {user_id}, Type: {user_type}, Tenant: {tenant_id}")
-        
+
         return ResponseWrapper.success(
             message="Token refreshed successfully",
             data={
                 "access_token": new_access_token,
                 "refresh_token": refresh_token,  # Return same refresh token
                 "token_type": "bearer",
-                "expires_in": TOKEN_EXPIRY_HOURS * 3600
+                "expires_in": TOKEN_EXPIRY_HOURS * 3600,
+                "roles": roles,
+                "permissions": permissions,
             }
         )
         
@@ -3016,7 +3039,8 @@ async def driver_select_tenant(
         
         refresh_token = create_refresh_token(
             user_id=str(driver.driver_id),
-            user_type="driver"
+            user_type="driver",
+            custom_claims={"tenant_id": str(tenant_id), "vendor_id": str(driver.vendor_id)},
         )
         
         # Get tenant info
