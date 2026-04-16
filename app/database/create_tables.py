@@ -11,6 +11,10 @@ This ensures:
 import subprocess
 import sys
 import os
+import importlib
+
+# Add the project root to the Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def create_tables():
@@ -33,7 +37,6 @@ def create_tables():
             print(result.stderr)
 
     except FileNotFoundError:
-        # alembic not on PATH — fall back to SQLAlchemy create_all + stamp
         print("alembic CLI not found, falling back to SQLAlchemy create_all + stamp")
         _fallback_create_and_stamp()
 
@@ -44,14 +47,15 @@ def _fallback_create_and_stamp():
     Only used when the alembic CLI is unavailable.
     """
     from app.database.session import engine, Base
-    from app.models import *  # noqa: F401,F403 — ensure all models are registered
     from alembic.config import Config as AlembicConfig
     from alembic import command as alembic_command
+
+    # Import all models so they register with Base.metadata before create_all
+    importlib.import_module("app.models")
 
     Base.metadata.create_all(bind=engine)
     print("Tables created via SQLAlchemy.")
 
-    # Stamp alembic_version to head so health check passes
     cfg = AlembicConfig("alembic.ini")
     alembic_command.stamp(cfg, "head")
     print("alembic_version stamped to head.")
