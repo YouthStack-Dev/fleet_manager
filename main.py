@@ -160,4 +160,12 @@ app.include_router(api_router)
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # log_config=None prevents uvicorn from calling logging.config.dictConfig(),
+    # which would otherwise wipe our StreamHandler and disable all existing loggers
+    # after the lifespan startup hook completes.
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        log_config=None,
+    )

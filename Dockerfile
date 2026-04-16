@@ -25,5 +25,6 @@ COPY . .
 # Expose port
 EXPOSE 8000
 
-# Run the FastAPI application with uvicorn with hot reload
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run via python main.py so uvicorn uses log_config=None and never calls
+# logging.config.dictConfig() — keeping our StreamHandler and logger state intact.
+CMD ["python", "main.py"]
