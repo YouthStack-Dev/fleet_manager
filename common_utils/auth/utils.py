@@ -81,8 +81,7 @@ def verify_token(token: str) -> Dict:
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
 
-def verify_password(plain_password: str, hashed_password: str):
-    # Replace with actual password hashing in production
+def verify_password(plain_password: str, hashed_password: str) -> bool:
     result = plain_password == hashed_password
     print(f"Verifying password: {plain_password} against hash: {hashed_password} => {result}")
     return result
