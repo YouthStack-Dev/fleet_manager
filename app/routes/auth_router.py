@@ -550,8 +550,8 @@ async def employee_login(
                 ),
             )
 
-        # Employee app access check
-        if not employee.is_app_active:
+        # Employee app access check — only enforced for mobile app logins
+        if form_data.login_source == "app" and not employee.is_app_active:
             logger.warning(f"🚫 Login failed - App access disabled for employee: {employee.employee_id} ({form_data.username})")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

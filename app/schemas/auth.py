@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field, validator, field_validator, ConfigDict
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from app.schemas.employee import EmployeeResponse
 import re
 
@@ -23,6 +23,7 @@ class LoginRequest(BaseModel):
     tenant_id: str = Field(..., description="Tenant code")
     username: EmailStr = Field(..., description="Employee email address")
     password: str = Field(..., min_length=8)
+    login_source: Literal["web", "app"] = Field("web", description="Login source: 'web' for dashboard, 'app' for mobile app")
 
 
 class AdminLoginRequest(BaseModel):
