@@ -885,7 +885,7 @@ def validate_employee_row(
         validated_data['name'] = row_data['name'].strip()
     
     # 2. Validate email
-    email = row_data.get('email', '').strip()
+    email = row_data.get('email', '').strip().lower()  # normalize to lowercase
     if not email:
         errors.append("Email is required")
     else:

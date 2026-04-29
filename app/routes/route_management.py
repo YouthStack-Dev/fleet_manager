@@ -590,6 +590,10 @@ async def create_routes(
         logger.info(
             f"Clustering request for date={booking_date}, shift={shift_id}, user={user_data.get('user_id', 'unknown')}"
         )
+        logger.info(
+            f"[create_routes] PAYLOAD | booking_date={booking_date} shift_id={shift_id} "
+            f"radius={radius} group_size={group_size} strict_grouping={strict_grouping} tenant_id={tenant_id}"
+        )
 
         user_type = user_data.get("user_type")
         token_tenant_id = user_data.get("tenant_id")
@@ -722,6 +726,12 @@ async def create_routes(
                 )
 
             # Save the optimized route to the database
+            if not optimized_route:
+                logger.warning(
+                    f"[create_routes] ⚠️  Cluster {cluster['cluster_id']} produced NO optimized route "
+                    f"(Google Maps returned ZERO_RESULTS or failed). Bookings: "
+                    f"{[b['booking_id'] for b in cluster['bookings']]}"
+                )
             if optimized_route:
                 try:
                     route = RouteManagement(
@@ -784,6 +794,39 @@ async def create_routes(
                 cluster["optimized_route"] = optimized_route
 
         # ---- Final Response ----
+        routes_created = sum(1 for c in cluster_data if c.get("optimized_route"))
+        routes_failed = len(cluster_data) - routes_created
+        logger.info(
+            f"[create_routes] RESPONSE SUMMARY | total_bookings={len(bookings)} "
+            f"total_clusters={len(clusters)} routes_created={routes_created} routes_failed={routes_failed}"
+        )
+        if routes_failed > 0:
+            logger.warning(
+                f"[create_routes] ⚠️  {routes_failed} cluster(s) failed to generate a route "
+                f"(likely Google Maps ZERO_RESULTS). Check destination coordinates."
+            )
+
+        if routes_created == 0 and len(cluster_data) > 0:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "route_generation_failed",
+                    "message": (
+                        f"Could not create any routes: Google Maps returned no directions for all "
+                        f"{len(cluster_data)} cluster(s). The drop point coordinates stored for this shift "
+                        f"appear to be invalid or unreachable. Please update the drop point address and try again."
+                    ),
+                    "routes_created": 0,
+                    "routes_failed": routes_failed,
+                    "hint": "Check the drop_latitude / drop_longitude set on the shift or booking drop point.",
+                }
+            )
+
+        if routes_failed > 0:
+            message = f"Partially created: {routes_created} route(s) saved, {routes_failed} cluster(s) failed (Google Maps ZERO_RESULTS). Check drop point coordinates."
+        else:
+            message = "Successfully generated route suggestions for unrouted bookings"
+
         shift_response = ShiftResponse.model_validate(shift, from_attributes=True)
         return ResponseWrapper.success(
             data={
@@ -791,8 +834,10 @@ async def create_routes(
                 "clusters": cluster_data,
                 "total_bookings": len(bookings),
                 "total_clusters": len(clusters),
+                "routes_created": routes_created,
+                "routes_failed": routes_failed,
             },
-            message="Successfully generated route suggestions for unrouted bookings"
+            message=message
         )
 
     except HTTPException:
