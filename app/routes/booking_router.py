@@ -1140,18 +1140,27 @@ async def update_booking(
                         )
                     cutoff_interval = cutoff.medical_emergency_booking_cutoff
                 else:
-                    if shift.log_type == "IN":
+                    if shift_log_type == "IN":
                         cutoff_interval = cutoff.booking_login_cutoff
-                    elif shift.log_type == "OUT":
+                    elif shift_log_type == "OUT":
                         cutoff_interval = cutoff.booking_logout_cutoff
 
-            shift_datetime = datetime.combine(booking.booking_date, shift.shift_time).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
+            if not shift_time:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Shift time is not configured for the selected shift",
+                        error_code="SHIFT_TIME_MISSING",
+                    ),
+                )
+
+            shift_datetime = datetime.combine(booking.booking_date, shift_time).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
             now = get_current_ist_time()
             time_until_shift = shift_datetime - now
 
             if cutoff and shift and cutoff_interval and cutoff_interval.total_seconds() > 0:
                 if time_until_shift < cutoff_interval:
-                    booking_type_name = "ad-hoc" if booking.booking_type == "adhoc" else ("medical emergency" if booking.booking_type == "medical_emergency" else ("login" if shift.log_type == "IN" else "logout"))
+                    booking_type_name = "ad-hoc" if booking.booking_type == "adhoc" else ("medical emergency" if booking.booking_type == "medical_emergency" else ("login" if shift_log_type == "IN" else "logout"))
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=ResponseWrapper.error(
@@ -1165,7 +1174,7 @@ async def update_booking(
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ResponseWrapper.error(
-                        message=f"Cannot update to a shift that has already started or passed (Shift time: {shift.shift_time})",
+                        message=f"Cannot update to a shift that has already started or passed (Shift time: {shift_time})",
                         error_code="PAST_SHIFT_TIME",
                     ),
                 )
