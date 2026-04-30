@@ -3021,7 +3021,8 @@ async def merge_routes(
             )
         
         shift_type = safe_get_enum_value(shift, "log_type")
-        logger.info(f"[MERGE] ✓ Step 5: Shift loaded - Type: {shift_type}, Time: {shift.shift_time}")
+        shift_time_obj = get_shift_time(shift)
+        logger.info(f"[MERGE] ✓ Step 5: Shift loaded - Type: {shift_type}, Time: {shift_time_obj}")
 
         # --- Step 6: Validate office location consistency ---
         logger.info(f"[MERGE] Step 6: Validating office location consistency...")
@@ -3117,16 +3118,16 @@ async def merge_routes(
         try:
             if shift_type == "IN":
                 logger.info(f"[MERGE]   Calling generate_optimal_route (IN shift)")
-                logger.debug(f"[MERGE]   Params: shift_time={shift.shift_time}, bookings={len(bookings)}, office=({office_lat}, {office_lng})")
+                logger.debug(f"[MERGE]   Params: shift_time={shift_time_obj}, bookings={len(bookings)}, office=({office_lat}, {office_lng})")
                 optimized = generate_optimal_route(
-                    shift_time=shift.shift_time,
+                    shift_time=shift_time_obj,
                     group=bookings,
                     drop_lat=office_lat,
                     drop_lng=office_lng,
                     drop_address=office_address
                 )
             else:
-                start_time_min = datetime_to_minutes(shift.shift_time)
+                start_time_min = datetime_to_minutes(shift_time_obj)
                 logger.info(f"[MERGE]   Calling generate_drop_route (OUT shift)")
                 logger.debug(f"[MERGE]   Params: start_time={start_time_min}min, bookings={len(bookings)}, office=({office_lat}, {office_lng})")
                 optimized = generate_drop_route(
@@ -3502,7 +3503,8 @@ async def update_route(
         # generate route based on shift type
         logger.info("="*80)
         logger.info(f"🛣️  ROUTE OPTIMIZATION REQUEST - Route ID: {route_id}")
-        logger.info(f"📍 Shift Type: {shift_type}, Shift Time: {shift.shift_time}")
+        shift_time_obj = get_shift_time(shift)
+        logger.info(f"📍 Shift Type: {shift_type}, Shift Time: {shift_time_obj}")
         logger.info(f"📦 Total bookings to process: {len(all_bookings)}")
         
         from app.services.optimal_route_generation import generate_optimal_route, generate_drop_route
@@ -3512,7 +3514,7 @@ async def update_route(
             logger.info(f"   Drop address: {all_bookings[-1]['drop_location']}")
             
             optimized = generate_optimal_route(
-                shift_time=shift.shift_time,
+                shift_time=shift_time_obj,
                 group=all_bookings,
                 drop_lat=all_bookings[-1]["drop_latitude"],
                 drop_lng=all_bookings[-1]["drop_longitude"],
@@ -3525,7 +3527,7 @@ async def update_route(
             
             optimized = generate_drop_route(
                 group=all_bookings,
-                start_time_minutes=datetime_to_minutes(shift.shift_time),
+                start_time_minutes=datetime_to_minutes(shift_time_obj),
                 office_lat=all_bookings[0]["pickup_latitude"],
                 office_lng=all_bookings[0]["pickup_longitude"],
                 office_address=all_bookings[0]["pickup_location"]
@@ -4143,7 +4145,9 @@ async def create_route_from_bookings(
                 ),
             )
 
-        logger.info(f"[CREATE_FROM_BOOKINGS] Shift retrieved successfully: shift_id={shift_id}, date={booking_date}, type={shift.log_type}")
+        shift_log_type = safe_get_enum_value(shift, "log_type")
+        shift_time_obj = get_shift_time(shift)
+        logger.info(f"[CREATE_FROM_BOOKINGS] Shift retrieved successfully: shift_id={shift_id}, date={booking_date}, type={shift_log_type}")
 
         # Generate route code
         existing_routes_count = db.query(RouteManagement).filter(
@@ -4196,13 +4200,13 @@ async def create_route_from_bookings(
 
         # Optimize route if requested
         if create_request.optimize:
-            logger.info(f"[CREATE_FROM_BOOKINGS] Starting route optimization for shift_type={shift.log_type}")
+            logger.info(f"[CREATE_FROM_BOOKINGS] Starting route optimization for shift_type={shift_log_type}")
             from app.services.optimal_route_generation import generate_optimal_route, generate_drop_route
 
-            if shift.log_type == "IN":
+            if shift_log_type == "IN":
                 logger.info(f"[CREATE_FROM_BOOKINGS] Using generate_optimal_route for IN shift")
                 optimized = generate_optimal_route(
-                    shift_time=shift.shift_time,
+                    shift_time=shift_time_obj,
                     group=booking_data,
                     drop_lat=booking_data[-1]["drop_latitude"],
                     drop_lng=booking_data[-1]["drop_longitude"],
@@ -4214,7 +4218,7 @@ async def create_route_from_bookings(
                 logger.info(f"[CREATE_FROM_BOOKINGS] Using generate_drop_route for OUT shift")
                 optimized = generate_drop_route(
                     group=booking_data,
-                    start_time_minutes=datetime_to_minutes(shift.shift_time),
+                    start_time_minutes=datetime_to_minutes(shift_time_obj),
                     office_lat=booking_data[0]["pickup_latitude"],
                     office_lng=booking_data[0]["pickup_longitude"],
                     office_address=booking_data[0]["pickup_location"],
