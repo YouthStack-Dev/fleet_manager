@@ -8,13 +8,15 @@ services:
     restart: always
     ports:
       - "6379:6379"
-    command: redis-server --requirepass redispassword --appendonly yes
+    # Password is sourced from the shell environment (exported by deploy.yaml
+    # via `--env-file service.prod.env` before `docker compose up`).
+    command: redis-server --requirepass ${REDIS_PASSWORD} --appendonly yes
     volumes:
       - redis_data:/data
     networks:
       - fleet-network
     healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "--no-auth-warning", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -23,46 +25,23 @@ services:
     image: dheerajkumarp/fleet_service_manager:latest
     container_name: service_manager
     restart: on-failure:3
+    # All runtime config comes from service.prod.env, written by deploy.yaml
+    # from GitHub Actions secrets. Do NOT add ${VAR} substitutions here —
+    # they resolve from the shell at "docker compose up" time, not from the
+    # env_file, and will be empty strings when run over SSH.
     env_file:
       - ./service.prod.env
     environment:
-      # SMTP Email Configuration
-      - EMAIL_ENABLED=true
-      - SMTP_SERVER=smtp.gmail.com
-      - SMTP_PORT=587
-      - SMTP_USERNAME=dheerajkumarp777@gmail.com
-      - SMTP_PASSWORD=orls draa fbxo neox
-      - SMTP_USE_TLS=true
-      - SMTP_USE_SSL=false
-      - SENDER_EMAIL=dheerajkumarp777@gmail.com
-      - SENDER_NAME=Fleet Manager Admin
-      - SUPPORT_EMAIL=dheerajkumarp777@gmail.com
-      - EMAIL_RETRY_ATTEMPTS=3
-      - EMAIL_RETRY_DELAY=5
-      - EMAIL_QUEUE_ENABLED=false
-      - FRONTEND_URL=https://your-production-domain.com
-      # Twilio configuration is loaded from service.prod.env (GitHub secrets)
-      # Database and other settings
-      - DATABASE_URL=postgresql://fleetadmin:fleetpass@host.docker.internal:5432/fleet_db
-      - REDIS_HOST=redis_server
-      - REDIS_PORT=6379
-      - REDIS_DB=0
-      - REDIS_PASSWORD=redispassword
-      - USE_REDIS=1
-      - TOKEN_EXPIRY_HOURS=1
-      - ENV=production
-      - STORAGE_TYPE=filesystem  # Change to 's3' when migrating to AWS
-      - PROD_SERVER_STORAGE_PATH=/var/lib/fleet/storage
-      - MAX_FILE_SIZE_MB=10
-
+      # Migrations handled by the migrate_prod init container
+      - RUN_MIGRATIONS_ON_STARTUP=false
     volumes:
-      # ✅ Mount Firebase service account key (host → container)
+      # Mount Firebase service account key (host → container)
       - ./app/firebase/firebase_key.json:/app/app/firebase/firebase_key.json:ro
 
-      # ✅ Persistent storage for uploaded data
+      # Persistent storage for uploaded data
       - /var/lib/fleet/storage:/var/lib/fleet/storage
 
-      # Optional legacy uploads path (remove if unused)
+      # Legacy uploads path (remove if unused)
       - /var/lib/fleet/uploads:/app/uploaded_files
 
     extra_hosts:
@@ -70,10 +49,25 @@ services:
     depends_on:
       redis_server:
         condition: service_healthy
+      migrate_prod:
+        condition: service_completed_successfully
     ports:
       - "8100:8000"      # public port for service_manager
     networks:
       - fleet-network
+
+  migrate_prod:
+    image: dheerajkumarp/fleet_service_manager:latest
+    container_name: fleet_migrate_prod
+    command: ["alembic", "upgrade", "head"]
+    env_file:
+      - ./service.prod.env
+    depends_on:
+      redis_server:
+        condition: service_healthy
+    networks:
+      - fleet-network
+    restart: "no"
 
 networks:
   fleet-network:

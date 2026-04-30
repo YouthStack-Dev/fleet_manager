@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from app.models.vendor import Vendor
-from app.utils.validition import validate_future_dates
+from app.utils.validation import validate_future_dates
 from common_utils.auth.utils import hash_password
 from fastapi import APIRouter, Depends, UploadFile, Form, HTTPException, status, Query, Request, BackgroundTasks
 from sqlalchemy.orm import Session
@@ -14,7 +14,8 @@ from app.schemas.driver import DriverCreate, DriverPaginationResponse, DriverRes
 from app.crud.driver import driver_crud
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from app.utils.file_utils import file_size_validator, save_file
-from app.models.driver import Driver, VerificationStatusEnum ,GenderEnum 
+from app.models.driver import Driver, VerificationStatusEnum
+from app.models.enums import GenderEnum
 from common_utils.auth.permission_checker import PermissionChecker
 from app.core.logging_config import get_logger
 from app.services.storage_service import storage_service

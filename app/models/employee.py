@@ -4,13 +4,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 from app.database.session import Base
-from enum import Enum as PyEnum
-
-
-class GenderEnum(str, PyEnum):
-    MALE = "Male"
-    FEMALE = "Female"
-    OTHER = "Other"
+from app.models.enums import GenderEnum  # shared enum — do not redefine locally
 
 
 class Employee(Base):
@@ -42,7 +36,6 @@ class Employee(Base):
         UniqueConstraint("tenant_id", "employee_code", name="uq_employee_code_per_tenant"),
         UniqueConstraint("tenant_id", "email", name="uq_employee_email_per_tenant"),
         UniqueConstraint("tenant_id", "phone", name="uq_employee_phone_per_tenant"),
-        {"extend_existing": True}
     )
 
     # Relationships

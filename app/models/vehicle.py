@@ -14,7 +14,6 @@ class Vehicle(Base):
         UniqueConstraint("vendor_id", "tax_receipt_number", name="uq_vendor_tax_receipt_number"),
         UniqueConstraint("vendor_id", "insurance_number", name="uq_vendor_insurance_number"),
         UniqueConstraint("vendor_id", "permit_number", name="uq_vendor_permit_number"),
-        {"extend_existing": True},
     )
 
     vehicle_id = Column(Integer, primary_key=True, index=True)

@@ -173,7 +173,7 @@ async def route_suggestion(
         logger.info(f"Generated {len(cluster_data)} clusters from {len(bookings)} unrouted bookings")
 
         # ---- Generate optimal route for each cluster (optional) ----
-        from app.services.optimal_roiute_generation import generate_optimal_route, generate_drop_route
+        from app.services.optimal_route_generation import generate_optimal_route, generate_drop_route
 
         if shift_type == "IN":
             for cluster in cluster_data:
@@ -286,14 +286,4 @@ async def cluster_custom_bookings(
     except HTTPException:
         raise
     except Exception as e:
-        return handle_db_error(e)
-    except Exception as e:
-        logger.error(f"Error clustering custom bookings: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=ResponseWrapper.error(
-                message="Error clustering custom bookings",
-                error_code="CUSTOM_CLUSTERING_ERROR",
-                details={"error": str(e)}
-            )
-        )
+        raise handle_db_error(e)

@@ -36,7 +36,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.logging_config import get_logger
 from app.database.session import get_db
@@ -99,7 +99,7 @@ def _resolve_trip_participants(db: Session, booking_id: int) -> dict:
     }
 
 
-def _enrich_review(db: Session, review: RideReview) -> dict:
+def _enrich_review(review: RideReview) -> dict:
     """ORM -> dict with snapshot of driver name/phone and vehicle number."""
     data = {
         "review_id": review.review_id,
@@ -123,15 +123,11 @@ def _enrich_review(db: Session, review: RideReview) -> dict:
         "driver_phone": None,
         "vehicle_number": None,
     }
-    if review.driver_id:
-        driver = db.query(Driver).filter(Driver.driver_id == review.driver_id).first()
-        if driver:
-            data["driver_name"] = driver.name
-            data["driver_phone"] = driver.phone
-    if review.vehicle_id:
-        vehicle = db.query(Vehicle).filter(Vehicle.vehicle_id == review.vehicle_id).first()
-        if vehicle:
-            data["vehicle_number"] = vehicle.rc_number
+    if review.driver:
+        data["driver_name"] = review.driver.name
+        data["driver_phone"] = review.driver.phone
+    if review.vehicle:
+        data["vehicle_number"] = review.vehicle.rc_number
     return data
 
 
@@ -382,8 +378,14 @@ async def submit_review_by_booking(
             f"[review.submit_booking] OK tenant={tenant_id} employee={employee_id} "
             f"booking={booking_id} review_id={review.review_id} overall_rating={review.overall_rating}"
         )
+        review = (
+            db.query(RideReview)
+            .options(selectinload(RideReview.driver), selectinload(RideReview.vehicle))
+            .filter(RideReview.review_id == review.review_id)
+            .first()
+        )
         return ResponseWrapper.success(
-            data=_enrich_review(db, review),
+            data=_enrich_review(review),
             message="Review submitted successfully",
         )
     except HTTPException:
@@ -432,24 +434,16 @@ async def submit_review_by_route(
                 detail=ResponseWrapper.error("Route not found", "ROUTE_NOT_FOUND"),
             )
 
-        employee_booking = None
-        for rb in (
-            db.query(RouteManagementBooking)
-            .filter(RouteManagementBooking.route_id == route_id)
-            .all()
-        ):
-            bk = (
-                db.query(Booking)
-                .filter(
-                    Booking.booking_id == rb.booking_id,
-                    Booking.employee_id == employee_id,
-                    Booking.tenant_id == tenant_id,
-                )
-                .first()
+        employee_booking = (
+            db.query(Booking)
+            .join(RouteManagementBooking, RouteManagementBooking.booking_id == Booking.booking_id)
+            .filter(
+                RouteManagementBooking.route_id == route_id,
+                Booking.employee_id == employee_id,
+                Booking.tenant_id == tenant_id,
             )
-            if bk:
-                employee_booking = bk
-                break
+            .first()
+        )
 
         if not employee_booking:
             logger.warning(f"[review.submit_route] 404 BOOKING_NOT_FOUND_ON_ROUTE tenant={tenant_id} employee={employee_id} route_id={route_id}")
@@ -505,8 +499,14 @@ async def submit_review_by_route(
             f"[review.submit_route] OK tenant={tenant_id} employee={employee_id} "
             f"route_id={route_id} booking_id={employee_booking.booking_id} review_id={review.review_id} overall_rating={review.overall_rating}"
         )
+        review = (
+            db.query(RideReview)
+            .options(selectinload(RideReview.driver), selectinload(RideReview.vehicle))
+            .filter(RideReview.review_id == review.review_id)
+            .first()
+        )
         return ResponseWrapper.success(
-            data=_enrich_review(db, review),
+            data=_enrich_review(review),
             message="Review submitted successfully",
         )
     except HTTPException:
@@ -560,6 +560,7 @@ async def get_my_review(
 
         review = (
             db.query(RideReview)
+            .options(selectinload(RideReview.driver), selectinload(RideReview.vehicle))
             .filter(
                 RideReview.booking_id == booking_id,
                 RideReview.employee_id == employee_id,
@@ -575,7 +576,7 @@ async def get_my_review(
 
         logger.info(f"[review.get_my] OK tenant={tenant_id} employee={employee_id} booking_id={booking_id} review_id={review.review_id}")
         return ResponseWrapper.success(
-            data=_enrich_review(db, review),
+            data=_enrich_review(review),
             message="Review fetched successfully",
         )
     except HTTPException:
@@ -657,7 +658,11 @@ async def list_reviews(
 
         total = q.count()
         reviews = (
-            q.order_by(RideReview.created_at.desc())
+            q.options(
+                selectinload(RideReview.driver),
+                selectinload(RideReview.vehicle),
+            )
+            .order_by(RideReview.created_at.desc())
             .offset((page - 1) * per_page)
             .limit(per_page)
             .all()
@@ -665,7 +670,7 @@ async def list_reviews(
 
         logger.info(f"[review.list] OK tenant={tenant_id} total={total} page={page} returning={len(reviews)}")
         return ResponseWrapper.paginated(
-            items=[_enrich_review(db, r) for r in reviews],
+            items=[_enrich_review(r) for r in reviews],
             total=total,
             page=page,
             per_page=per_page,
@@ -715,6 +720,7 @@ async def get_booking_review(
 
         review = (
             db.query(RideReview)
+            .options(selectinload(RideReview.driver), selectinload(RideReview.vehicle))
             .filter(RideReview.booking_id == booking_id)
             .first()
         )
@@ -727,7 +733,7 @@ async def get_booking_review(
 
         logger.info(f"[review.get_booking] OK tenant={tenant_id} booking_id={booking_id} review_id={review.review_id}")
         return ResponseWrapper.success(
-            data=_enrich_review(db, review),
+            data=_enrich_review(review),
             message="Review fetched successfully",
         )
     except HTTPException:
@@ -790,12 +796,21 @@ async def get_driver_reviews(
             q = q.filter(RideReview.created_at <= datetime.combine(end_date, dt_time.max))
         if route_id:
             q = q.filter(RideReview.route_id == route_id)
-        all_reviews = q.order_by(RideReview.created_at.desc()).all()
-
-        agg = _build_aggregate(all_reviews, "driver_rating", "driver_tags", "driver_comment")
+        agg_reviews = q.order_by(RideReview.created_at.desc()).all()
+        agg = _build_aggregate(agg_reviews, "driver_rating", "driver_tags", "driver_comment")
         total = agg["total_reviews"]
         offset = (page - 1) * per_page
-        page_reviews = all_reviews[offset: offset + per_page]
+        page_reviews = (
+            q.options(
+                selectinload(RideReview.driver),
+                selectinload(RideReview.vehicle),
+            )
+            .order_by(RideReview.created_at.desc())
+            .offset(offset)
+            .limit(per_page)
+            .all()
+        )
+        recent_comments = [r.driver_comment for r in page_reviews if r.driver_comment][:5]
 
         logger.info(f"[review.driver_summary] OK tenant={tenant_id} driver_id={driver_id} driver_name='{driver.name}' total_reviews={total} avg_rating={agg['average_rating']}")
         return ResponseWrapper.success(
@@ -804,8 +819,9 @@ async def get_driver_reviews(
                     "driver_id": driver_id,
                     "driver_name": driver.name,
                     **agg,
+                    "recent_comments": recent_comments,
                 },
-                "reviews": [_enrich_review(db, r) for r in page_reviews],
+                "reviews": [_enrich_review(r) for r in page_reviews],
                 "pagination": {
                     "total": total,
                     "page": page,
@@ -870,12 +886,21 @@ async def get_vehicle_reviews(
             q = q.filter(RideReview.created_at <= datetime.combine(end_date, dt_time.max))
         if route_id:
             q = q.filter(RideReview.route_id == route_id)
-        all_reviews = q.order_by(RideReview.created_at.desc()).all()
-
-        agg = _build_aggregate(all_reviews, "vehicle_rating", "vehicle_tags", "vehicle_comment")
+        agg_reviews = q.order_by(RideReview.created_at.desc()).all()
+        agg = _build_aggregate(agg_reviews, "vehicle_rating", "vehicle_tags", "vehicle_comment")
         total = agg["total_reviews"]
         offset = (page - 1) * per_page
-        page_reviews = all_reviews[offset: offset + per_page]
+        page_reviews = (
+            q.options(
+                selectinload(RideReview.driver),
+                selectinload(RideReview.vehicle),
+            )
+            .order_by(RideReview.created_at.desc())
+            .offset(offset)
+            .limit(per_page)
+            .all()
+        )
+        recent_comments = [r.vehicle_comment for r in page_reviews if r.vehicle_comment][:5]
 
         logger.info(f"[review.vehicle_summary] OK tenant={tenant_id} vehicle_id={vehicle_id} rc_number='{vehicle.rc_number}' total_reviews={total} avg_rating={agg['average_rating']}")
         return ResponseWrapper.success(
@@ -884,8 +909,9 @@ async def get_vehicle_reviews(
                     "vehicle_id": vehicle_id,
                     "vehicle_number": vehicle.rc_number,
                     **agg,
+                    "recent_comments": recent_comments,
                 },
-                "reviews": [_enrich_review(db, r) for r in page_reviews],
+                "reviews": [_enrich_review(r) for r in page_reviews],
                 "pagination": {
                     "total": total,
                     "page": page,

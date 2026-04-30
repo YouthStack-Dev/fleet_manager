@@ -14,5 +14,4 @@ class AuditLog(Base):
     __table_args__ = (
         Index('idx_tenant_module', 'tenant_id', 'module'),
         Index('idx_module_created', 'module', 'created_at'),
-        {"extend_existing": True}
     )

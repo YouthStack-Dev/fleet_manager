@@ -14,7 +14,7 @@ services:
     networks:
       - fleet-network
     healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      test: ["CMD", "redis-cli", "-a", "redispassword", "--no-auth-warning", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -26,7 +26,7 @@ services:
       - "5434:5432"
     environment:
       POSTGRES_USER: fleetadmin
-      POSTGRES_PASSWORD: fleetpass
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: fleet_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -53,16 +53,16 @@ services:
       # Database settings
       - POSTGRES_HOST=fleet_postgres
       - POSTGRES_USER=fleetadmin
-      - POSTGRES_PASSWORD=fleetpass
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=fleet_db
       - PORT=5432
-      - DATABASE_URL=postgresql://fleetadmin:fleetpass@fleet_postgres:5432/fleet_db
+      - DATABASE_URL=postgresql://fleetadmin:${POSTGRES_PASSWORD}@fleet_postgres:5432/fleet_db
       
       # Auth settings
       - OAUTH2_URL=http://localhost:8000/api/v1/auth/introspect
       - TOKEN_EXPIRY_HOURS=1
-      - X_INTROSPECT_SECRET=Kjs#idjXw
-      - SECRET_KEY=supersecretkey
+      - X_INTROSPECT_SECRET=${X_INTROSPECT_SECRET}
+      - SECRET_KEY=${SECRET_KEY}
       - OAUTH2_ENV=dev
       
       # Redis settings
@@ -76,15 +76,15 @@ services:
       - EMAIL_ENABLED=true
       - SMTP_SERVER=smtp.gmail.com
       - SMTP_PORT=587
-      - SMTP_USERNAME=dheerajkumarp777@gmail.com
-      - SMTP_PASSWORD=orls draa fbxo neox
+      - SMTP_USERNAME=${SMTP_USERNAME}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
       - SMTP_USE_TLS=true
       - SMTP_USE_SSL=false
       
       # Global Admin Email Settings (single sender for all emails)
-      - SENDER_EMAIL=dheerajkumarp777@gmail.com
+      - SENDER_EMAIL=${SENDER_EMAIL}
       - SENDER_NAME=Fleet Manager Admin
-      - SUPPORT_EMAIL=dheerajkumarp777@gmail.com
+      - SUPPORT_EMAIL=${SUPPORT_EMAIL}
       
       # Email delivery settings
       - EMAIL_RETRY_ATTEMPTS=3
@@ -100,6 +100,9 @@ services:
       - PYTHONIOENCODING=utf-8
       - FORCE_COLOR=1
       - FIREBASE_KEY_PATH=/app/app/firebase/firebase_key.json
+
+      # Migrations handled by the migrate init container
+      - RUN_MIGRATIONS_ON_STARTUP=false
       
     volumes:
       - ./app/firebase/firebase_key.json:/app/app/firebase/firebase_key.json:ro
@@ -111,9 +114,31 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     networks:
       - fleet-network
+
+  migrate:
+    container_name: fleet_migrate
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      - POSTGRES_HOST=fleet_postgres
+      - POSTGRES_USER=fleetadmin
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=fleet_db
+      - DATABASE_URL=postgresql://fleetadmin:${POSTGRES_PASSWORD}@fleet_postgres:5432/fleet_db
+      - SECRET_KEY=${SECRET_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - fleet-network
+    restart: "no"
 
 networks:
   fleet-network:

@@ -1,6 +1,7 @@
-﻿import logging
+import logging
 import sys
 import os
+import json
 from typing import Optional
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -102,6 +103,43 @@ class ColoredFormatter(logging.Formatter):
         # Add line gap after each log statement for better readability
         return formatted_message + '\n'
 
+class JsonFormatter(logging.Formatter):
+    """
+    Structured JSON formatter for production log shipping.
+
+    Each log record is emitted as a single-line JSON object containing:
+      timestamp (ISO-8601, UTC), level, logger, message, module, lineno,
+      funcName, request_id (from context), and any extra key=value pairs
+      added via ``logger.info("msg", extra={"key": "value"})``.
+
+    Usage:
+        Only activated when ENV == "production" inside setup_logging().
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict = {
+            "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "module": record.module,
+            "lineno": record.lineno,
+            "funcName": record.funcName,
+            "request_id": getattr(record, "request_id", None),
+        }
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
+        # Merge any extra fields injected via extra={...}
+        for key, value in record.__dict__.items():
+            if key not in logging.LogRecord.__dict__ and key not in payload:
+                try:
+                    json.dumps(value)  # only include JSON-serialisable extras
+                    payload[key] = value
+                except (TypeError, ValueError):
+                    payload[key] = str(value)
+        return json.dumps(payload, ensure_ascii=False)
+
+
 def setup_logging(
     log_level: Optional[str] = None,
     format_string: Optional[str] = None,
@@ -154,26 +192,32 @@ def setup_logging(
         request_filter = RequestContextFilter()
         console_handler.addFilter(request_filter)
         
-        # Create colored formatter
-        formatter = ColoredFormatter(format_string, use_colors=use_colors)
-        console_handler.setFormatter(formatter)
+        # In production use structured JSON; in all other environments use coloured text.
+        env = os.getenv("ENV", "development")
+        if env == "production":
+            console_handler.setFormatter(JsonFormatter())
+        else:
+            # Create colored formatter
+            formatter = ColoredFormatter(format_string, use_colors=use_colors)
+            console_handler.setFormatter(formatter)
         
         # Add handler to root logger
         root_logger.addHandler(console_handler)
         
-        root_logger.debug("Logging configured: level=%s colors=%s", log_level, formatter.use_colors)
+        if env == "production":
+            root_logger.debug("Logging configured: level=%s format=json", log_level)
+        else:
+            root_logger.debug("Logging configured: level=%s colors=%s", log_level, formatter.use_colors)
 
 def get_logger(name: str) -> logging.Logger:
     """
     Get a logger instance with the given name.
+    Propagates to root logger — do NOT clear handlers here; doing so removes
+    the single StreamHandler installed by setup_logging() and silences output.
     """
     logger = logging.getLogger(name)
-    logger.handlers = []
     logger.propagate = True
     logger.disabled = False  # ensure uvicorn's disable_existing_loggers doesn't silence this
     return logger
-
-
-setup_logging(force_configure=True)
 
 

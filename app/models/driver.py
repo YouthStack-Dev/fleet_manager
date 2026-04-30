@@ -9,11 +9,7 @@ from sqlalchemy.orm import relationship
 from app.database.session import Base
 from enum import Enum as PyEnum
 from app.models.vendor import Vendor
-
-class GenderEnum(str, PyEnum):
-    MALE = "Male"
-    FEMALE = "Female"
-    OTHER = "Other"
+from app.models.enums import GenderEnum  # shared enum — do not redefine locally
 
 class VerificationStatusEnum(str, PyEnum):
     PENDING = "Pending"
@@ -29,7 +25,6 @@ class Driver(Base):
         UniqueConstraint("tenant_id", "badge_number"),
         UniqueConstraint("vendor_id", "code", name="uq_driver_code_per_vendor"),
         UniqueConstraint("tenant_id", "alt_govt_id_number"),
-        {"extend_existing": True},
     )
 
     driver_id = Column(Integer, primary_key=True, index=True)

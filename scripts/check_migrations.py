@@ -149,7 +149,19 @@ def check_alembic_ini():
 def check_models():
     """Quick check that models can be imported."""
     print("\n🔍 Checking models can be imported...")
-    
+
+    # Settings() requires auth/database values at instantiation time. This
+    # script only validates importability, so provide harmless dummy values
+    # when no .env is present (CI/pre-commit).
+    if not os.getenv("SECRET_KEY"):
+        os.environ["SECRET_KEY"] = "check-migrations-dummy-not-used"
+    if not os.getenv("DATABASE_URL"):
+        os.environ[
+            "DATABASE_URL"
+        ] = "postgresql://check_migrations:check_migrations@localhost:5432/check_migrations"
+    if not os.getenv("POSTGRES_PASSWORD"):
+        os.environ["POSTGRES_PASSWORD"] = "check-migrations-dummy-not-used"
+
     try:
         from app.database.session import Base
         from app.models.tenant import Tenant

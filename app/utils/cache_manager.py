@@ -3,28 +3,43 @@ Redis caching utilities for Fleet Manager
 Provides caching decorators and helpers for common operations
 """
 import json
-import pickle
 from typing import Any, Optional, Callable, TypeVar, Union
 from functools import wraps
 import redis
 from app.config import settings
+from app.core.logging_config import get_logger
 
 # Type hints
 T = TypeVar('T')
+
+logger = get_logger(__name__)
+
+# Module-level connection pool — created once, shared by all CacheManager instances.
+# This avoids opening a new TCP connection on every CacheManager() instantiation.
+_redis_pool: Optional[redis.ConnectionPool] = None
+
+def _get_pool() -> redis.ConnectionPool:
+    global _redis_pool
+    if _redis_pool is None:
+        _redis_pool = redis.ConnectionPool(
+            host=settings.REDIS_HOST,
+            port=settings.REDIS_PORT,
+            db=settings.REDIS_DB,
+            password=settings.REDIS_PASSWORD or None,
+            decode_responses=True,
+            socket_connect_timeout=5,
+            socket_timeout=5,
+        )
+    return _redis_pool
+
 
 class CacheManager:
     """Redis cache manager with TTL and serialization support"""
 
     def __init__(self):
         self.redis_client = redis.Redis(
-            host=settings.REDIS_HOST,
-            port=settings.REDIS_PORT,
-            db=settings.REDIS_DB,
-            password=settings.REDIS_PASSWORD or None,
-            decode_responses=True,  # For string data
-            socket_connect_timeout=5,
-            socket_timeout=5,
-            retry_on_timeout=True
+            connection_pool=_get_pool(),
+            retry_on_timeout=True,
         )
 
     def get(self, key: str) -> Optional[Any]:
@@ -33,7 +48,7 @@ class CacheManager:
             data = self.redis_client.get(key)
             return json.loads(data) if data else None
         except Exception as e:
-            print(f"Cache get error: {e}")
+            logger.warning("Cache get error for key=%s: %s", key, e)
             return None
 
     def set(self, key: str, value: Any, ttl_seconds: int = 300) -> bool:
@@ -41,7 +56,7 @@ class CacheManager:
         try:
             return self.redis_client.setex(key, ttl_seconds, json.dumps(value))
         except Exception as e:
-            print(f"Cache set error: {e}")
+            logger.warning("Cache set error for key=%s: %s", key, e)
             return False
 
     def delete(self, key: str) -> bool:
@@ -49,7 +64,7 @@ class CacheManager:
         try:
             return bool(self.redis_client.delete(key))
         except Exception as e:
-            print(f"Cache delete error: {e}")
+            logger.warning("Cache delete error for key=%s: %s", key, e)
             return False
 
     def exists(self, key: str) -> bool:
@@ -57,7 +72,7 @@ class CacheManager:
         try:
             return bool(self.redis_client.exists(key))
         except Exception as e:
-            print(f"Cache exists error: {e}")
+            logger.warning("Cache exists error for key=%s: %s", key, e)
             return False
 
 # Global cache instance
@@ -443,19 +458,19 @@ def get_shift_with_cache(db, tenant_id: str, shift_id: int):
         
         logger.info(f"✅ [FALLBACK - STEP 2] DB query successful | tenant_id={tenant_id}, shift_id={shift_id}")
         logger.info(f"🔄 [FALLBACK - STEP 3] Attempting to cache for recovery... | tenant_id={tenant_id}, shift_id={shift_id}")
+        shift_dict = {
+            "shift_id": shift.shift_id,
+            "shift_time": shift.shift_time.strftime("%H:%M:%S") if shift.shift_time else None,
+            "log_type": shift.log_type.value if shift.log_type else None,
+            "tenant_id": shift.tenant_id
+        }
         try:
-            shift_dict = {
-                "shift_id": shift.shift_id,
-                "shift_time": shift.shift_time.strftime("%H:%M:%S") if shift.shift_time else None,
-                "log_type": shift.log_type.value if shift.log_type else None,
-                "tenant_id": shift.tenant_id
-            }
             cache_shift(shift_id, tenant_id, shift_dict)
             logger.info(f"✅ [FALLBACK COMPLETE] Successfully cached after recovery | tenant_id={tenant_id}, shift_id={shift_id}")
-            return shift_dict
         except Exception as cache_retry_error:
             logger.warning(f"⚠️ [FALLBACK - CACHE FAILED] Could not cache after recovery: {str(cache_retry_error)} | tenant_id={tenant_id}, shift_id={shift_id}")
-            return None
+
+        return shift_dict
 
 def get_cutoff_with_cache(db, tenant_id: str):
     """
@@ -594,205 +609,37 @@ def get_weekoff_with_cache(db, employee_id: int):
 # ============================================================
 
 def serialize_tenant_config_for_cache(config_obj) -> dict:
-    """
-    Convert TenantConfig object to cache-ready dictionary.
-    Handles time and datetime serialization for JSON compatibility.
-    """
-    from app.core.logging_config import get_logger
-    logger = get_logger(__name__)
-    
-    try:
-        config_dict = {column.name: getattr(config_obj, column.name) for column in config_obj.__table__.columns}
-        tenant_id = config_dict.get('tenant_id', 'unknown')
-        
-        # Convert time objects to strings
-        if config_dict.get('escort_required_start_time'):
-            config_dict['escort_required_start_time'] = str(config_dict['escort_required_start_time'])
-        if config_dict.get('escort_required_end_time'):
-            config_dict['escort_required_end_time'] = str(config_dict['escort_required_end_time'])
-        
-        # Convert datetime objects to ISO format strings
-        if config_dict.get('created_at'):
-            config_dict['created_at'] = config_dict['created_at'].isoformat()
-        if config_dict.get('updated_at'):
-            config_dict['updated_at'] = config_dict['updated_at'].isoformat()
-        
-        logger.debug(f"✅ Serialized tenant_config for tenant {tenant_id}")
-        return config_dict
-    except Exception as e:
-        logger.error(f"❌ Failed to serialize tenant_config: {str(e)}")
-        raise
+    """Convert TenantConfig object to cache-ready dictionary."""
+    return serialize_model_for_cache(config_obj)
+
 
 def deserialize_tenant_config_from_cache(cached_dict: dict):
-    """
-    Convert cached dictionary back to TenantConfig object.
-    Handles time string parsing back to time objects.
-    """
+    """Convert cached dictionary back to TenantConfig object."""
     from app.models.tenant_config import TenantConfig
-    from datetime import time as datetime_time
-    from app.core.logging_config import get_logger
-    logger = get_logger(__name__)
-    
-    try:
-        tenant_id = cached_dict.get('tenant_id', 'unknown')
-        
-        # Parse time strings back to time objects
-        if cached_dict.get('escort_required_start_time') and isinstance(cached_dict['escort_required_start_time'], str):
-            time_parts = cached_dict['escort_required_start_time'].split(':')
-            cached_dict['escort_required_start_time'] = datetime_time(
-                int(time_parts[0]), 
-                int(time_parts[1]), 
-                int(time_parts[2]) if len(time_parts) > 2 else 0
-            )
-        
-        if cached_dict.get('escort_required_end_time') and isinstance(cached_dict['escort_required_end_time'], str):
-            time_parts = cached_dict['escort_required_end_time'].split(':')
-            cached_dict['escort_required_end_time'] = datetime_time(
-                int(time_parts[0]), 
-                int(time_parts[1]), 
-                int(time_parts[2]) if len(time_parts) > 2 else 0
-            )
-        
-        logger.debug(f"✅ Deserialized tenant_config for tenant {tenant_id}")
-        return TenantConfig(**cached_dict)
-    except Exception as e:
-        logger.error(f"❌ Failed to deserialize tenant_config: {str(e)}")
-        raise
+    return deserialize_model_from_cache(cached_dict, TenantConfig)
+
 
 def serialize_tenant_for_cache(tenant_obj) -> dict:
-    """
-    Convert Tenant object to cacheable dictionary.
-    Handles Decimal fields by converting to float.
-    """
-    from app.core.logging_config import get_logger
-    logger = get_logger(__name__)
+    """Convert Tenant object to cacheable dictionary."""
+    return serialize_model_for_cache(tenant_obj)
 
-    try:
-        tenant_dict = {c.name: getattr(tenant_obj, c.name) for c in tenant_obj.__table__.columns}
-
-        # Convert Decimal to float for JSON serialization
-        if 'latitude' in tenant_dict and tenant_dict['latitude'] is not None:
-            tenant_dict['latitude'] = float(tenant_dict['latitude'])
-        if 'longitude' in tenant_dict and tenant_dict['longitude'] is not None:
-            tenant_dict['longitude'] = float(tenant_dict['longitude'])
-
-        # Convert datetime to ISO string for JSON serialization
-        datetime_fields = ['created_at', 'updated_at']
-        for field in datetime_fields:
-            if field in tenant_dict and tenant_dict[field] is not None:
-                tenant_dict[field] = tenant_dict[field].isoformat()
-
-        logger.debug(f"✅ Serialized tenant {tenant_dict.get('tenant_id', 'unknown')} for cache")
-        return tenant_dict
-    except Exception as e:
-        logger.error(f"❌ Failed to serialize tenant for cache: {str(e)}")
-        raise
 
 def deserialize_tenant_from_cache(cached_dict: dict):
-    """
-    Convert cached dictionary back to Tenant object.
-    Handles float to Decimal conversion.
-    """
+    """Convert cached dictionary back to Tenant object."""
     from app.models.tenant import Tenant
-    from decimal import Decimal
-    from app.core.logging_config import get_logger
-    logger = get_logger(__name__)
+    return deserialize_model_from_cache(cached_dict, Tenant)
 
-    try:
-        tenant_id = cached_dict.get('tenant_id', 'unknown')
-
-        # Convert float back to Decimal
-        if cached_dict.get('latitude') is not None:
-            cached_dict['latitude'] = Decimal(str(cached_dict['latitude']))
-        if cached_dict.get('longitude') is not None:
-            cached_dict['longitude'] = Decimal(str(cached_dict['longitude']))
-
-        # Convert ISO string back to datetime
-        from datetime import datetime
-        datetime_fields = ['created_at', 'updated_at']
-        for field in datetime_fields:
-            if cached_dict.get(field) and isinstance(cached_dict[field], str):
-                cached_dict[field] = datetime.fromisoformat(cached_dict[field])
-
-        logger.debug(f"✅ Deserialized tenant {tenant_id} from cache")
-        return Tenant(**cached_dict)
-    except Exception as e:
-        logger.error(f"❌ Failed to deserialize tenant from cache: {str(e)}")
-        raise
 
 def serialize_cutoff_for_cache(cutoff_obj) -> dict:
-    """
-    Convert Cutoff object to cacheable dictionary.
-    Handles timedelta fields by converting to string.
-    """
-    from app.core.logging_config import get_logger
-    logger = get_logger(__name__)
+    """Convert Cutoff object to cacheable dictionary."""
+    return serialize_model_for_cache(cutoff_obj)
 
-    try:
-        cutoff_dict = {c.name: getattr(cutoff_obj, c.name) for c in cutoff_obj.__table__.columns}
-
-        # Convert timedelta to string for JSON serialization
-        time_fields = [
-            'booking_login_cutoff', 'cancel_login_cutoff', 'booking_logout_cutoff',
-            'cancel_logout_cutoff', 'medical_emergency_booking_cutoff', 'adhoc_booking_cutoff'
-        ]
-
-        for field in time_fields:
-            if field in cutoff_dict and cutoff_dict[field] is not None:
-                cutoff_dict[field] = str(cutoff_dict[field])
-
-        # Convert datetime to ISO string for JSON serialization
-        datetime_fields = ['created_at', 'updated_at']
-        for field in datetime_fields:
-            if field in cutoff_dict and cutoff_dict[field] is not None:
-                cutoff_dict[field] = cutoff_dict[field].isoformat()
-
-        logger.debug(f"✅ Serialized cutoff for tenant {cutoff_dict.get('tenant_id', 'unknown')} for cache")
-        return cutoff_dict
-    except Exception as e:
-        logger.error(f"❌ Failed to serialize cutoff for cache: {str(e)}")
-        raise
 
 def deserialize_cutoff_from_cache(cached_dict: dict):
-    """
-    Convert cached dictionary back to Cutoff object.
-    Handles string to timedelta conversion.
-    """
+    """Convert cached dictionary back to Cutoff object."""
     from app.models.cutoff import Cutoff
-    from datetime import timedelta
-    from app.core.logging_config import get_logger
-    logger = get_logger(__name__)
+    return deserialize_model_from_cache(cached_dict, Cutoff)
 
-    try:
-        tenant_id = cached_dict.get('tenant_id', 'unknown')
-
-        # Convert string back to timedelta
-        time_fields = [
-            'booking_login_cutoff', 'cancel_login_cutoff', 'booking_logout_cutoff',
-            'cancel_logout_cutoff', 'medical_emergency_booking_cutoff', 'adhoc_booking_cutoff'
-        ]
-
-        for field in time_fields:
-            if cached_dict.get(field) and isinstance(cached_dict[field], str):
-                # Parse timedelta string like "1 day, 2:30:45" or "2:30:45"
-                try:
-                    cached_dict[field] = _parse_timedelta_string(cached_dict[field])
-                except Exception as parse_error:
-                    logger.warning(f"⚠️ Failed to parse {field} '{cached_dict[field]}', setting to None")
-                    cached_dict[field] = None
-
-        # Convert ISO string back to datetime
-        from datetime import datetime
-        datetime_fields = ['created_at', 'updated_at']
-        for field in datetime_fields:
-            if cached_dict.get(field) and isinstance(cached_dict[field], str):
-                cached_dict[field] = datetime.fromisoformat(cached_dict[field])
-
-        logger.debug(f"✅ Deserialized cutoff for tenant {tenant_id} from cache")
-        return Cutoff(**cached_dict)
-    except Exception as e:
-        logger.error(f"❌ Failed to deserialize cutoff from cache: {str(e)}")
-        raise
 
 def _parse_timedelta_string(time_str: str):
     """Parse timedelta string back to timedelta object"""
@@ -821,173 +668,166 @@ def _parse_timedelta_string(time_str: str):
 
     return timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
 
+
+# ============================================================
+# Generic serialize / deserialize engine
+# ============================================================
+
+def serialize_model_for_cache(obj, extra_serializers: dict | None = None) -> dict:
+    """
+    Generic serializer: convert any SQLAlchemy model instance to a JSON-safe dict.
+
+    Built-in type coercions (applied in this order):
+      1. Caller-supplied extra_serializers (field_name → callable), if any.
+      2. datetime  → ISO-8601 string  (checked *before* date — datetime is a subclass)
+      3. date      → ISO-8601 string
+      4. time      → "HH:MM:SS"
+      5. timedelta → str  (Python default representation)
+      6. Decimal   → float
+      7. Enum      → .value  (works for both stdlib Enum and SQLAlchemy Enum)
+
+    All existing entity-specific serialize_*_for_cache functions delegate to this.
+    """
+    from decimal import Decimal
+    from datetime import datetime, date, time, timedelta
+
+    result: dict = {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
+
+    if extra_serializers:
+        for field, fn in extra_serializers.items():
+            if result.get(field) is not None:
+                result[field] = fn(result[field])
+
+    for key, value in list(result.items()):
+        if value is None:
+            continue
+        if isinstance(value, datetime):          # must precede `date` check
+            result[key] = value.isoformat()
+        elif isinstance(value, date):
+            result[key] = value.isoformat()
+        elif isinstance(value, time):
+            result[key] = value.strftime("%H:%M:%S")
+        elif isinstance(value, timedelta):
+            result[key] = str(value)
+        elif isinstance(value, Decimal):
+            result[key] = float(value)
+        elif hasattr(value, 'value'):            # Python/SQLAlchemy Enum
+            result[key] = value.value
+
+    return result
+
+
+def deserialize_model_from_cache(
+    cached_dict: dict,
+    model_class,
+    extra_deserializers: dict | None = None,
+    return_dict: bool = False,
+):
+    """
+    Generic deserializer: convert a Redis-cached dict back to a SQLAlchemy model instance.
+
+    Reads column metadata from model_class.__table__ to determine the Python type for
+    each field and applies the inverse coercion of serialize_model_for_cache:
+
+      DateTime / TIMESTAMP → datetime.fromisoformat()
+      Date                 → date.fromisoformat()
+      Time                 → time object parsed from "HH:MM:SS"
+      Interval             → timedelta via _parse_timedelta_string()
+      Numeric / DECIMAL    → Decimal (handles float from JSON round-trip)
+      Enum                 → left as string (SQLAlchemy coerces on attribute access)
+
+    Parameters
+    ----------
+    cached_dict        : dict produced by CacheManager.get() — all JSON-parsed values
+    model_class        : SQLAlchemy model class (e.g. Tenant, Shift …)
+    extra_deserializers: dict mapping field_name → callable, applied before built-ins
+    return_dict        : if True, return the converted dict instead of a model instance
+                         (useful when callers expect a plain dict, e.g. shifts)
+    """
+    import sqlalchemy as _sa
+    from decimal import Decimal
+    from datetime import datetime as _dt, date as _date, time as _time
+
+    data = dict(cached_dict)   # don't mutate caller's dict
+
+    if extra_deserializers:
+        for field, fn in extra_deserializers.items():
+            if field in data and data[field] is not None:
+                data[field] = fn(data[field])
+
+    col_map: dict = {c.name: c for c in model_class.__table__.columns}
+
+    for field, value in list(data.items()):
+        if value is None:
+            continue
+        col = col_map.get(field)
+        if col is None:
+            continue
+        ct = col.type
+        try:
+            # Numeric from JSON float (Decimal → float → JSON → float)
+            if isinstance(ct, _sa.Numeric) and isinstance(value, (int, float)):
+                data[field] = Decimal(str(value))
+                continue
+            if not isinstance(value, str):
+                continue   # nothing further to coerce
+            if isinstance(ct, _sa.DateTime):
+                data[field] = _dt.fromisoformat(value)
+            elif isinstance(ct, _sa.Date):
+                data[field] = _date.fromisoformat(value)
+            elif isinstance(ct, _sa.Time):
+                parts = value.split(":")
+                data[field] = _time(
+                    int(parts[0]),
+                    int(parts[1]),
+                    int(parts[2].split(".")[0]) if len(parts) > 2 else 0,
+                )
+            elif isinstance(ct, _sa.Interval):
+                result_td = _parse_timedelta_string(value)
+                data[field] = result_td
+            elif isinstance(ct, _sa.Numeric):
+                data[field] = Decimal(str(value))
+        except Exception:
+            pass   # leave as-is; model validation surfaces real errors
+
+    if return_dict:
+        return data
+    return model_class(**data)
+
+
 def serialize_shift_for_cache(shift_obj) -> dict:
-    """
-    Convert Shift object to cacheable dictionary.
-    Handles time fields by converting to string.
-    """
-    from app.core.logging_config import get_logger
-    logger = get_logger(__name__)
+    """Convert Shift object to cacheable dictionary."""
+    return serialize_model_for_cache(shift_obj)
 
-    try:
-        shift_dict = {c.name: getattr(shift_obj, c.name) for c in shift_obj.__table__.columns}
-
-        # Convert time to string for JSON serialization
-        if 'shift_time' in shift_dict and shift_dict['shift_time'] is not None:
-            shift_dict['shift_time'] = str(shift_dict['shift_time'])
-
-        # Convert enum to value for JSON serialization
-        if 'log_type' in shift_dict and shift_dict['log_type'] is not None:
-            shift_dict['log_type'] = shift_dict['log_type'].value if hasattr(shift_dict['log_type'], 'value') else str(shift_dict['log_type'])
-        if 'pickup_type' in shift_dict and shift_dict['pickup_type'] is not None:
-            shift_dict['pickup_type'] = shift_dict['pickup_type'].value if hasattr(shift_dict['pickup_type'], 'value') else str(shift_dict['pickup_type'])
-        if 'gender' in shift_dict and shift_dict['gender'] is not None:
-            shift_dict['gender'] = shift_dict['gender'].value if hasattr(shift_dict['gender'], 'value') else str(shift_dict['gender'])
-
-        # Convert datetime to ISO string for JSON serialization
-        datetime_fields = ['created_at', 'updated_at']
-        for field in datetime_fields:
-            if field in shift_dict and shift_dict[field] is not None:
-                shift_dict[field] = shift_dict[field].isoformat()
-
-        logger.debug(f"✅ Serialized shift {shift_dict.get('shift_id', 'unknown')} for cache")
-        return shift_dict
-    except Exception as e:
-        logger.error(f"❌ Failed to serialize shift for cache: {str(e)}")
-        raise
 
 def deserialize_shift_from_cache(cached_dict: dict):
     """
-    Convert cached dictionary back to Shift object.
-    Handles string to time conversion.
+    Convert cached dictionary back to a shift dict (not a Shift instance).
+    Callers access fields by key, so we return the type-converted dict directly.
     """
     from app.models.shift import Shift
-    from datetime import time as datetime_time
-    from app.core.logging_config import get_logger
-    logger = get_logger(__name__)
+    return deserialize_model_from_cache(cached_dict, Shift, return_dict=True)
 
-    try:
-        shift_id = cached_dict.get('shift_id', 'unknown')
-
-        # Convert string back to time
-        if cached_dict.get('shift_time') and isinstance(cached_dict['shift_time'], str):
-            time_parts = cached_dict['shift_time'].split(':')
-            cached_dict['shift_time'] = datetime_time(
-                int(time_parts[0]),
-                int(time_parts[1]),
-                int(time_parts[2]) if len(time_parts) > 2 else 0
-            )
-
-        # Convert ISO string back to datetime
-        from datetime import datetime
-        datetime_fields = ['created_at', 'updated_at']
-        for field in datetime_fields:
-            if cached_dict.get(field) and isinstance(cached_dict[field], str):
-                cached_dict[field] = datetime.fromisoformat(cached_dict[field])
-
-        # Note: Enums remain as string values (consistent with DB path returning dicts)
-
-        logger.debug(f"✅ Deserialized shift {shift_id} from cache")
-        return cached_dict
-    except Exception as e:
-        logger.error(f"❌ Failed to deserialize shift from cache: {str(e)}")
-        raise
 
 def serialize_weekoff_for_cache(weekoff_obj) -> dict:
-    """
-    Convert WeekoffConfig object to cacheable dictionary.
-    Weekoff configs are mostly boolean fields, should be JSON serializable.
-    """
-    from app.core.logging_config import get_logger
-    logger = get_logger(__name__)
+    """Convert WeekoffConfig object to cacheable dictionary."""
+    return serialize_model_for_cache(weekoff_obj)
 
-    try:
-        weekoff_dict = {c.name: getattr(weekoff_obj, c.name) for c in weekoff_obj.__table__.columns}
-
-        # Convert datetime to ISO string for JSON serialization
-        datetime_fields = ['created_at', 'updated_at']
-        for field in datetime_fields:
-            if field in weekoff_dict and weekoff_dict[field] is not None:
-                weekoff_dict[field] = weekoff_dict[field].isoformat()
-
-        logger.debug(f"✅ Serialized weekoff for employee {weekoff_dict.get('employee_id', 'unknown')} for cache")
-        return weekoff_dict
-    except Exception as e:
-        logger.error(f"❌ Failed to serialize weekoff for cache: {str(e)}")
-        raise
 
 def deserialize_weekoff_from_cache(cached_dict: dict):
-    """
-    Convert cached dictionary back to WeekoffConfig object.
-    """
+    """Convert cached dictionary back to WeekoffConfig object."""
     from app.models.weekoff_config import WeekoffConfig
-    from app.core.logging_config import get_logger
-    logger = get_logger(__name__)
-
-    try:
-        employee_id = cached_dict.get('employee_id', 'unknown')
-
-        # Convert ISO string back to datetime
-        from datetime import datetime
-        datetime_fields = ['created_at', 'updated_at']
-        for field in datetime_fields:
-            if cached_dict.get(field) and isinstance(cached_dict[field], str):
-                cached_dict[field] = datetime.fromisoformat(cached_dict[field])
-
-        logger.debug(f"✅ Deserialized weekoff for employee {employee_id} from cache")
-        return WeekoffConfig(**cached_dict)
-    except Exception as e:
-        logger.error(f"❌ Failed to deserialize weekoff from cache: {str(e)}")
-        raise
+    return deserialize_model_from_cache(cached_dict, WeekoffConfig)
 
 def serialize_team_for_cache(team_obj) -> dict:
-    """
-    Convert Team object to cacheable dictionary.
-    Handles datetime serialization for JSON compatibility.
-    """
-    from app.core.logging_config import get_logger
-    logger = get_logger(__name__)
+    """Convert Team object to cacheable dictionary."""
+    return serialize_model_for_cache(team_obj)
 
-    try:
-        # Automatically get all columns - works with new columns!
-        team_dict = {c.name: getattr(team_obj, c.name) for c in team_obj.__table__.columns}
-
-        # Only convert special types (datetime → ISO string)
-        datetime_fields = ['created_at', 'updated_at']
-        for field in datetime_fields:
-            if team_dict.get(field) and team_dict[field] is not None:
-                team_dict[field] = team_dict[field].isoformat()
-
-        logger.debug(f"✅ Serialized team {team_dict.get('team_id', 'unknown')} for cache")
-        return team_dict
-    except Exception as e:
-        logger.error(f"❌ Failed to serialize team for cache: {str(e)}")
-        raise
 
 def deserialize_team_from_cache(cached_dict: dict):
-    """
-    Convert cached dictionary back to Team object.
-    Handles ISO string back to datetime.
-    """
+    """Convert cached dictionary back to Team object."""
     from app.models.team import Team
-    from datetime import datetime
-    from app.core.logging_config import get_logger
-    logger = get_logger(__name__)
-
-    try:
-        team_id = cached_dict.get('team_id', 'unknown')
-
-        # Convert ISO string back to datetime
-        datetime_fields = ['created_at', 'updated_at']
-        for field in datetime_fields:
-            if cached_dict.get(field) and isinstance(cached_dict[field], str):
-                cached_dict[field] = datetime.fromisoformat(cached_dict[field])
-
-        logger.debug(f"✅ Deserialized team {team_id} from cache")
-        return Team(**cached_dict)
-    except Exception as e:
-        logger.error(f"❌ Failed to deserialize team from cache: {str(e)}")
-        raise
+    return deserialize_model_from_cache(cached_dict, Team)
 
 def get_team_with_cache(db, tenant_id: str, team_id: int):
     """
@@ -1161,78 +1001,15 @@ def refresh_tenant_config(tenant_id: str, config_data: dict, ttl: int = 3600):
 # ============================================================
 
 def serialize_driver_for_cache(driver_obj) -> dict:
-    """
-    Convert Driver object to cacheable dictionary.
-    Handles date serialization for JSON compatibility.
-    """
-    from app.core.logging_config import get_logger
-    logger = get_logger(__name__)
+    """Convert Driver object to cacheable dictionary."""
+    return serialize_model_for_cache(driver_obj)
 
-    try:
-        driver_dict = {c.name: getattr(driver_obj, c.name) for c in driver_obj.__table__.columns}
-
-        # Convert date to ISO string for JSON serialization
-        date_fields = ['date_of_birth', 'date_of_joining', 'license_expiry_date', 
-                       'badge_expiry_date', 'bg_expiry_date', 'police_expiry_date',
-                       'medical_expiry_date', 'training_expiry_date', 'eye_expiry_date', 'induction_date']
-        for field in date_fields:
-            if driver_dict.get(field) is not None:
-                driver_dict[field] = driver_dict[field].isoformat()
-
-        # Convert datetime to ISO string for JSON serialization
-        datetime_fields = ['created_at', 'updated_at']
-        for field in datetime_fields:
-            if driver_dict.get(field) is not None:
-                driver_dict[field] = driver_dict[field].isoformat()
-
-        # Convert enum to value for JSON serialization
-        if 'gender' in driver_dict and driver_dict['gender'] is not None:
-            driver_dict['gender'] = driver_dict['gender'].value if hasattr(driver_dict['gender'], 'value') else driver_dict['gender']
-        
-        enum_fields = ['bg_verify_status', 'police_verify_status', 'medical_verify_status', 
-                      'training_verify_status', 'eye_verify_status']
-        for field in enum_fields:
-            if driver_dict.get(field) is not None:
-                driver_dict[field] = driver_dict[field].value if hasattr(driver_dict[field], 'value') else driver_dict[field]
-
-        logger.debug(f"✅ Serialized driver {driver_dict.get('driver_id', 'unknown')} for cache")
-        return driver_dict
-    except Exception as e:
-        logger.error(f"❌ Failed to serialize driver for cache: {str(e)}")
-        raise
 
 def deserialize_driver_from_cache(cached_dict: dict):
-    """
-    Convert cached dictionary back to Driver object.
-    Handles ISO string back to date/datetime.
-    """
+    """Convert cached dictionary back to Driver object."""
     from app.models.driver import Driver
-    from datetime import datetime, date
-    from app.core.logging_config import get_logger
-    logger = get_logger(__name__)
+    return deserialize_model_from_cache(cached_dict, Driver)
 
-    try:
-        driver_id = cached_dict.get('driver_id', 'unknown')
-
-        # Convert ISO string back to date
-        date_fields = ['date_of_birth', 'date_of_joining', 'license_expiry_date', 
-                       'badge_expiry_date', 'bg_expiry_date', 'police_expiry_date',
-                       'medical_expiry_date', 'training_expiry_date', 'eye_expiry_date', 'induction_date']
-        for field in date_fields:
-            if cached_dict.get(field) and isinstance(cached_dict[field], str):
-                cached_dict[field] = date.fromisoformat(cached_dict[field])
-
-        # Convert ISO string back to datetime
-        datetime_fields = ['created_at', 'updated_at']
-        for field in datetime_fields:
-            if cached_dict.get(field) and isinstance(cached_dict[field], str):
-                cached_dict[field] = datetime.fromisoformat(cached_dict[field])
-
-        logger.debug(f"✅ Deserialized driver {driver_id} from cache")
-        return Driver(**cached_dict)
-    except Exception as e:
-        logger.error(f"❌ Failed to deserialize driver from cache: {str(e)}")
-        raise
 
 # Driver caching - Individual driver by ID
 def cache_driver(driver_id: int, driver_data: dict, ttl: int = 300):
@@ -1533,6 +1310,62 @@ def invalidate_driver_complete(driver_id: int, old_data: Optional[dict] = None, 
     except Exception as e:
         logger.error(f"❌ [CACHE INVALIDATE ERROR] Failed to invalidate driver caches: {str(e)} | driver_id={driver_id}")
         return False
+
+# ============================================================
+# Permission Caching  (hot path: called on every authenticated request)
+# TTL = 5 min.  Invalidated when a role is mutated or an employee's role changes.
+# ============================================================
+
+PERMISSIONS_TTL = 300  # seconds
+
+
+def cache_permissions(employee_id: int, tenant_id: str, data: dict, ttl: int = PERMISSIONS_TTL) -> bool:
+    """Cache resolved roles+permissions for an employee (key: permissions:{tenant_id}:{employee_id})."""
+    return _cache_entity("permissions", data, ttl, tenant_id, employee_id)
+
+
+def get_cached_permissions(employee_id: int, tenant_id: str) -> Optional[dict]:
+    """Return cached {roles, permissions} or None on miss/unavailability."""
+    return _get_cached_entity("permissions", tenant_id, employee_id)
+
+
+def invalidate_permissions(employee_id: int, tenant_id: str) -> bool:
+    """Invalidate the permissions cache for a single employee."""
+    return _invalidate_entity("permissions", tenant_id, employee_id)
+
+
+def invalidate_permissions_for_role(db, role_id: int, tenant_id: Optional[str]) -> int:
+    """
+    Invalidate the permissions cache for every employee currently assigned to *role_id*.
+
+    System roles (tenant_id=None) span all tenants; enumerating all affected employees
+    would require a cross-tenant scan.  Instead we log a warning and let the TTL handle
+    expiry — acceptable for a 5-minute window on rarely-changed system roles.
+
+    Returns the number of per-employee cache keys deleted.
+    """
+    if not tenant_id:
+        logger.warning(
+            "System role %s updated; permission caches will expire via TTL (%ss)",
+            role_id, PERMISSIONS_TTL,
+        )
+        return 0
+
+    from app.models.employee import Employee  # local to avoid circular imports
+    emp_ids: list[int] = [
+        row[0]
+        for row in db.query(Employee.employee_id).filter(
+            Employee.role_id == role_id,
+            Employee.tenant_id == tenant_id,
+        ).all()
+    ]
+    count = sum(1 for eid in emp_ids if invalidate_permissions(eid, tenant_id))
+    logger.info(
+        "Invalidated permissions cache for %d employee(s) on role_id=%s tenant=%s",
+        count, role_id, tenant_id,
+    )
+    return count
+
 
 # Export the cache instance as cache_manager for backward compatibility
 cache_manager = cache

@@ -591,6 +591,10 @@ async def update_role(
     
     try:
         updated_role = role_crud.update_with_policies(db, db_obj=role, obj_in=role_update)
+        # Invalidate cached permissions for all employees with this role so they
+        # receive the updated permission set on their next token refresh / login.
+        from app.utils.cache_manager import invalidate_permissions_for_role
+        invalidate_permissions_for_role(db, role_id=role_id, tenant_id=role.tenant_id)
         return ResponseWrapper.success(
             data=updated_role,
             message="Role updated successfully"
@@ -652,6 +656,11 @@ async def delete_role(
                 )
             )
     
+    # Invalidate cached permissions before removing the role so we can still
+    # query Employee.role_id == role_id (FK still exists at this point).
+    from app.utils.cache_manager import invalidate_permissions_for_role
+    invalidate_permissions_for_role(db, role_id=role_id, tenant_id=role.tenant_id)
+
     role_crud.remove(db, id=role_id)
     return ResponseWrapper.success(
         data=None,

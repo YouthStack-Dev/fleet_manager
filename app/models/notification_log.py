@@ -12,7 +12,6 @@ class NotificationLog(Base):
         Index("ix_notification_logs_tenant_route", "tenant_id", "route_id"),
         Index("ix_notification_logs_created_at", "created_at"),
         Index("ix_notification_logs_tenant_shift_date", "tenant_id", "shift_id", "booking_date"),
-        {"extend_existing": True},
     )
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)

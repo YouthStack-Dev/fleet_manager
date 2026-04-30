@@ -630,6 +630,31 @@ async def bulk_create_employees(
         logger.info(f"Starting bulk employee creation: {len(employees_data)} employees to process")
         created_employees = []
         failed_employees = []
+
+        # Preload existing unique fields per tenant to avoid N+1 duplicate checks in loop
+        tenant_ids_to_check = {
+            (item["data"].get("tenant_id", tenant_id) if user_type == "admin" else tenant_id)
+            for item in employees_data
+        }
+        tenant_ids_to_check = {tid for tid in tenant_ids_to_check if tid}
+        existing_unique = {}
+        if tenant_ids_to_check:
+            existing_rows = (
+                db.query(Employee.tenant_id, Employee.email, Employee.phone, Employee.employee_code)
+                .filter(Employee.tenant_id.in_(tenant_ids_to_check))
+                .all()
+            )
+            for t_id, email_val, phone_val, code_val in existing_rows:
+                bucket = existing_unique.setdefault(
+                    t_id,
+                    {"emails": set(), "phones": set(), "codes": set()},
+                )
+                if email_val:
+                    bucket["emails"].add(email_val.lower())
+                if phone_val:
+                    bucket["phones"].add(phone_val)
+                if code_val:
+                    bucket["codes"].add(code_val)
         
         for item in employees_data:
             row_num = item['row']
@@ -647,30 +672,19 @@ async def bulk_create_employees(
                 email = emp_data['email']
                 phone = emp_data['phone']
                 employee_code = emp_data.get('employee_code')
-                
-                # Check if email already exists within tenant
-                existing_email = db.query(Employee).filter(
-                    Employee.email == email,
-                    Employee.tenant_id == emp_tenant_id
-                ).first()
-                if existing_email:
+
+                tenant_unique = existing_unique.setdefault(
+                    emp_tenant_id,
+                    {"emails": set(), "phones": set(), "codes": set()},
+                )
+                email_key = email.lower()
+                if email_key in tenant_unique["emails"]:
                     raise ValueError(f"Email '{email}' already exists in database")
-                
-                # Check if phone already exists within tenant
-                existing_phone = db.query(Employee).filter(
-                    Employee.phone == phone,
-                    Employee.tenant_id == emp_tenant_id
-                ).first()
-                if existing_phone:
+
+                if phone in tenant_unique["phones"]:
                     raise ValueError(f"Phone '{phone}' already exists in database")
-                
-                # Check if employee code already exists within tenant (if provided)
-                if employee_code:
-                    existing_code = db.query(Employee).filter(
-                        Employee.employee_code == employee_code,
-                        Employee.tenant_id == emp_tenant_id
-                    ).first()
-                    if existing_code:
+
+                if employee_code and employee_code in tenant_unique["codes"]:
                         raise ValueError(f"Employee code '{employee_code}' already exists in database")
                 
                 # Create employee object
@@ -694,6 +708,12 @@ async def bulk_create_employees(
                     obj_in=employee_create, 
                     tenant_id=emp_tenant_id
                 )
+
+                # Reserve unique values locally to catch duplicates in same upload batch
+                tenant_unique["emails"].add(email_key)
+                tenant_unique["phones"].add(phone)
+                if employee_code:
+                    tenant_unique["codes"].add(employee_code)
                 
                 db.flush()  # Get the ID without committing yet
                 
@@ -1306,6 +1326,14 @@ def update_employee(
 
         db.commit()
         db.refresh(db_employee)
+
+        # Invalidate permissions cache whenever any field changes (role, status, etc.)
+        # so the next token-refresh returns fresh permissions.
+        try:
+            from app.utils.cache_manager import invalidate_permissions
+            invalidate_permissions(employee_id, db_employee.tenant_id)
+        except Exception as cache_err:
+            logger.warning("Failed to invalidate permissions cache for employee %s: %s", employee_id, cache_err)
 
         # 🔍 Capture new values after update
         new_values = {}

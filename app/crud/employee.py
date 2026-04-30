@@ -1,5 +1,5 @@
 from typing import List, Dict, Any, Optional, Union
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, subqueryload
 from sqlalchemy import or_, and_
 from app.models import Employee
 from app.models.iam.role import Role
@@ -8,6 +8,10 @@ from app.schemas.employee import EmployeeCreate, EmployeeUpdate
 from app.crud.base import CRUDBase
 from common_utils.auth.utils import hash_password
 from app.crud.weekoff import weekoff_crud
+from app.utils.cache_manager import (
+    get_cached_permissions,
+    cache_permissions,
+)
 
 class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
     def get_by_email(self, db: Session, *, email: str) -> Optional[Employee]:
@@ -102,15 +106,35 @@ class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
                            tenant's package (intersection) are granted.
         4. No package    → fall back to legacy behaviour (all role permissions granted)
                            so existing tenants without a package are not broken.
+
+        Result is cached in Redis for 5 minutes (PERMISSIONS_TTL).
         """
         from app.models.iam import Role, Policy
         from app.models.iam.policy import PolicyPackage
 
-        employee = db.query(Employee).filter(
-            Employee.employee_id == employee_id,
-            Employee.tenant_id == tenant_id,
-            Employee.is_active == True
-        ).first()
+        # ── 1. Check cache (returns None on miss or when Redis is unavailable) ──
+        cached = get_cached_permissions(employee_id, tenant_id)
+        if cached is not None:
+            return None, cached["roles"], cached["permissions"]
+
+        # ── 2. Fetch employee + role + policies + permissions in 3 queries ──
+        # joinedload(Employee.role)    → single JOIN (employee has exactly one FK role)
+        # subqueryload(Role.policies)  → 1 subquery for all policies of that role
+        # subqueryload(Policy.permissions) → 1 subquery for all permissions of those policies
+        employee = (
+            db.query(Employee)
+            .options(
+                joinedload(Employee.role)
+                .subqueryload(Role.policies)
+                .subqueryload(Policy.permissions)
+            )
+            .filter(
+                Employee.employee_id == employee_id,
+                Employee.tenant_id == tenant_id,
+                Employee.is_active == True
+            )
+            .first()
+        )
 
         if not employee:
             return None, [], []
@@ -133,7 +157,8 @@ class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
             role_list = []
 
         roles: list[str] = []
-        all_permissions: list[dict] = []
+        # module → {"module": str, "action": list[str]}  — O(1) lookup by module name
+        permissions_by_module: dict[str, dict] = {}
 
         for role in role_list:
             if not role or not role.is_active:
@@ -152,19 +177,24 @@ class CRUDEmployee(CRUDBase[Employee, EmployeeCreate, EmployeeUpdate]):
                             continue
 
                     module, action = permission.module, permission.action
-                    existing = next((p for p in all_permissions if p["module"] == module), None)
-                    if existing:
+                    entry = permissions_by_module.get(module)
+                    if entry:
                         if action == "*":
-                            existing["action"] = ["create", "read", "update", "delete", "*"]
-                        elif action not in existing["action"]:
-                            existing["action"].append(action)
+                            entry["action"] = ["create", "read", "update", "delete", "*"]
+                        elif action not in entry["action"]:
+                            entry["action"].append(action)
                     else:
                         actions = (
                             ["create", "read", "update", "delete", "*"]
                             if action == "*"
                             else [action]
                         )
-                        all_permissions.append({"module": module, "action": actions})
+                        permissions_by_module[module] = {"module": module, "action": actions}
+
+        all_permissions = list(permissions_by_module.values())
+
+        # ── 3. Populate cache ────────────────────────────────────────────────
+        cache_permissions(employee_id, tenant_id, {"roles": roles, "permissions": all_permissions})
 
         return employee, roles, all_permissions
 

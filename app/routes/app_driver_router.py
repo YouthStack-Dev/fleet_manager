@@ -75,13 +75,13 @@ async def DriverAuth(user_data=Depends(PermissionChecker(["app-driver.read", "ap
     return {"tenant_id": tenant_id, "driver_id": driver_id, "vendor_id": vendor_id}
 
 
-def verify_otp(booking_otp: Optional[str], provided_otp: Optional[str], otp_type: str, booking_id: int) -> None:
+def verify_otp(booking_otp: Optional[int], provided_otp: Optional[str], otp_type: str, booking_id: int) -> None:
     """
     Verifies OTP for boarding or deboarding.
     Raises HTTPException if OTP is required but invalid.
     """
     if booking_otp:
-        if str(booking_otp).strip() != str(provided_otp).strip():
+        if str(booking_otp) != str(provided_otp):
             logger.warning(f"[driver.verify_otp] Invalid {otp_type} OTP provided for booking {booking_id}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -423,7 +423,7 @@ async def start_duty(
     except Exception as e:
         logger.exception("[driver.start_duty] Unexpected error")
         db.rollback()
-        return handle_db_error(e)
+        raise handle_db_error(e)
 
 
 @router.post("/escort/board", status_code=status.HTTP_200_OK)
@@ -749,7 +749,7 @@ async def get_driver_trips(
         raise handle_http_error(e)
     except Exception as e:
         logger.exception("[driver.trips] Unexpected error")
-        return handle_db_error(e)
+        raise handle_db_error(e)
 
 @router.get("/history/report", status_code=status.HTTP_200_OK)
 async def driver_history_report(
@@ -1323,7 +1323,7 @@ async def verify_drop_and_complete_route(
     except Exception as e:
         db.rollback()
         logger.exception("[driver.drop] Unexpected error")
-        return handle_db_error(e)
+        raise handle_db_error(e)
 
 
 @router.put("/duty/end", status_code=status.HTTP_200_OK)
@@ -1419,7 +1419,7 @@ async def end_duty(
     except Exception as e:
         db.rollback()
         logger.exception("[driver.end_duty] Unexpected error")
-        return handle_db_error(e)
+        raise handle_db_error(e)
 
 
 # ---------------------------
@@ -1798,4 +1798,3 @@ def send_drop_completion_notification(db: Session, booking_id: int, route_id: in
         
     except Exception as e:
         logger.exception(f"[notify.drop] Error: {str(e)}")
-

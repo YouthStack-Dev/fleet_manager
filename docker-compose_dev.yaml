@@ -52,19 +52,22 @@ services:
       - /var/lib/fleet/uploads:/app/uploaded_files
     environment:
       - DATABASE_URL=postgresql://fleetadmin:fleetpass@fleet_postgres_dev:5432/fleet_db_dev
+      # Required by config.py — must match the postgres service above.
+      - POSTGRES_PASSWORD=fleetpass
+      # Required by config.py — generate a real key for shared dev environments.
+      - SECRET_KEY=${SECRET_KEY:-dev-only-insecure-key-change-in-production}
       - REDIS_HOST=redis_server
       - REDIS_PORT=6379
       - REDIS_DB=0
       - REDIS_PASSWORD=redispassword
       - USE_REDIS=1
       - TOKEN_EXPIRY_HOURS=1
-      
+
       # Storage Configuration for Dev Server
       - ENV=dev-server
       - STORAGE_TYPE=filesystem
       - DEV_SERVER_STORAGE_PATH=/var/lib/fleet/dev-storage
       - MAX_FILE_SIZE_MB=5
-      
     depends_on:
       redis_server:
         condition: service_healthy

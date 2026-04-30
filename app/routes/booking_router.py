@@ -75,22 +75,26 @@ async def BookingUpdatePermission(user_data: dict = Depends(validate_bearer_toke
 
 def get_shift_time(shift):
     """Extract shift_time from shift (handles both cached and DB objects)"""
-    if isinstance(shift, dict):
-        time_str = shift.get("shift_time")
-        if time_str:
-            from datetime import time as dt_time
-            h, m, s = map(int, time_str.split(":"))
-            return dt_time(h, m, s)
+    from datetime import time as dt_time
+
+    def parse_time_value(value):
+        if value is None:
+            return None
+        if isinstance(value, dt_time):
+            return value
+        if isinstance(value, datetime):
+            return value.time()
+        if isinstance(value, str):
+            try:
+                return dt_time.fromisoformat(value)
+            except ValueError:
+                return None
         return None
+
+    if isinstance(shift, dict):
+        return parse_time_value(shift.get("shift_time"))
     if hasattr(shift, "shift_time"):
-        shift_time = shift.shift_time
-        # If it's already a string (from cache), parse it
-        if isinstance(shift_time, str):
-            from datetime import time as dt_time
-            h, m, s = map(int, shift_time.split(":"))
-            return dt_time(h, m, s)
-        # If it's a time object (from DB), return as-is
-        return shift_time
+        return parse_time_value(shift.shift_time)
     return None
 
 def get_shift_log_type(shift):
@@ -485,13 +489,6 @@ def get_bookings(
         if status_filter:
             query = query.filter(Booking.status == status_filter)
 
-        # 🔹 Log total filtered records before pagination
-        filtered_count = query.count()
-        logger.info(
-            f"Filtered bookings count for tenant_id={effective_tenant_id} "
-            f"with date={booking_date}: {filtered_count}"
-        )
-
         total, items = paginate_query(query, skip, limit)
 
         # Fetch route data with eager loading for efficiency (single optimized query)
@@ -537,59 +534,14 @@ def get_bookings(
                 vendors = db.query(Vendor).filter(Vendor.vendor_id.in_(vendor_ids)).all()
                 vendors_dict = {v.vendor_id: v for v in vendors}
         
-        # Get shifts (using cached version)
+        # Get shifts in a single batch query instead of one query per shift_id
         shifts_dict = {}
         if route_obj_dict:
-            shift_ids = [r.shift_id for r in route_obj_dict.values() if r.shift_id]
-            for shift_id in shift_ids:
-                shift_data = get_shift_with_cache(db, tenant_id or effective_tenant_id, shift_id)
-                if shift_data:
-                    shifts_dict[shift_id] = shift_data
-
-        # Fetch all route bookings for passengers
-        # Note: RouteManagementBooking doesn't have a direct 'booking' relationship
-        logger.info(f"Fetching route bookings for {len(route_ids)} routes in get_bookings endpoint")
-        all_route_bookings = db.query(RouteManagementBooking).filter(
-            RouteManagementBooking.route_id.in_(route_ids)
-        ).all() if route_ids else []
-        
-        logger.info(f"Found {len(all_route_bookings)} route bookings")
-        
-        # Fetch all bookings associated with these route bookings
-        route_booking_ids = [rb.booking_id for rb in all_route_bookings]
-        logger.info(f"Fetching {len(route_booking_ids)} bookings for route passengers")
-        
-        passenger_bookings = db.query(Booking).options(
-            joinedload(Booking.employee)
-        ).filter(Booking.booking_id.in_(route_booking_ids)).all() if route_booking_ids else []
-        
-        # Create a mapping of booking_id to booking object
-        booking_map = {b.booking_id: b for b in passenger_bookings}
-        logger.info(f"Created booking map with {len(booking_map)} entries")
-        
-        # Create a mapping of booking_id to booking object
-        booking_map = {b.booking_id: b for b in passenger_bookings}
-        logger.info(f"Created booking map with {len(booking_map)} entries")
-        
-        # Build passengers per route
-        route_passengers = {}
-        for route_id in route_ids:
-            passengers = []
-            for rb in all_route_bookings:
-                if rb.route_id == route_id:
-                    booking_obj = booking_map.get(rb.booking_id)
-                    if booking_obj and booking_obj.employee:
-                        passengers.append({
-                            "employee_name": booking_obj.employee.employee_name if hasattr(booking_obj.employee, 'employee_name') else booking_obj.employee.name if hasattr(booking_obj.employee, 'name') else 'Unknown',
-                            "headcount": 1,
-                            "position": rb.order_id,
-                            "booking_status": booking_obj.status.value if booking_obj.status else 'Unknown'
-                        })
-                    else:
-                        logger.warning(f"Missing booking or employee data for booking_id={rb.booking_id} in route_id={route_id}")
-            passengers.sort(key=lambda x: x['position'])
-            route_passengers[route_id] = passengers
-            logger.info(f"Route {route_id} has {len(passengers)} passengers")
+            shift_ids = list({r.shift_id for r in route_obj_dict.values() if r.shift_id})
+            if shift_ids:
+                from app.models.shift import Shift
+                shifts = db.query(Shift).filter(Shift.shift_id.in_(shift_ids)).all()
+                shifts_dict = {s.shift_id: s for s in shifts}
 
         # Add shift_time and route_details to each booking
         bookings_with_shift = []
@@ -806,48 +758,6 @@ def get_bookings_by_employee(
                 if shift_data:
                     shifts_dict[shift_id] = shift_data
 
-        # Fetch all route bookings for passengers
-        # Note: RouteManagementBooking doesn't have a direct 'booking' relationship,
-        # so we need to fetch bookings separately using booking_ids
-        logger.info(f"Fetching route bookings for {len(route_ids)} routes")
-        all_route_bookings = db.query(RouteManagementBooking).filter(
-            RouteManagementBooking.route_id.in_(route_ids)
-        ).all() if route_ids else []
-        
-        logger.info(f"Found {len(all_route_bookings)} route bookings")
-        
-        # Fetch all bookings associated with these route bookings
-        route_booking_ids = [rb.booking_id for rb in all_route_bookings]
-        logger.info(f"Fetching {len(route_booking_ids)} bookings for route passengers")
-        
-        passenger_bookings = db.query(Booking).options(
-            joinedload(Booking.employee)
-        ).filter(Booking.booking_id.in_(route_booking_ids)).all() if route_booking_ids else []
-        
-        # Create a mapping of booking_id to booking object
-        booking_map = {b.booking_id: b for b in passenger_bookings}
-        logger.info(f"Created booking map with {len(booking_map)} entries")
-        
-        # Build passengers per route
-        route_passengers = {}
-        for route_id in route_ids:
-            passengers = []
-            for rb in all_route_bookings:
-                if rb.route_id == route_id:
-                    booking_obj = booking_map.get(rb.booking_id)
-                    if booking_obj and booking_obj.employee:
-                        passengers.append({
-                            "employee_name": booking_obj.employee.employee_name if hasattr(booking_obj.employee, 'employee_name') else booking_obj.employee.name if hasattr(booking_obj.employee, 'name') else 'Unknown',
-                            "headcount": 1,
-                            "position": rb.order_id,
-                            "booking_status": booking_obj.status.value if booking_obj.status else 'Unknown'
-                        })
-                    else:
-                        logger.warning(f"Missing booking or employee data for booking_id={rb.booking_id} in route_id={route_id}")
-            passengers.sort(key=lambda x: x['position'])
-            route_passengers[route_id] = passengers
-            logger.info(f"Route {route_id} has {len(passengers)} passengers")
-
         # Add shift_time and route_details to each booking
         bookings_with_shift = []
         for booking in items:
@@ -996,7 +906,7 @@ def get_booking_by_id(
 
                 vehicle_details = None
                 if route.assigned_vehicle_id:
-                    vehicle = db.query(Vehicle).filter(Vehicle.vehicle_id == route.assigned_vehicle_id).first()
+                    vehicle = db.get(Vehicle, route.assigned_vehicle_id)
                     if vehicle:
                         vehicle_details = {
                             "vehicle_id": vehicle.vehicle_id,
@@ -1007,7 +917,7 @@ def get_booking_by_id(
 
                 driver_details = None
                 if route.assigned_driver_id:
-                    driver = db.query(Driver).filter(Driver.driver_id == route.assigned_driver_id).first()
+                    driver = db.get(Driver, route.assigned_driver_id)
                     if driver:
                         driver_details = {
                             "driver_id": driver.driver_id,
@@ -1018,7 +928,7 @@ def get_booking_by_id(
 
                 vendor_details = None
                 if route.assigned_vendor_id:
-                    vendor = db.query(Vendor).filter(Vendor.vendor_id == route.assigned_vendor_id).first()
+                    vendor = db.get(Vendor, route.assigned_vendor_id)
                     if vendor:
                         vendor_details = {
                             "vendor_id": vendor.vendor_id,
@@ -1230,18 +1140,27 @@ async def update_booking(
                         )
                     cutoff_interval = cutoff.medical_emergency_booking_cutoff
                 else:
-                    if shift.log_type == "IN":
+                    if shift_log_type == "IN":
                         cutoff_interval = cutoff.booking_login_cutoff
-                    elif shift.log_type == "OUT":
+                    elif shift_log_type == "OUT":
                         cutoff_interval = cutoff.booking_logout_cutoff
 
-            shift_datetime = datetime.combine(booking.booking_date, shift.shift_time).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
+            if not shift_time:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Shift time is not configured for the selected shift",
+                        error_code="SHIFT_TIME_MISSING",
+                    ),
+                )
+
+            shift_datetime = datetime.combine(booking.booking_date, shift_time).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
             now = get_current_ist_time()
             time_until_shift = shift_datetime - now
 
             if cutoff and shift and cutoff_interval and cutoff_interval.total_seconds() > 0:
                 if time_until_shift < cutoff_interval:
-                    booking_type_name = "ad-hoc" if booking.booking_type == "adhoc" else ("medical emergency" if booking.booking_type == "medical_emergency" else ("login" if shift.log_type == "IN" else "logout"))
+                    booking_type_name = "ad-hoc" if booking.booking_type == "adhoc" else ("medical emergency" if booking.booking_type == "medical_emergency" else ("login" if shift_log_type == "IN" else "logout"))
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=ResponseWrapper.error(
@@ -1255,7 +1174,7 @@ async def update_booking(
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ResponseWrapper.error(
-                        message=f"Cannot update to a shift that has already started or passed (Shift time: {shift.shift_time})",
+                        message=f"Cannot update to a shift that has already started or passed (Shift time: {shift_time})",
                         error_code="PAST_SHIFT_TIME",
                     ),
                 )
@@ -1654,4 +1573,3 @@ async def get_bookings_grouped_by_shift(
                 details={"error": str(e)},
             ),
         )
-
