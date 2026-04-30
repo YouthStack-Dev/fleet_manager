@@ -77,14 +77,25 @@ def safe_get_enum_value(obj, attr_name):
 
 def get_shift_time(shift):
     """Extract shift_time from shift dict (cached format) or Shift object"""
-    if isinstance(shift, dict):
-        time_str = shift.get("shift_time")
-        if time_str:
-            from datetime import time as dt_time
-            h, m, s = map(int, time_str.split(":"))
-            return dt_time(h, m, s)
+    from datetime import time as dt_time
+
+    def parse_time_value(value):
+        if value is None:
+            return None
+        if isinstance(value, dt_time):
+            return value
+        if isinstance(value, datetime):
+            return value.time()
+        if isinstance(value, str):
+            try:
+                return dt_time.fromisoformat(value)
+            except ValueError:
+                return None
         return None
-    return shift.shift_time if hasattr(shift, "shift_time") else None
+
+    if isinstance(shift, dict):
+        return parse_time_value(shift.get("shift_time"))
+    return parse_time_value(shift.shift_time) if hasattr(shift, "shift_time") else None
 
 def get_shift_log_type(shift):
     """Extract log_type from shift dict (cached format) or Shift object"""
