@@ -150,11 +150,17 @@ def check_models():
     """Quick check that models can be imported."""
     print("\n🔍 Checking models can be imported...")
 
-    # Settings() requires SECRET_KEY at instantiation time.  This script only
-    # validates that model metadata is importable — it never uses the secret
-    # key.  Set a dummy value so BaseSettings doesn't raise when no .env file
-    # is present (CI pre-install step, local pre-commit hook, etc.).
-    os.environ.setdefault("SECRET_KEY", "check-migrations-dummy-not-used")
+    # Settings() requires auth/database values at instantiation time. This
+    # script only validates importability, so provide harmless dummy values
+    # when no .env is present (CI/pre-commit).
+    if not os.getenv("SECRET_KEY"):
+        os.environ["SECRET_KEY"] = "check-migrations-dummy-not-used"
+    if not os.getenv("DATABASE_URL"):
+        os.environ[
+            "DATABASE_URL"
+        ] = "postgresql://check_migrations:check_migrations@localhost:5432/check_migrations"
+    if not os.getenv("POSTGRES_PASSWORD"):
+        os.environ["POSTGRES_PASSWORD"] = "check-migrations-dummy-not-used"
 
     try:
         from app.database.session import Base
