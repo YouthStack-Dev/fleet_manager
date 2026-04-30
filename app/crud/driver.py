@@ -3,7 +3,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
 from sqlalchemy.exc import SQLAlchemyError
-from app.models.driver import Driver, VerificationStatusEnum, GenderEnum
+from app.models.driver import Driver, VerificationStatusEnum
+from app.models.enums import GenderEnum
 from app.models.iam.role import Role
 from app.models.tenant import Tenant
 from app.schemas.driver import DriverCreate, DriverUpdate

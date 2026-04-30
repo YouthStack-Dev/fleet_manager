@@ -485,13 +485,6 @@ def get_bookings(
         if status_filter:
             query = query.filter(Booking.status == status_filter)
 
-        # 🔹 Log total filtered records before pagination
-        filtered_count = query.count()
-        logger.info(
-            f"Filtered bookings count for tenant_id={effective_tenant_id} "
-            f"with date={booking_date}: {filtered_count}"
-        )
-
         total, items = paginate_query(query, skip, limit)
 
         # Fetch route data with eager loading for efficiency (single optimized query)
@@ -537,14 +530,14 @@ def get_bookings(
                 vendors = db.query(Vendor).filter(Vendor.vendor_id.in_(vendor_ids)).all()
                 vendors_dict = {v.vendor_id: v for v in vendors}
         
-        # Get shifts (using cached version)
+        # Get shifts in a single batch query instead of one query per shift_id
         shifts_dict = {}
         if route_obj_dict:
-            shift_ids = [r.shift_id for r in route_obj_dict.values() if r.shift_id]
-            for shift_id in shift_ids:
-                shift_data = get_shift_with_cache(db, tenant_id or effective_tenant_id, shift_id)
-                if shift_data:
-                    shifts_dict[shift_id] = shift_data
+            shift_ids = list({r.shift_id for r in route_obj_dict.values() if r.shift_id})
+            if shift_ids:
+                from app.models.shift import Shift
+                shifts = db.query(Shift).filter(Shift.shift_id.in_(shift_ids)).all()
+                shifts_dict = {s.shift_id: s for s in shifts}
 
         # Fetch all route bookings for passengers
         # Note: RouteManagementBooking doesn't have a direct 'booking' relationship
@@ -562,10 +555,6 @@ def get_bookings(
         passenger_bookings = db.query(Booking).options(
             joinedload(Booking.employee)
         ).filter(Booking.booking_id.in_(route_booking_ids)).all() if route_booking_ids else []
-        
-        # Create a mapping of booking_id to booking object
-        booking_map = {b.booking_id: b for b in passenger_bookings}
-        logger.info(f"Created booking map with {len(booking_map)} entries")
         
         # Create a mapping of booking_id to booking object
         booking_map = {b.booking_id: b for b in passenger_bookings}
@@ -996,7 +985,7 @@ def get_booking_by_id(
 
                 vehicle_details = None
                 if route.assigned_vehicle_id:
-                    vehicle = db.query(Vehicle).filter(Vehicle.vehicle_id == route.assigned_vehicle_id).first()
+                    vehicle = db.get(Vehicle, route.assigned_vehicle_id)
                     if vehicle:
                         vehicle_details = {
                             "vehicle_id": vehicle.vehicle_id,
@@ -1007,7 +996,7 @@ def get_booking_by_id(
 
                 driver_details = None
                 if route.assigned_driver_id:
-                    driver = db.query(Driver).filter(Driver.driver_id == route.assigned_driver_id).first()
+                    driver = db.get(Driver, route.assigned_driver_id)
                     if driver:
                         driver_details = {
                             "driver_id": driver.driver_id,
@@ -1018,7 +1007,7 @@ def get_booking_by_id(
 
                 vendor_details = None
                 if route.assigned_vendor_id:
-                    vendor = db.query(Vendor).filter(Vendor.vendor_id == route.assigned_vendor_id).first()
+                    vendor = db.get(Vendor, route.assigned_vendor_id)
                     if vendor:
                         vendor_details = {
                             "vendor_id": vendor.vendor_id,

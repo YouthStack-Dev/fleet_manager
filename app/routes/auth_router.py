@@ -4,7 +4,6 @@ import time
 import logging
 import sys
 import json
-import random
 import asyncio
 import datetime
 from app.crud.vendor_user import vendor_user_crud
@@ -12,7 +11,7 @@ from app.models.admin import Admin
 from app.models.driver import Driver
 from app.models.escort import Escort
 from app.models.tenant import Tenant
-from fastapi import APIRouter, Depends, HTTPException, Header, status, Body, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Header, Request, status, Body, Query, BackgroundTasks
 
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session, joinedload
@@ -47,19 +46,11 @@ from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_ht
 from app.core.email_service import EmailService
 from app.services.sms_service import SMSService
 from app.utils.cache_manager import get_drivers_by_license_with_cache, get_driver_by_android_id_with_cache
-from common_utils.auth.utils import (
-    create_access_token, create_refresh_token, 
-    verify_token, hash_password, verify_password
-)
-from common_utils.auth.token_validation import Oauth2AsAccessor, validate_bearer_token
-from app.schemas.employee import EmployeeResponse
-from app.crud.employee import employee_crud
-from app.crud.admin import admin_crud
-from app.crud.driver import driver_crud
-from app.core.logging_config import get_logger
-from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 
 from app.config import settings
+
+# ── Rate limiting ──────────────────────────────────────────────
+from app.core.limiter import limiter
 
 # Create a security instance
 security = HTTPBearer()
@@ -476,7 +467,9 @@ def introspect_token_direct(token: str, db: Session = None) -> dict:
         )
 
 @router.post("/employee/login")
+@limiter.limit("10/minute")
 async def employee_login(
+    request: Request,
     form_data: LoginRequest = Body(...),
     db: Session = Depends(get_db)
 ):
@@ -528,7 +521,7 @@ async def employee_login(
         }
 
         # verify password
-        if not verify_password(hash_password(form_data.password), employee.password):
+        if not verify_password(form_data.password, employee.password):
             logger.warning(f"🔒 Login failed - Invalid password for employee: {employee.employee_id} ({form_data.username})")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -763,9 +756,11 @@ async def employee_login(
 
 
 @router.post("/employee/request-otp")
+@limiter.limit("5/minute")
 async def request_employee_otp(
+    request: Request,
+    background_tasks: BackgroundTasks,
     form_data: OTPRequestSchema = Body(...),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_db)
 ):
     """
@@ -814,8 +809,8 @@ async def request_employee_otp(
                 )
             )
         
-        # Generate single OTP for this username (works for all associated tenants)
-        otp = str(random.randint(100000, 999999))
+        # Generate single OTP for this username (cryptographically secure)
+        otp = str(secrets.randbelow(900000) + 100000)
         
         # Store OTP in Redis with username as key (no tenant info)
         oauth_accessor = Oauth2AsAccessor()
@@ -918,11 +913,9 @@ async def request_employee_otp(
             "max_attempts": 3
         }
         
-        # In dev mode, include OTP for testing
+        # In dev mode, log OTP to server stdout only — never include in API response
         if settings.ENV == "development":
-            response_data["otp_dev"] = otp
-            response_data["note"] = "OTP included for development testing only"
-            logger.info(f"🔐 DEV MODE - OTP for {form_data.username}: {otp}")
+            logger.info(f"DEV MODE - OTP for {form_data.username}: {otp}")
         
         logger.info(f"✅ OTP request processed in background for {form_data.username}")
         return ResponseWrapper.success(
@@ -945,7 +938,9 @@ async def request_employee_otp(
 
 
 @router.post("/employee/verify-otp")
+@limiter.limit("10/minute")
 async def verify_employee_otp(
+    request: Request,
     form_data: OTPVerifySchema = Body(...),
     db: Session = Depends(get_db)
 ):
@@ -1695,9 +1690,9 @@ async def switch_employee_tenant(
             user_type="employee",
         )
         refresh_token = create_refresh_token(
-            user_id=str(employee.employee_id),
+            user_id=str(target_employee.employee_id),
             user_type="employee",
-            custom_claims={"tenant_id": str(employee.tenant_id)},
+            custom_claims={"tenant_id": str(target_employee.tenant_id)},
         )
         
         tenant_details = {
@@ -1918,7 +1913,9 @@ async def vendor_user_login(
         )
 
 @router.post("/admin/login")
+@limiter.limit("10/minute")
 async def admin_login(
+    request: Request,
     form_data: AdminLoginRequest = Body(...),
     db: Session = Depends(get_db)
 ):

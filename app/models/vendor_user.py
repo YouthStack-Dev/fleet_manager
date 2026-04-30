@@ -8,7 +8,6 @@ class VendorUser(Base):
     __table_args__ = (
         UniqueConstraint("tenant_id", "email", name="uq_tenant_vendor_email"),
         UniqueConstraint("tenant_id", "phone", name="uq_tenant_vendor_phone"),
-        {"extend_existing": True},
     )
 
     vendor_user_id = Column(Integer, primary_key=True, index=True)

@@ -75,13 +75,13 @@ async def DriverAuth(user_data=Depends(PermissionChecker(["app-driver.read", "ap
     return {"tenant_id": tenant_id, "driver_id": driver_id, "vendor_id": vendor_id}
 
 
-def verify_otp(booking_otp: Optional[str], provided_otp: Optional[str], otp_type: str, booking_id: int) -> None:
+def verify_otp(booking_otp: Optional[int], provided_otp: Optional[str], otp_type: str, booking_id: int) -> None:
     """
     Verifies OTP for boarding or deboarding.
     Raises HTTPException if OTP is required but invalid.
     """
     if booking_otp:
-        if str(booking_otp).strip() != str(provided_otp).strip():
+        if str(booking_otp) != str(provided_otp):
             logger.warning(f"[driver.verify_otp] Invalid {otp_type} OTP provided for booking {booking_id}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

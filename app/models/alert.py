@@ -74,7 +74,6 @@ class Alert(Base):
         Index("ix_alerts_employee", "employee_id", "triggered_at"),
         Index("ix_alerts_booking", "booking_id"),
         Index("ix_alerts_triggered_at", "triggered_at"),
-        {"extend_existing": True},
     )
 
     alert_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
@@ -134,7 +133,6 @@ class AlertEscalation(Base):
     __tablename__ = "alert_escalations"
     __table_args__ = (
         Index("ix_alert_escalations_alert", "alert_id", "escalated_at"),
-        {"extend_existing": True},
     )
 
     escalation_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
@@ -160,7 +158,6 @@ class AlertNotification(Base):
     __table_args__ = (
         Index("ix_alert_notifications_alert", "alert_id", "sent_at"),
         Index("ix_alert_notifications_status", "status", "channel"),
-        {"extend_existing": True},
     )
 
     notification_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
@@ -200,7 +197,6 @@ class AlertConfiguration(Base):
     __table_args__ = (
         Index("ix_alert_configurations_tenant", "tenant_id", "is_active"),
         Index("ix_alert_configurations_team", "team_id"),
-        {"extend_existing": True},
     )
 
     config_id = Column(Integer, primary_key=True, index=True, autoincrement=True)

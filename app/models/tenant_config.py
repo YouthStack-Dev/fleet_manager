@@ -29,7 +29,3 @@ class TenantConfig(Base):
 
     # Relationship back to tenant
     tenant = relationship("Tenant", back_populates="config", uselist=False)
-
-    __table_args__ = (
-        {"extend_existing": True}
-    )

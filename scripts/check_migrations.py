@@ -149,7 +149,13 @@ def check_alembic_ini():
 def check_models():
     """Quick check that models can be imported."""
     print("\n🔍 Checking models can be imported...")
-    
+
+    # Settings() requires SECRET_KEY at instantiation time.  This script only
+    # validates that model metadata is importable — it never uses the secret
+    # key.  Set a dummy value so BaseSettings doesn't raise when no .env file
+    # is present (CI pre-install step, local pre-commit hook, etc.).
+    os.environ.setdefault("SECRET_KEY", "check-migrations-dummy-not-used")
+
     try:
         from app.database.session import Base
         from app.models.tenant import Tenant

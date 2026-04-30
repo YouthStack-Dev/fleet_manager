@@ -322,7 +322,8 @@ def seed_teams(db: Session):
     db.commit()
     logger.info("Team seeding completed.")
 
-from app.models.employee import Employee, GenderEnum
+from app.models.employee import Employee
+from app.models.enums import GenderEnum
 import random
 
 def seed_employees(db: Session):
@@ -403,7 +404,8 @@ def seed_employees(db: Session):
     db.commit()
     logger.info("Employee seeding completed.")
 
-from app.models.shift import Shift, ShiftLogTypeEnum, PickupTypeEnum, GenderEnum as ShiftGenderEnum
+from app.models.shift import Shift, ShiftLogTypeEnum, PickupTypeEnum
+from app.models.enums import GenderEnum as ShiftGenderEnum
 from datetime import time
 
 

@@ -25,9 +25,6 @@ class BookingTypeEnum(str, PyEnum):
 
 class Booking(Base):
     __tablename__ = "bookings"
-    __table_args__ = (
-        {"extend_existing": True}
-    )
 
     booking_id = Column(Integer, primary_key=True, index=True)
 
@@ -37,8 +34,8 @@ class Booking(Base):
     employee_code = Column(String(50), nullable=False)
     shift_id = Column(Integer, ForeignKey("shifts.shift_id", ondelete="CASCADE"), nullable=True)
     team_id = Column(Integer, ForeignKey("teams.team_id", ondelete="SET NULL"), nullable=True)  
-    boarding_otp = Column(Integer, nullable=True)  # OTP for boarding verification
-    deboarding_otp = Column(Integer, nullable=True)  # OTP for deboarding verification
+    boarding_otp = Column(Integer, nullable=True)
+    deboarding_otp = Column(Integer, nullable=True)
 
     # Booking details
     booking_date = Column(Date, nullable=False)

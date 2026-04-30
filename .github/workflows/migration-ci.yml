@@ -64,6 +64,9 @@ jobs:
         # Explicit DATABASE_URL prevents app/config.py from ever falling back to the
         # current OS user (which caused "FATAL: role 'root' does not exist" in CI).
         echo "DATABASE_URL=postgresql://fleetadmin:testpassword@localhost:5432/fleet_test_db" >> $GITHUB_ENV
+        # SECRET_KEY is required by Settings() but is not used during migrations.
+        # A dummy value is safe here; the real secret is only needed at runtime.
+        echo "SECRET_KEY=ci-test-secret-key-not-used-in-migrations"                        >> $GITHUB_ENV
     
     - name: Run migration validation
       run: python validate_migrations.py

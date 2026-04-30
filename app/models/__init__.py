@@ -1,7 +1,8 @@
 # Import all models here for easier access
+from app.models.enums import GenderEnum  # shared enum (single source of truth)
 from app.models.admin import Admin
 from app.models.vendor import Vendor
-from app.models.driver import Driver, GenderEnum, VerificationStatusEnum
+from app.models.driver import Driver, VerificationStatusEnum
 from app.models.vehicle import Vehicle
 from app.models.vehicle_type import VehicleType
 from app.models.vendor_user import VendorUser

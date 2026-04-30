@@ -34,7 +34,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from typing import Any
 
-from app.utils.otp_utils import get_required_otp_count
+from app.utils.otp_utils import get_required_otp_count, generate_otp_codes
 
 # Configure logging immediately at module level
 setup_logging(
@@ -704,7 +704,7 @@ async def create_routes(
         logger.info(f"Generated {len(cluster_data)} clusters from {len(bookings)} unrouted bookings")
 
         # ---- Generate optimal route for each cluster ----
-        from app.services.optimal_roiute_generation import generate_optimal_route, generate_drop_route
+        from app.services.optimal_route_generation import generate_optimal_route, generate_drop_route
 
         for cluster in cluster_data:
             if shift_type == "IN":
@@ -1872,7 +1872,6 @@ async def dispatch_otps_and_notifications(
         from app.services.unified_notification_service import UnifiedNotificationService
         from app.services.session_cache import SessionCache
         from app.services.sms_service import SMSService
-        from app.utils.otp_utils import generate_otp_codes
         from app.models.employee import Employee
         from app.models.notification_log import NotificationLog
 
@@ -2464,9 +2463,10 @@ async def resend_route_notifications(
             for e in db.query(Employee).filter(Employee.employee_id.in_(employee_ids)).all()
         }
 
-        # ---- Build notification payload ----
+        # ---- Build notification payload (regenerate fresh OTPs on every resend) ----
         notification_data = []
         skipped = []
+        tenant_config = get_tenant_config_with_cache(db, tenant_id)
 
         for rb in route_bookings:
             booking = bookings_dict.get(rb.booking_id)
@@ -2487,6 +2487,34 @@ async def resend_route_notifications(
             shift_time_str = shift_time.strftime('%H:%M') if shift_time else 'N/A'
             shift_type = get_shift_log_type(shift) if shift else 'IN'
 
+            # Generate fresh OTPs and persist
+            shift_log_type = safe_get_enum_value(shift, "log_type") if shift else "IN"
+            required_otp_count = get_required_otp_count(booking.booking_type, shift_log_type, tenant_config)
+            otp_codes = generate_otp_codes(required_otp_count)
+
+            required_otps = []
+            if shift_log_type == "IN":
+                if tenant_config and tenant_config.login_boarding_otp:
+                    required_otps.append('boarding')
+                if tenant_config and tenant_config.login_deboarding_otp:
+                    required_otps.append('deboarding')
+            elif shift_log_type == "OUT":
+                if tenant_config and tenant_config.logout_boarding_otp:
+                    required_otps.append('boarding')
+                if tenant_config and tenant_config.logout_deboarding_otp:
+                    required_otps.append('deboarding')
+
+            assignments = {
+                otp_type: (otp_codes[i] if i < len(otp_codes) else None)
+                for i, otp_type in enumerate(required_otps)
+            }
+            plain_boarding = assignments.get('boarding')
+            plain_deboarding = assignments.get('deboarding')
+
+            # Persist new plain OTPs
+            booking.boarding_otp = plain_boarding
+            booking.deboarding_otp = plain_deboarding
+
             notification_data.append({
                 "employee_email": employee.email,
                 "employee_phone": employee.phone,
@@ -2497,9 +2525,13 @@ async def resend_route_notifications(
                 "shift_time": shift_time_str,
                 "booking_date": str(booking.booking_date),
                 "estimated_pickup": rb.estimated_pick_up_time,
-                "boarding_otp": booking.boarding_otp,
-                "deboarding_otp": booking.deboarding_otp,
+                "boarding_otp": plain_boarding,
+                "deboarding_otp": plain_deboarding,
             })
+
+        if notification_data:
+            db.commit()
+            logger.info(f"[resend_route_notifications] Fresh OTPs committed for {len(notification_data)} bookings")
 
         if not notification_data:
             raise HTTPException(
@@ -3066,7 +3098,7 @@ async def merge_routes(
 
         # --- Step 7: Generate optimized route ---
         logger.info(f"[MERGE] Step 7: Generating optimized route for {len(bookings)} bookings...")
-        from app.services.optimal_roiute_generation import generate_optimal_route, generate_drop_route
+        from app.services.optimal_route_generation import generate_optimal_route, generate_drop_route
 
         try:
             if shift_type == "IN":
@@ -3459,7 +3491,7 @@ async def update_route(
         logger.info(f"📍 Shift Type: {shift_type}, Shift Time: {shift.shift_time}")
         logger.info(f"📦 Total bookings to process: {len(all_bookings)}")
         
-        from app.services.optimal_roiute_generation import generate_optimal_route, generate_drop_route
+        from app.services.optimal_route_generation import generate_optimal_route, generate_drop_route
         if shift_type == "IN":
             logger.info(f"🏢 PICKUP Route (IN): Optimizing pickups → Office")
             logger.info(f"   Drop point: ({all_bookings[-1]['drop_latitude']}, {all_bookings[-1]['drop_longitude']})")
@@ -3816,7 +3848,7 @@ async def update_route_bookings(
                 bookings.append(booking_details)
 
             # Generate optimal route based on shift type
-            from app.services.optimal_roiute_generation import generate_optimal_route, generate_drop_route
+            from app.services.optimal_route_generation import generate_optimal_route, generate_drop_route
 
             if shift_type == "IN":
                 optimized = generate_optimal_route(
@@ -4151,7 +4183,7 @@ async def create_route_from_bookings(
         # Optimize route if requested
         if create_request.optimize:
             logger.info(f"[CREATE_FROM_BOOKINGS] Starting route optimization for shift_type={shift.log_type}")
-            from app.services.optimal_roiute_generation import generate_optimal_route, generate_drop_route
+            from app.services.optimal_route_generation import generate_optimal_route, generate_drop_route
 
             if shift.log_type == "IN":
                 logger.info(f"[CREATE_FROM_BOOKINGS] Using generate_optimal_route for IN shift")

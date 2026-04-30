@@ -55,6 +55,7 @@ def health_check(db: Session = Depends(get_db)):
     Returns:
     - status: "ok" | "degraded"
     - db: "connected" | "error"
+    - redis: "connected" | "disabled" | "error: ..."
     - migration: current revision string or "error"
     - migrated_to_head: true when all migrations have been applied
     """
@@ -72,6 +73,19 @@ def health_check(db: Session = Depends(get_db)):
     except Exception as exc:
         db_status = f"error: {exc}"
 
+    # ── Redis connectivity ─────────────────────────────────────
+    from app.config import settings as _settings
+    redis_status: str
+    if not _settings.USE_REDIS:
+        redis_status = "disabled"
+    else:
+        try:
+            from app.utils.cache_manager import cache
+            cache.redis_client.ping()
+            redis_status = "connected"
+        except Exception as exc:
+            redis_status = f"error: {exc}"
+
     # ── Migration state ────────────────────────────────────────
     try:
         current_rev = db.execute(
@@ -84,11 +98,18 @@ def health_check(db: Session = Depends(get_db)):
     except Exception as exc:
         current_rev = f"error: {exc}"
 
-    overall = "ok" if db_status == "connected" and migrated_to_head else "degraded"
+    overall = (
+        "ok"
+        if db_status == "connected"
+        and migrated_to_head
+        and redis_status in ("connected", "disabled")
+        else "degraded"
+    )
 
     return {
         "status": overall,
         "db": db_status,
+        "redis": redis_status,
         "migration": {
             "current": current_rev,
             "head": head_rev,

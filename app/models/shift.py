@@ -4,6 +4,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from app.database.session import Base
 from enum import Enum as PyEnum
+from app.models.enums import GenderEnum  # shared enum — do not redefine locally
 
 
 class ShiftLogTypeEnum(str, PyEnum):
@@ -14,12 +15,6 @@ class ShiftLogTypeEnum(str, PyEnum):
 class PickupTypeEnum(str, PyEnum):
     PICKUP = "Pickup"
     NODAL = "Nodal"
-
-
-class GenderEnum(str, PyEnum):
-    MALE = "Male"
-    FEMALE = "Female"
-    OTHER = "Other"
 
 
 class Shift(Base):
@@ -40,7 +35,6 @@ class Shift(Base):
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "shift_code", name="uq_shift_code_per_tenant"),
-        {"extend_existing": True}
     )
 
     # Relationships

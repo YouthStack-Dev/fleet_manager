@@ -100,7 +100,7 @@ async def optimize_routes_async(job_id: str, route_data: dict):
     from app.models.route_management import RouteManagement, RouteManagementBooking
     from app.models.shift import Shift
     from app.services.geodesic import group_rides
-    from app.services.optimal_roiute_generation import generate_optimal_route, generate_drop_route
+    from app.services.optimal_route_generation import generate_optimal_route, generate_drop_route
     from sqlalchemy import func
     import random
 

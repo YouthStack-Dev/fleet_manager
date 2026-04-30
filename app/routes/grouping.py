@@ -173,7 +173,7 @@ async def route_suggestion(
         logger.info(f"Generated {len(cluster_data)} clusters from {len(bookings)} unrouted bookings")
 
         # ---- Generate optimal route for each cluster (optional) ----
-        from app.services.optimal_roiute_generation import generate_optimal_route, generate_drop_route
+        from app.services.optimal_route_generation import generate_optimal_route, generate_drop_route
 
         if shift_type == "IN":
             for cluster in cluster_data:
