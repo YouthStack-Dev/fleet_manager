@@ -22,7 +22,7 @@ from app.schemas.route import RouteWithEstimations, RouteEstimations, RouteManag
 from app.schemas.shift import ShiftResponse
 from app.services.clustering_algorithm import group_rides
 from common_utils.auth.permission_checker import PermissionChecker
-from app.core.logging_config import get_logger, setup_logging
+from app.core.logging_config import get_logger
 from app.utils.response_utils import ResponseWrapper, handle_db_error
 from app.utils.audit_helper import log_audit
 from app.utils.cache_manager import cached, cache_manager, get_tenant_with_cache, get_shift_with_cache, get_cutoff_with_cache, get_tenant_config_with_cache
@@ -35,13 +35,6 @@ from sqlalchemy.exc import SQLAlchemyError
 from typing import Any
 
 from app.utils.otp_utils import get_required_otp_count, generate_otp_codes
-
-# Configure logging immediately at module level
-setup_logging(
-    log_level="DEBUG",
-    force_configure=True,
-    use_colors=True
-)
 
 # Create module logger with explicit name
 logger = get_logger("route_management")
@@ -1066,17 +1059,27 @@ async def get_all_routes(
 
         shifts = {}
 
-        for route in routes:
-            rbs = db.query(RouteManagementBooking).filter(
-                RouteManagementBooking.route_id == route.route_id
-            ).order_by(RouteManagementBooking.order_id).all()
+        route_ids = [route.route_id for route in routes]
+        all_rbs = (
+            db.query(RouteManagementBooking)
+            .filter(RouteManagementBooking.route_id.in_(route_ids))
+            .order_by(RouteManagementBooking.route_id, RouteManagementBooking.order_id)
+            .all()
+        )
+        rbs_by_route = {}
+        for rb in all_rbs:
+            rbs_by_route.setdefault(rb.route_id, []).append(rb)
 
-            booking_ids = [rb.booking_id for rb in rbs]
-            bookings = get_bookings_by_ids(booking_ids, db) if booking_ids else []
+        all_booking_ids = [rb.booking_id for rb in all_rbs]
+        all_bookings = get_bookings_by_ids(all_booking_ids, db) if all_booking_ids else []
+        booking_map = {b["booking_id"]: b for b in all_bookings}
+
+        for route in routes:
+            rbs = rbs_by_route.get(route.route_id, [])
 
             stops = []
             for rb in rbs:
-                b = next((x for x in bookings if x["booking_id"] == rb.booking_id), None)
+                b = booking_map.get(rb.booking_id)
                 if not b: continue
 
                 stops.append({
@@ -1191,7 +1194,7 @@ async def get_all_routes(
         logger.error("[SOLUTION] See docs/ROUTES_ERROR_DEBUG.md for troubleshooting steps")
         logger.error("="*80)
         
-        return handle_db_error(e)
+        raise handle_db_error(e)
 
 @router.get("/unrouted", status_code=status.HTTP_200_OK)
 # @cached(ttl_seconds=120, key_prefix="unrouted")  # Cache for 2 minutes
@@ -1283,7 +1286,7 @@ async def get_unrouted_bookings(
     except HTTPException:
         raise
     except Exception as e:
-        return handle_db_error(e)
+        raise handle_db_error(e)
 
 @router.put("/assign-vendor", status_code=status.HTTP_200_OK)
 async def assign_vendor_to_route(
@@ -1413,7 +1416,7 @@ async def assign_vendor_to_route(
     except Exception as e:
         db.rollback()
         logger.exception("[assign_vendor_to_route] Unexpected error")
-        return handle_db_error(e)
+        raise handle_db_error(e)
 
 
 @router.put("/assign-vendor/bulk", status_code=status.HTTP_200_OK)
@@ -1578,7 +1581,7 @@ async def assign_vendor_to_routes_bulk(
     except Exception as e:
         db.rollback()
         logger.exception("[assign_vendor_to_routes_bulk] Unexpected error")
-        return handle_db_error(e)
+        raise handle_db_error(e)
 
 @router.put("/assign-vehicle", status_code=status.HTTP_200_OK)
 async def assign_vehicle_to_route(
@@ -2868,7 +2871,7 @@ async def get_route_by_id(
     except HTTPException:
         raise
     except Exception as e:
-        return handle_db_error(e)
+        raise handle_db_error(e)
 
 @router.post("/merge")
 async def merge_routes(
@@ -4900,5 +4903,3 @@ async def assign_escort_to_route(
                 details={"error": str(e)},
             ),
         )
-
-

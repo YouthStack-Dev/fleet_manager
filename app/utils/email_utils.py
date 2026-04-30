@@ -366,13 +366,13 @@ def get_admin_emails(db: Session, tenant_id: Optional[str] = None) -> List[str]:
         logger.error(f"Failed to get admin emails: {str(e)}")
         return []
 
-def test_email_service() -> Dict[str, Any]:
+async def test_email_service() -> Dict[str, Any]:
     """Test email service configuration and connectivity"""
     email_service = get_email_service()
     
     return {
         'configured': email_service.is_configured,
-        'connection_test': email_service.test_connection() if email_service.is_configured else False,
+        'connection_test': await email_service.test_connection() if email_service.is_configured else False,
         'stats': email_service.get_email_stats()
     }
 

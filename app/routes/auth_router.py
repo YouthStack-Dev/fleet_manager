@@ -1771,7 +1771,7 @@ async def vendor_user_login(
         tenant = vendor.tenant
         logger.debug(f"Tenant validation successful - ID: {tenant.tenant_id}")
 
-        if not verify_password(hash_password(form_data.password), vendor_user.password):
+        if not verify_password(form_data.password, vendor_user.password):
             logger.warning(
                 f"🔒 Login failed - Invalid password for vendor_user: "
                 f"{vendor_user.vendor_user_id} ({form_data.username})"
@@ -1934,7 +1934,7 @@ async def admin_login(
                 )
             )
         
-        if not verify_password(hash_password(form_data.password), admin.password):   
+        if not verify_password(form_data.password, admin.password):   
             logger.warning(f"Admin login failed - Invalid password for admin: {admin.admin_id} ({form_data.username})")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -3279,11 +3279,10 @@ async def driver_refresh_token(
         # PERMANENT FIX: Validate password against ALL drivers
         # and only return accounts where password matches
         # =====================================================
-        hashed_input_password = hash_password(password)
         matching_drivers = []
         
         for driver in drivers:
-            if verify_password(hashed_input_password, driver.password):
+            if verify_password(password, driver.password):
                 matching_drivers.append(driver)
         
         if not matching_drivers:
@@ -3365,7 +3364,7 @@ async def escort_login(
 
     Request body:
       - username  : escort's email address OR phone number
-      - password  : plain-text password (SHA-256 hashed before comparing)
+      - password  : plain-text password (verified against stored password hash)
       - tenant_id : the tenant the escort belongs to
 
     On success returns:
@@ -3438,8 +3437,8 @@ async def escort_login(
                 ),
             )
 
-        # Verify password (stored value is sha256(plain_text))
-        if not verify_password(hash_password(form_data.password), escort.password):
+        # Verify password against stored hash (bcrypt preferred; legacy SHA-256 supported)
+        if not verify_password(form_data.password, escort.password):
             logger.warning(
                 f"Escort login failed — wrong password for escort_id={escort.escort_id}"
             )
