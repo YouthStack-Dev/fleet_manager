@@ -300,7 +300,7 @@ async def change_escort_password(
         )
 
     # Verify current password
-    if not verify_password(hash_password(body.current_password), escort.password):
+    if not verify_password(body.current_password, escort.password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ResponseWrapper.error(

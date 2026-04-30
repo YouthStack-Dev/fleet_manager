@@ -583,36 +583,40 @@ async def get_bookings_analytics(
             daily_data[date_str]["booking_status"][status_str] = count
 
         # --- Daily Vendor and Driver Assignment Breakdown ---
-        for date_str in daily_data.keys():
-            current_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-            
-            # Vendor assigned count for this date
-            vendor_count = (
-                db.query(func.count(func.distinct(Booking.booking_id)))
-                .join(RouteManagementBooking, Booking.booking_id == RouteManagementBooking.booking_id)
-                .join(RouteManagement, RouteManagementBooking.route_id == RouteManagement.route_id)
-                .filter(
-                    RouteManagement.tenant_id == tenant_id,
-                    RouteManagement.assigned_vendor_id.isnot(None),
-                    Booking.booking_date == current_date
-                )
-                .scalar() or 0
+        assignment_daily_breakdown = (
+            db.query(
+                Booking.booking_date,
+                func.count(
+                    func.distinct(
+                        Booking.booking_id
+                    ).filter(RouteManagement.assigned_vendor_id.isnot(None))
+                ).label("vendor_assigned_count"),
+                func.count(
+                    func.distinct(
+                        Booking.booking_id
+                    ).filter(RouteManagement.assigned_driver_id.isnot(None))
+                ).label("driver_assigned_count"),
             )
-            daily_data[date_str]["vendor_assigned"] = vendor_count
-            
-            # Driver assigned count for this date
-            driver_count = (
-                db.query(func.count(func.distinct(Booking.booking_id)))
-                .join(RouteManagementBooking, Booking.booking_id == RouteManagementBooking.booking_id)
-                .join(RouteManagement, RouteManagementBooking.route_id == RouteManagement.route_id)
-                .filter(
-                    RouteManagement.tenant_id == tenant_id,
-                    RouteManagement.assigned_driver_id.isnot(None),
-                    Booking.booking_date == current_date
-                )
-                .scalar() or 0
+            .join(RouteManagementBooking, Booking.booking_id == RouteManagementBooking.booking_id)
+            .join(RouteManagement, RouteManagementBooking.route_id == RouteManagement.route_id)
+            .filter(
+                RouteManagement.tenant_id == tenant_id,
+                Booking.booking_date >= start_date,
+                Booking.booking_date <= end_date,
             )
-            daily_data[date_str]["driver_assigned"] = driver_count
+            .group_by(Booking.booking_date)
+            .all()
+        )
+        for booking_date, vendor_count, driver_count in assignment_daily_breakdown:
+            date_str = booking_date.strftime('%Y-%m-%d')
+            if date_str not in daily_data:
+                daily_data[date_str] = {
+                    "booking_status": {},
+                    "vendor_assigned": 0,
+                    "driver_assigned": 0,
+                }
+            daily_data[date_str]["vendor_assigned"] = vendor_count or 0
+            daily_data[date_str]["driver_assigned"] = driver_count or 0
 
         # --- Completion Rate ---
         completed_count = status_counts.get('Completed', 0)
