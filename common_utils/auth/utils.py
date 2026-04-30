@@ -1,8 +1,11 @@
 from datetime import datetime, timedelta, timezone
 import hashlib
+import hmac
+import re
 from typing import Optional, Dict, List
 import jwt
 from fastapi import HTTPException, status
+from passlib.context import CryptContext
 from app.config import settings
 
 # Configuration - use centralized settings
@@ -10,6 +13,9 @@ SECRET_KEY = settings.SECRET_KEY
 ALGORITHM = settings.ALGORITHM
 ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
 REFRESH_TOKEN_EXPIRE_DAYS = 7
+
+_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+_sha256_hex_pattern = re.compile(r"^[a-f0-9]{64}$")
 
 def create_access_token(
     user_id: str,
@@ -79,8 +85,28 @@ def verify_token(token: str) -> Dict:
         )
 
 def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode('utf-8')).hexdigest()
+    return _pwd_context.hash(password)
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    result = plain_password == hashed_password
-    return result
+    if not plain_password or not hashed_password:
+        return False
+
+    # Modern hashing: bcrypt
+    if hashed_password.startswith("$2"):
+        try:
+            return _pwd_context.verify(plain_password, hashed_password)
+        except Exception:
+            return False
+
+    # Legacy hashing: SHA-256 hex digest
+    if _sha256_hex_pattern.fullmatch(hashed_password):
+        # Backward compatibility for older call-sites that still pass sha256(input)
+        if hmac.compare_digest(plain_password, hashed_password):
+            return True
+        return hmac.compare_digest(
+            hashlib.sha256(plain_password.encode("utf-8")).hexdigest(),
+            hashed_password,
+        )
+
+    # Final fallback for unexpected legacy/plaintext storage
+    return hmac.compare_digest(plain_password, hashed_password)

@@ -27,7 +27,7 @@ logger = logging.getLogger("uvicorn")
 
 # Simple in-memory cache for permissions
 permission_cache = {}
-permission_cache_ttl = 60*60*24  # 5 minutes
+permission_cache_ttl = 60 * 5  # 5 minutes
 
 # Create a security instance
 security = HTTPBearer()
@@ -41,7 +41,7 @@ OAUTH2_URL = settings.OAUTH2_URL
 REDIS_HOST = settings.REDIS_HOST
 REDIS_PORT = settings.REDIS_PORT
 REDIS_DB = settings.REDIS_DB
-REDIS_PASSWORD = settings.REDIS_PASSWORD or "redispassword"
+REDIS_PASSWORD = settings.REDIS_PASSWORD
 USE_REDIS = settings.USE_REDIS
 
 
@@ -713,3 +713,8 @@ def validate_bearer_token(use_cache: bool = True):
             )
             
     return get_token_data
+
+
+# Validate critical Redis settings when Redis usage is enabled.
+if USE_REDIS and not REDIS_PASSWORD:
+    raise RuntimeError("USE_REDIS is enabled but REDIS_PASSWORD is not configured")

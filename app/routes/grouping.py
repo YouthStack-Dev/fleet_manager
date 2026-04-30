@@ -286,14 +286,4 @@ async def cluster_custom_bookings(
     except HTTPException:
         raise
     except Exception as e:
-        return handle_db_error(e)
-    except Exception as e:
-        logger.error(f"Error clustering custom bookings: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=ResponseWrapper.error(
-                message="Error clustering custom bookings",
-                error_code="CUSTOM_CLUSTERING_ERROR",
-                details={"error": str(e)}
-            )
-        )
+        raise handle_db_error(e)

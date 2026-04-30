@@ -1,6 +1,5 @@
 import aiosmtplib
 import ssl
-import time
 import asyncio
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -316,13 +315,13 @@ class EmailService:
             )
         }
     
-    def test_connection(self) -> bool:
+    async def test_connection(self) -> bool:
         """Test SMTP connection"""
         if not self.is_configured:
             return False
-        
+
         try:
-            with self._create_smtp_connection():
+            async with self._create_smtp_connection():
                 logger.info("SMTP connection test successful")
                 return True
         except Exception as e:
