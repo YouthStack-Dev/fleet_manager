@@ -759,8 +759,8 @@ async def employee_login(
 @limiter.limit("5/minute")
 async def request_employee_otp(
     request: Request,
-    form_data: OTPRequestSchema = Body(...),
     background_tasks: BackgroundTasks,
+    form_data: OTPRequestSchema = Body(...),
     db: Session = Depends(get_db)
 ):
     """
@@ -1690,9 +1690,9 @@ async def switch_employee_tenant(
             user_type="employee",
         )
         refresh_token = create_refresh_token(
-            user_id=str(employee.employee_id),
+            user_id=str(target_employee.employee_id),
             user_type="employee",
-            custom_claims={"tenant_id": str(employee.tenant_id)},
+            custom_claims={"tenant_id": str(target_employee.tenant_id)},
         )
         
         tenant_details = {

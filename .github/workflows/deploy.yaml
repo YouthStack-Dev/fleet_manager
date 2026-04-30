@@ -14,12 +14,12 @@ on:
       remove_images:
         description: "Remove Docker images before deployment"
         required: false
-        default: "true"
+        default: true
         type: boolean
       remove_volumes:
         description: "Remove Docker volumes (will reset database)"
         required: false
-        default: "false"
+        default: false
         type: boolean
 
 env:
@@ -107,22 +107,36 @@ jobs:
               cat <<EOF > ~/service.staging.env
             FIREBASE_KEY_PATH=/app/firebase/firebase_key.json
             FIREBASE_DATABASE_URL=https://ets-1-ccb71-default-rtdb.firebaseio.com
-            DATABASE_URL=postgresql://fleetstaging:stagingpass@postgres_staging:5432/fleet_db_staging
+            DATABASE_URL=postgresql://fleetstaging:${{ secrets.STAGING_POSTGRES_PASSWORD || 'stagingpass' }}@postgres_staging:5432/fleet_db_staging
+            STAGING_POSTGRES_PASSWORD=${{ secrets.STAGING_POSTGRES_PASSWORD || 'stagingpass' }}
+            POSTGRES_PASSWORD=${{ secrets.STAGING_POSTGRES_PASSWORD || 'stagingpass' }}
             REDIS_HOST=redis_staging
             REDIS_PORT=6379
             REDIS_DB=0
-            REDIS_PASSWORD=redispassword
+            REDIS_PASSWORD=${{ secrets.STAGING_REDIS_PASSWORD || 'redispassword' }}
             USE_REDIS=1
+            SECRET_KEY=${{ secrets.SECRET_KEY }}
             TOKEN_EXPIRY_HOURS=${{ secrets.TOKEN_EXPIRY_HOURS || '1' }}
             TWILIO_ENABLED=${{ secrets.TWILIO_ENABLED || 'false' }}
             TWILIO_ACCOUNT_SID=${{ secrets.TWILIO_ACCOUNT_SID }}
             TWILIO_AUTH_TOKEN=${{ secrets.TWILIO_AUTH_TOKEN }}
             TWILIO_PHONE_NUMBER=${{ secrets.TWILIO_PHONE_NUMBER }}
             TWILIO_VERIFY_SERVICE_SID=${{ secrets.TWILIO_VERIFY_SERVICE_SID }}
+            EMAIL_ENABLED=true
+            SMTP_SERVER=smtp.gmail.com
+            SMTP_PORT=587
+            SMTP_USE_TLS=true
+            SMTP_USE_SSL=false
+            SMTP_USERNAME=${{ secrets.SMTP_USERNAME }}
+            SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
+            SENDER_EMAIL=${{ secrets.SENDER_EMAIL }}
+            SENDER_NAME=Fleet Manager Admin
+            SUPPORT_EMAIL=${{ secrets.SUPPORT_EMAIL }}
             ENV=staging
             STORAGE_TYPE=filesystem
             PROD_SERVER_STORAGE_PATH=/var/lib/fleet/staging-storage
             MAX_FILE_SIZE_MB=10
+            RUN_MIGRATIONS_ON_STARTUP=false
             EOF
               echo "✅ service.staging.env written"
             else
@@ -130,22 +144,35 @@ jobs:
               cat <<EOF > ~/service.prod.env
             FIREBASE_KEY_PATH=/app/firebase/firebase_key.json
             FIREBASE_DATABASE_URL=https://ets-1-ccb71-default-rtdb.firebaseio.com
-            DATABASE_URL=postgresql://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@host.docker.internal:5432/fleet_db
+            DATABASE_URL=postgresql://fleetadmin:${{ secrets.POSTGRES_PASSWORD }}@host.docker.internal:5432/fleet_db
+            POSTGRES_USER=fleetadmin
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
             REDIS_HOST=redis_server
             REDIS_PORT=6379
             REDIS_DB=0
             REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
             USE_REDIS=1
+            SECRET_KEY=${{ secrets.SECRET_KEY }}
             TOKEN_EXPIRY_HOURS=${{ secrets.TOKEN_EXPIRY_HOURS || '1' }}
             TWILIO_ENABLED=${{ secrets.TWILIO_ENABLED || 'false' }}
             TWILIO_ACCOUNT_SID=${{ secrets.TWILIO_ACCOUNT_SID }}
             TWILIO_AUTH_TOKEN=${{ secrets.TWILIO_AUTH_TOKEN }}
             TWILIO_PHONE_NUMBER=${{ secrets.TWILIO_PHONE_NUMBER }}
             TWILIO_VERIFY_SERVICE_SID=${{ secrets.TWILIO_VERIFY_SERVICE_SID }}
+            EMAIL_ENABLED=true
+            SMTP_SERVER=smtp.gmail.com
+            SMTP_PORT=587
+            SMTP_USE_TLS=true
+            SMTP_USE_SSL=false
+            SMTP_USERNAME=${{ secrets.SMTP_USERNAME }}
+            SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
+            SENDER_EMAIL=${{ secrets.SENDER_EMAIL }}
+            SENDER_NAME=Fleet Manager Admin
+            SUPPORT_EMAIL=${{ secrets.SUPPORT_EMAIL }}
             ENV=production
-            STORAGE_TYPE=filesystem
-            PROD_SERVER_STORAGE_PATH=/var/lib/fleet/storage
-            MAX_FILE_SIZE_MB=10
+            STORAGE_TYPE=${{ secrets.STORAGE_TYPE || 'filesystem' }}
+            PROD_SERVER_STORAGE_PATH=${{ secrets.PROD_SERVER_STORAGE_PATH || '/var/lib/fleet/storage' }}
+            MAX_FILE_SIZE_MB=${{ secrets.MAX_FILE_SIZE_MB || '10' }}
             EOF
               echo "✅ service.prod.env written"
             fi
@@ -164,7 +191,7 @@ jobs:
             fi
 
             # ── Stop running containers (with orphan cleanup) ────────────────
-            docker compose -f ~/docker-compose_${{ env.ENV }}.yaml down --remove-orphans 2>/dev/null || true
+            docker compose --env-file ~/service.${{ env.ENV }}.env -f ~/docker-compose_${{ env.ENV }}.yaml down --remove-orphans 2>/dev/null || true
 
             # ── Force-remove any containers left over from a failed run ──────
             # This handles the case where a previous deploy failed mid-way and
@@ -181,7 +208,7 @@ jobs:
             # ── Optional volume / image cleanup ─────────────────────────────
             if [ "${{ github.event.inputs.remove_volumes }}" = "true" ]; then
               echo "Removing volumes (database will be reset)..."
-              docker compose -f ~/docker-compose_${{ env.ENV }}.yaml down -v
+              docker compose --env-file ~/service.${{ env.ENV }}.env -f ~/docker-compose_${{ env.ENV }}.yaml down -v
               docker volume prune -f
             fi
 
@@ -194,7 +221,7 @@ jobs:
             docker pull dheerajkumarp/fleet_service_manager:${{ env.IMAGE_TAG }}
 
             # ── Bring stack up ───────────────────────────────────────────────
-            docker compose -f ~/docker-compose_${{ env.ENV }}.yaml up -d
+            docker compose --env-file ~/service.${{ env.ENV }}.env -f ~/docker-compose_${{ env.ENV }}.yaml up -d
 
             echo "Waiting for containers to be ready..."
             sleep 10
@@ -204,7 +231,7 @@ jobs:
             sleep 5
             docker exec ${{ env.CONTAINER_NAME }} python migrate.py current || {
               echo "❌ Could not verify migration state. Container logs:"
-              docker compose -f ~/docker-compose_${{ env.ENV }}.yaml logs ${{ env.CONTAINER_NAME }}
+            docker compose --env-file ~/service.${{ env.ENV }}.env -f ~/docker-compose_${{ env.ENV }}.yaml logs ${{ env.CONTAINER_NAME }}
               exit 1
             }
 

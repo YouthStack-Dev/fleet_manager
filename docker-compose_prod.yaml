@@ -8,13 +8,15 @@ services:
     restart: always
     ports:
       - "6379:6379"
-    command: redis-server --requirepass redispassword --appendonly yes
+    # Password is sourced from the shell environment (exported by deploy.yaml
+    # via `--env-file service.prod.env` before `docker compose up`).
+    command: redis-server --requirepass ${REDIS_PASSWORD} --appendonly yes
     volumes:
       - redis_data:/data
     networks:
       - fleet-network
     healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "--no-auth-warning", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
