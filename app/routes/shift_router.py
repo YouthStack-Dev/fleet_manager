@@ -320,7 +320,8 @@ def read_shift(
 
         # ---- Employee must match their tenant ----
         if user_type == "employee":
-            if not token_tenant_id or db_shift.tenant_id != token_tenant_id:
+            shift_tenant_id = db_shift.get("tenant_id") if isinstance(db_shift, dict) else db_shift.tenant_id
+            if not token_tenant_id or shift_tenant_id != token_tenant_id:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=ResponseWrapper.error(
@@ -334,11 +335,11 @@ def read_shift(
 
         logger.info(
             f"Shift {shift_id} fetched by user {user_data.get('user_id')} ({user_type}), "
-            f"tenant {db_shift.tenant_id}"
+            f"tenant {db_shift.get('tenant_id') if isinstance(db_shift, dict) else db_shift.tenant_id}"
         )
 
         return ResponseWrapper.success(
-            data=ShiftResponse.model_validate(db_shift, from_attributes=True),
+            data=ShiftResponse.model_validate(db_shift),
             message="Shift fetched successfully"
         )
 

@@ -458,19 +458,19 @@ def get_shift_with_cache(db, tenant_id: str, shift_id: int):
         
         logger.info(f"✅ [FALLBACK - STEP 2] DB query successful | tenant_id={tenant_id}, shift_id={shift_id}")
         logger.info(f"🔄 [FALLBACK - STEP 3] Attempting to cache for recovery... | tenant_id={tenant_id}, shift_id={shift_id}")
+        shift_dict = {
+            "shift_id": shift.shift_id,
+            "shift_time": shift.shift_time.strftime("%H:%M:%S") if shift.shift_time else None,
+            "log_type": shift.log_type.value if shift.log_type else None,
+            "tenant_id": shift.tenant_id
+        }
         try:
-            shift_dict = {
-                "shift_id": shift.shift_id,
-                "shift_time": shift.shift_time.strftime("%H:%M:%S") if shift.shift_time else None,
-                "log_type": shift.log_type.value if shift.log_type else None,
-                "tenant_id": shift.tenant_id
-            }
             cache_shift(shift_id, tenant_id, shift_dict)
             logger.info(f"✅ [FALLBACK COMPLETE] Successfully cached after recovery | tenant_id={tenant_id}, shift_id={shift_id}")
-            return shift_dict
         except Exception as cache_retry_error:
             logger.warning(f"⚠️ [FALLBACK - CACHE FAILED] Could not cache after recovery: {str(cache_retry_error)} | tenant_id={tenant_id}, shift_id={shift_id}")
-            return None
+
+        return shift_dict
 
 def get_cutoff_with_cache(db, tenant_id: str):
     """
