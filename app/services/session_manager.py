@@ -2,10 +2,11 @@
 Session Manager - Unified session lifecycle management
 Enforces single active session per user per platform
 """
+import sqlalchemy as sa
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from app.models.user_session import UserSession
 from app.services.session_cache import SessionCache
 from app.core.logging_config import get_logger
@@ -106,7 +107,7 @@ class SessionManager:
                 old_token = old_session.fcm_token[:20] if old_session.fcm_token else "None"
                 old_session.is_active = False
                 old_session.fcm_token = None  # Clear token on logout for cleanliness
-                old_session.updated_at = datetime.utcnow()
+                old_session.updated_at = datetime.now(timezone.utc)
                 logger.info(
                     f"[session_manager] Deactivated old session: "
                     f"session_id={old_session.session_id}, token={old_token}..."
@@ -130,8 +131,8 @@ class SessionManager:
                 ip_address=device_info.get("ip_address"),
                 user_agent=device_info.get("user_agent"),
                 is_active=True,
-                last_activity_at=datetime.utcnow(),
-                expires_at=datetime.utcnow() + timedelta(days=30)
+                last_activity_at=datetime.now(timezone.utc),
+                expires_at=datetime.now(timezone.utc) + timedelta(days=30)
             )
             
             self.db.add(new_session)
@@ -284,7 +285,7 @@ class SessionManager:
             session = self.db.query(UserSession).filter_by(session_id=session_id).first()
             
             if session:
-                session.last_activity_at = datetime.utcnow()
+                session.last_activity_at = datetime.now(timezone.utc)
                 self.db.commit()
                 
                 logger.debug(f"[session_manager] Updated last_activity: session_id={session_id}")
@@ -346,8 +347,8 @@ class SessionManager:
             for session in sessions:
                 session.is_active = False
                 session.fcm_token = None  # Clear token on logout
-                session.updated_at = datetime.utcnow()
-                
+                session.updated_at = datetime.now(timezone.utc)
+
                 logger.info(
                     f"[session_manager] Logged out session: "
                     f"session_id={session.session_id}, platform={session.platform}"
@@ -386,7 +387,7 @@ class SessionManager:
             Number of sessions deactivated
         """
         try:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             
             # Find expired sessions
             expired_sessions = self.db.query(UserSession).filter(
@@ -475,5 +476,3 @@ class SessionManager:
             }
 
 
-# Import sqlalchemy here to avoid circular import
-import sqlalchemy as sa

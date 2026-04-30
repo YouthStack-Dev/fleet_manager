@@ -2,6 +2,7 @@
 OTP (One-Time Password) utility functions for Fleet Manager
 """
 
+import secrets
 from datetime import datetime, time
 from typing import List, Optional
 from sqlalchemy.orm import Session
@@ -40,7 +41,7 @@ def get_required_otp_count(booking_type: str, shift_log_type: str, tenant_config
 
 def generate_otp_codes(count: int) -> list:
     """
-    Generate the specified number of 4-digit OTP codes.
+    Generate the specified number of cryptographically-secure 4-digit OTP codes.
 
     Args:
         count: Number of OTP codes to generate
@@ -48,8 +49,7 @@ def generate_otp_codes(count: int) -> list:
     Returns:
         List of OTP codes (integers)
     """
-    import random
-    return [random.randint(1000, 9999) for _ in range(count)]
+    return [secrets.randbelow(9000) + 1000 for _ in range(count)]
 
 
 def is_time_in_escort_range(check_time: time, start_time: time, end_time: time) -> bool:
@@ -88,7 +88,8 @@ def route_requires_escort(db: Session, route_id: int, tenant_id: str) -> bool:
     from app.models.tenant import Tenant
     from app.models.route_management import RouteManagement, RouteManagementBooking
     from app.models.booking import Booking
-    from app.models.employee import Employee, GenderEnum
+    from app.models.employee import Employee
+    from app.models.enums import GenderEnum
 
     try:
         # Get tenant escort configuration using cache-first helper

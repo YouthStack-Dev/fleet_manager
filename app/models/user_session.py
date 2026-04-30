@@ -85,8 +85,6 @@ class UserSession(Base):
         # It enforces: UNIQUE (user_type, user_id, platform) WHERE is_active = TRUE
         # This allows multiple inactive sessions (history) but only ONE active session
         # SQLAlchemy's UniqueConstraint doesn't support partial indexes, so we use raw SQL in migration
-        
-        {"extend_existing": True}
     )
     
     def __repr__(self):

@@ -4,8 +4,6 @@ from app.database.session import Base
 
 class WeekoffConfig(Base):
     __tablename__ = "weekoff_configs"
-    __table_args__ = {'extend_existing': True}
-
     weekoff_id = Column(Integer, primary_key=True, index=True)
     employee_id = Column(Integer, ForeignKey("employees.employee_id", ondelete="CASCADE"), unique=True, nullable=False)
     monday = Column(Boolean, default=False, nullable=False)

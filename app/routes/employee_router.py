@@ -1307,6 +1307,14 @@ def update_employee(
         db.commit()
         db.refresh(db_employee)
 
+        # Invalidate permissions cache whenever any field changes (role, status, etc.)
+        # so the next token-refresh returns fresh permissions.
+        try:
+            from app.utils.cache_manager import invalidate_permissions
+            invalidate_permissions(employee_id, db_employee.tenant_id)
+        except Exception as cache_err:
+            logger.warning("Failed to invalidate permissions cache for employee %s: %s", employee_id, cache_err)
+
         # 🔍 Capture new values after update
         new_values = {}
         for key in update_data.keys():

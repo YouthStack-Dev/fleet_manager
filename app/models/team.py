@@ -16,7 +16,6 @@ class Team(Base):
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "name", name="uq_team_name_per_tenant"),
-        {'extend_existing': True}  # keep as dict in the same tuple
     )
 
     # Relationships

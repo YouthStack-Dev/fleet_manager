@@ -20,11 +20,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import api_router
 from app.config import settings
 from app.core.logging_config import get_logger, setup_logging
-from app.middleware import ErrorTrackingMiddleware, RequestTrackingMiddleware
+from app.middleware import ErrorTrackingMiddleware, MetricsAuthMiddleware, RequestTrackingMiddleware
 from app.middleware.url_validation import URLValidationMiddleware
 
 # ── Prometheus ─────────────────────────────────────────────────
 from prometheus_fastapi_instrumentator import Instrumentator
+
+# ── Rate limiting ──────────────────────────────────────────────
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from app.core.limiter import limiter
 
 
 # ──────────────────────────────────────────────────────────────
@@ -32,7 +37,13 @@ from prometheus_fastapi_instrumentator import Instrumentator
 # ──────────────────────────────────────────────────────────────
 setup_logging(force_configure=True)
 logger = get_logger(__name__)
-logger.info("🚀 Fleet Manager starting — env: %s", settings)
+logger.info(
+    "Fleet Manager starting — app=%s version=%s env=%s debug=%s",
+    settings.APP_NAME,
+    settings.APP_VERSION,
+    settings.ENV,
+    settings.DEBUG,
+)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -75,13 +86,16 @@ async def lifespan(app: FastAPI):
     # restored *after* uvicorn has finished its own log setup, so every
     # logger.info/debug/warning call at request-time actually reaches stdout.
     setup_logging(force_configure=True)
-    logger.info("🌟 Application starting up…")
-    run_migrations()
-    # Alembic's fileConfig() call inside migrations resets Python's logging config
-    # (disable_existing_loggers=True by default), wiping all our handlers and
-    # disabling every pre-existing logger.  Restore our config immediately after.
-    setup_logging(force_configure=True)
-    logger.info("✅ Logging restored after migrations")
+    logger.info("Application starting up")
+    if settings.RUN_MIGRATIONS_ON_STARTUP:
+        run_migrations()
+        # Alembic's fileConfig() call inside migrations resets Python's logging config
+        # (disable_existing_loggers=True by default), wiping all our handlers and
+        # disabling every pre-existing logger.  Restore our config immediately after.
+        setup_logging(force_configure=True)
+        logger.info("Logging restored after migrations")
+    else:
+        logger.info("RUN_MIGRATIONS_ON_STARTUP=false — skipping inline migration (init container handles this)")
 
     # Database monitoring disabled - uncomment to re-enable
     # from app.database.session import engine
@@ -105,6 +119,13 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# ──────────────────────────────────────────────────────────────
+# Rate limiter — backed by Redis when available, otherwise in-memory
+# ──────────────────────────────────────────────────────────────
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+logger.info("✅ Rate limiter initialised")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -133,7 +154,8 @@ logger.info("✅ Prometheus metrics enabled at /metrics")
 app.add_middleware(URLValidationMiddleware)
 app.add_middleware(RequestTrackingMiddleware)
 app.add_middleware(ErrorTrackingMiddleware)
-logger.info("✅ Monitoring middleware registered (URL → Request → Error)")
+app.add_middleware(MetricsAuthMiddleware)   # outermost: guards /metrics before any inner handler
+logger.info("✅ Monitoring middleware registered (URL → Request → Error → MetricsAuth)")
 
 _cors_origins: list = os.getenv("CORS_ORIGINS", "*").split(",")
 if _cors_origins == ["*"]:

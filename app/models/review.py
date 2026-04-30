@@ -56,8 +56,6 @@ class RideReview(Base):
         CheckConstraint("overall_rating IS NULL OR (overall_rating >= 1 AND overall_rating <= 5)", name="ck_overall_rating"),
         CheckConstraint("driver_rating  IS NULL OR (driver_rating  >= 1 AND driver_rating  <= 5)", name="ck_driver_rating"),
         CheckConstraint("vehicle_rating IS NULL OR (vehicle_rating >= 1 AND vehicle_rating <= 5)", name="ck_vehicle_rating"),
-
-        {"extend_existing": True},
     )
 
     # ── Primary key ────────────────────────────────────────────
@@ -144,7 +142,6 @@ class ReviewTag(Base):
     """
 
     __tablename__ = "review_tags"
-    __table_args__ = {"extend_existing": True}
 
     tag_id        = Column(Integer, primary_key=True, autoincrement=True, index=True)
     # NULL → global tag available to all tenants

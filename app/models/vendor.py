@@ -23,7 +23,6 @@ class Vendor(Base):
         UniqueConstraint("tenant_id", "vendor_code", name="uq_vendor_code_per_tenant"),
         UniqueConstraint("tenant_id", "email", name="uq_vendor_email_per_tenant"),  # prevent duplicate vendor email within tenant
         UniqueConstraint("tenant_id", "phone", name="uq_vendor_phone_per_tenant"),  # prevent duplicate vendor phone within tenant
-        {"extend_existing": True},
     )
 
     # ✅ Backref to Tenant

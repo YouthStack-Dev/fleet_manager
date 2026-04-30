@@ -20,7 +20,6 @@ class RouteManagement(Base):
     __tablename__ = "route_management"
     __table_args__ = (
         Index("ix_route_management_tenant_status", "tenant_id", "status"),
-        {"extend_existing": True},
     )
 
     route_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
@@ -58,7 +57,6 @@ class RouteManagementBooking(Base):
     __tablename__ = "route_management_bookings"
     __table_args__ = (
         UniqueConstraint("route_id", "booking_id", name="uq_route_management_booking_unique"),
-        {"extend_existing": True},
     )
 
     id = Column(Integer, primary_key=True, index=True)

@@ -5,8 +5,6 @@ from sqlalchemy.orm import relationship
 
 class Tenant(Base):
     __tablename__ = "tenants"
-    __table_args__ = {'extend_existing': True}
-
     tenant_id = Column(String(50), primary_key=True)
     name = Column(String(150), unique=True, nullable=False)
     address = Column(String(255))

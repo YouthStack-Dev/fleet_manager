@@ -44,6 +44,9 @@ psutil==6.0.0
 prometheus-client>=0.19.0
 prometheus-fastapi-instrumentator>=6.1.0
 
+# Rate limiting
+slowapi==0.1.9
+
 # fsspec with optional cloud storage backends
 # s3 - for AWS S3 and S3-compatible storage
 # gcs - for Google Cloud Storage  
