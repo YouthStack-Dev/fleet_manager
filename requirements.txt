@@ -10,7 +10,9 @@ python-dotenv==1.0.1
 alembic==1.13.1
 pydantic-settings==2.1.0
 python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
+# passlib removed: we use bcrypt directly to avoid the __about__ AttributeError
+# with bcrypt>=4.x and the 72-byte password limit causing unhandled 500s.
+bcrypt==4.0.1
 python-multipart==0.0.9
 email-validator==2.1.0
 aiosmtplib==3.0.1
