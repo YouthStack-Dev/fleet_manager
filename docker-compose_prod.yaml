@@ -65,6 +65,8 @@ services:
     depends_on:
       redis_server:
         condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - fleet-network
     restart: "no"
