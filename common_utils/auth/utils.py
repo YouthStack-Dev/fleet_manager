@@ -3,9 +3,9 @@ import hashlib
 import hmac
 import re
 from typing import Optional, Dict, List
+import bcrypt as _bcrypt
 import jwt
 from fastapi import HTTPException, status
-from passlib.context import CryptContext
 from app.config import settings
 
 # Configuration - use centralized settings
@@ -14,7 +14,9 @@ ALGORITHM = settings.ALGORITHM
 ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
-_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# bcrypt hard limit: passwords longer than 72 bytes are silently truncated by
+# the algorithm, which is a security hazard. We reject them instead.
+_BCRYPT_MAX_BYTES = 72
 _sha256_hex_pattern = re.compile(r"^[a-f0-9]{64}$")
 
 def create_access_token(
@@ -85,16 +87,46 @@ def verify_token(token: str) -> Dict:
         )
 
 def hash_password(password: str) -> str:
-    return _pwd_context.hash(password)
+    """Hash a plaintext password using bcrypt directly (no passlib).
+
+    Raises:
+        HTTPException 422 if the UTF-8 encoded password exceeds bcrypt's
+        72-byte hard limit.  The caller receives a clear validation error
+        instead of an opaque 500.
+    """
+    encoded = password.encode("utf-8")
+    if len(encoded) > _BCRYPT_MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "success": False,
+                "message": (
+                    f"Password is too long. Maximum allowed length is "
+                    f"{_BCRYPT_MAX_BYTES} bytes; the supplied password is "
+                    f"{len(encoded)} bytes. Please use a shorter password."
+                ),
+                "error_code": "PASSWORD_TOO_LONG",
+                "details": {
+                    "max_bytes": _BCRYPT_MAX_BYTES,
+                    "provided_bytes": len(encoded),
+                },
+            },
+        )
+    hashed = _bcrypt.hashpw(encoded, _bcrypt.gensalt())
+    return hashed.decode("utf-8")
+
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     if not plain_password or not hashed_password:
         return False
 
-    # Modern hashing: bcrypt
+    # Modern hashing: bcrypt (handles $2a$, $2b$, $2y$ prefixes)
     if hashed_password.startswith("$2"):
         try:
-            return _pwd_context.verify(plain_password, hashed_password)
+            return _bcrypt.checkpw(
+                plain_password.encode("utf-8"),
+                hashed_password.encode("utf-8"),
+            )
         except Exception:
             return False
 
