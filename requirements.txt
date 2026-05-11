@@ -35,10 +35,15 @@ geopy==2.4.1
 scikit-learn==1.4.0
 openpyxl==3.1.2
 
-# Testing dependencies
+# ── Testing dependencies ──────────────────────────────────────────────────────
 pytest>=7.4.0
 pytest-cov>=4.1.0
 pytest-asyncio>=0.21.0
+pytest-timeout>=2.2.0          # per-test wall-clock timeout
+pytest-xdist>=3.5.0            # parallel test execution (-n auto)
+faker>=24.0.0                  # realistic test-data generation
+factory-boy>=3.3.0             # fixture factories backed by SQLAlchemy
+locust>=2.24.0                 # HTTP load / performance testing
 
 psutil==6.0.0
 
