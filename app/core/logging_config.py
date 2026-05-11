@@ -113,7 +113,7 @@ class JsonFormatter(logging.Formatter):
       added via ``logger.info("msg", extra={"key": "value"})``.
 
     Usage:
-        Only activated when ENV == "production" inside setup_logging().
+        Only activated when LOG_FORMAT=json env var is set inside setup_logging().
     """
 
     # Standard LogRecord *instance* attributes (set in LogRecord.__init__ and
@@ -213,9 +213,11 @@ def setup_logging(
         request_filter = RequestContextFilter()
         console_handler.addFilter(request_filter)
         
-        # In production use structured JSON; in all other environments use coloured text.
-        env = os.getenv("ENV", "development")
-        if env == "production":
+        # Use structured JSON when LOG_FORMAT=json; otherwise use coloured text.
+        # This is independent of ENV so you can read human-friendly logs in any
+        # environment without having to change ENV.
+        use_json = os.getenv("LOG_FORMAT", "text").lower() == "json"
+        if use_json:
             console_handler.setFormatter(JsonFormatter())
         else:
             # Create colored formatter
@@ -225,7 +227,7 @@ def setup_logging(
         # Add handler to root logger
         root_logger.addHandler(console_handler)
         
-        if env == "production":
+        if use_json:
             root_logger.debug("Logging configured: level=%s format=json", log_level)
         else:
             root_logger.debug("Logging configured: level=%s colors=%s", log_level, formatter.use_colors)
