@@ -199,7 +199,13 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
                 f"{'='*100}\n"
                 f"{status_emoji} [REQUEST END] {request.method} {request.url.path} | ReqID: {request_id} | "
                 f"Duration: {response_time*1000:.2f}ms | Status: {response.status_code}\n"
-                f"{'='*100}\n"
+                f"{'='*100}\n",
+                extra={
+                    "http_method":  request.method,
+                    "http_path":    request.url.path,
+                    "http_status":  response.status_code,
+                    "duration_ms":  round(response_time * 1000, 2),
+                },
             )
             
             return response
@@ -222,7 +228,13 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
                 f"{'='*100}\n"
                 f"❌ [REQUEST END - ERROR] {request.method} {request.url.path} | ReqID: {request_id} | "
                 f"Duration: {response_time*1000:.2f}ms | Error: {str(e)}\n"
-                f"{'='*100}\n"
+                f"{'='*100}\n",
+                extra={
+                    "http_method":  request.method,
+                    "http_path":    request.url.path,
+                    "http_status":  500,
+                    "duration_ms":  round(response_time * 1000, 2),
+                },
             )
             
             # Re-raise the exception
