@@ -116,6 +116,27 @@ class JsonFormatter(logging.Formatter):
         Only activated when ENV == "production" inside setup_logging().
     """
 
+    # Standard LogRecord *instance* attributes (set in LogRecord.__init__ and
+    # by logging.Formatter.format).  These must be excluded when collecting
+    # user-supplied ``extra={...}`` fields so that we don't accidentally dump
+    # the entire LogRecord into every JSON entry.
+    # NOTE: logging.LogRecord.__dict__ only contains *class-level* attributes
+    # (methods, etc.), NOT instance attributes, so checking against it does
+    # not exclude fields like msg, args, levelname, created, thread, …
+    _LOGRECORD_INSTANCE_ATTRS: frozenset = frozenset({
+        # Core fields set by LogRecord.__init__
+        "name", "msg", "args", "created", "filename", "funcName",
+        "levelname", "levelno", "lineno", "module", "msecs", "pathname",
+        "process", "processName", "relativeCreated", "stack_info",
+        "thread", "threadName", "exc_info", "exc_text",
+        # Python 3.12+
+        "taskName",
+        # Set by logging.Formatter.format()
+        "message", "asctime",
+        # Set by our RequestContextFilter
+        "request_id",
+    })
+
     def format(self, record: logging.LogRecord) -> str:
         payload: dict = {
             "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
@@ -129,9 +150,9 @@ class JsonFormatter(logging.Formatter):
         }
         if record.exc_info:
             payload["exc_info"] = self.formatException(record.exc_info)
-        # Merge any extra fields injected via extra={...}
+        # Merge only genuine extra fields injected via extra={...}
         for key, value in record.__dict__.items():
-            if key not in logging.LogRecord.__dict__ and key not in payload:
+            if key not in self._LOGRECORD_INSTANCE_ATTRS and key not in payload:
                 try:
                     json.dumps(value)  # only include JSON-serialisable extras
                     payload[key] = value
