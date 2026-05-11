@@ -67,9 +67,15 @@ class BookingBase(BaseModel):
 class BookingCreate(BaseModel):
     tenant_id: Optional[str] = None
     employee_id: int
-    booking_dates: List[date] 
+    booking_dates: List[date] = Field(..., min_length=1)
     shift_id: int
     booking_type: Optional[BookingTypeEnum] = BookingTypeEnum.REGULAR
+
+    @field_validator("booking_dates")
+    def validate_booking_dates_not_empty(cls, v):
+        if not v:
+            raise ValueError("booking_dates must contain at least one date")
+        return v
 
     @field_validator("booking_date", check_fields=False)
     def validate_booking_date_not_past(cls, v):
