@@ -42,15 +42,26 @@ import json
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+
 from fastapi.responses import StreamingResponse
 
 from app.core.logging_config import get_logger, log_stream_handler
-from common_utils.auth.permission_checker import PermissionChecker
+from common_utils.auth.token_validation import validate_bearer_token
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/logs", tags=["logs"])
+
+
+async def _admin_only(user_data=Depends(validate_bearer_token(use_cache=True))):
+    """Dependency: allow only admin users."""
+    if user_data.get("user_type") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin users can access logs",
+        )
+    return user_data
 
 # Map level name → numeric value for min-level filtering
 _LEVEL_MAP: dict = {
@@ -113,7 +124,7 @@ async def stream_logs(
                                        description="Filter by API path substring, e.g. '/bookings'"),
     status_code: Optional[int] = Query(None,
                                        description="Filter by exact HTTP status code, e.g. 404 or 500"),
-    _user = Depends(PermissionChecker(["logs.read"])),
+    _user = Depends(_admin_only),
 ):
     """
     Open an SSE connection that tails application logs in real time.
@@ -187,7 +198,7 @@ async def recent_logs(
                                        description="Filter by API path substring, e.g. '/drivers'"),
     status_code: Optional[int] = Query(None,
                                        description="Filter by exact HTTP status code"),
-    _user = Depends(PermissionChecker(["logs.read"])),
+    _user = Depends(_admin_only),
 ):
     """
     Return the last *tail* matching log entries from the in-memory buffer
