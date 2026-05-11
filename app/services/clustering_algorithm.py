@@ -11,6 +11,10 @@ def group_rides(rides, radius_km, group_size, strict_grouping):
     :param strict_grouping: bool, True for only full cabs, False for max limit
     :return: List of cab groups (list of ride dicts)
     """
+    # Guard: return early on empty input (DBSCAN requires a non-empty 2D array)
+    if not rides:
+        return []
+
     # Prepare coordinates for clustering
     coords = np.array([[r['lat'], r['lon']] for r in rides])
     # DBSCAN expects radius in radians

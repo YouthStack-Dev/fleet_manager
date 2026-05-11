@@ -673,7 +673,7 @@ def _parse_timedelta_string(time_str: str):
 # Generic serialize / deserialize engine
 # ============================================================
 
-def serialize_model_for_cache(obj, extra_serializers: dict | None = None) -> dict:
+def serialize_model_for_cache(obj, extra_serializers: Optional[dict] = None) -> dict:
     """
     Generic serializer: convert any SQLAlchemy model instance to a JSON-safe dict.
 
@@ -720,7 +720,7 @@ def serialize_model_for_cache(obj, extra_serializers: dict | None = None) -> dic
 def deserialize_model_from_cache(
     cached_dict: dict,
     model_class,
-    extra_deserializers: dict | None = None,
+    extra_deserializers: Optional[dict] = None,
     return_dict: bool = False,
 ):
     """

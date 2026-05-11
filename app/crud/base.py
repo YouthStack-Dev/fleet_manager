@@ -61,18 +61,18 @@ class CRUDBase(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
         """
         Update an object
         """
-        obj_data = jsonable_encoder(db_obj)
-        
         # If obj_in is a dict, use it directly; otherwise convert to dict
         if isinstance(obj_in, dict):
             update_data = obj_in
         else:
             update_data = obj_in.dict(exclude_unset=True)
-            
-        # Update the object attributes
-        for field in obj_data:
-            if field in update_data:
-                setattr(db_obj, field, update_data[field])
+
+        # Set only the fields present in update_data that exist on the model.
+        # We iterate over update_data (not jsonable_encoder(db_obj)) to avoid
+        # the bug where expired ORM objects have an empty __dict__ post-commit.
+        for field, value in update_data.items():
+            if hasattr(db_obj, field):
+                setattr(db_obj, field, value)
                 
         db.add(db_obj)
         db.commit()

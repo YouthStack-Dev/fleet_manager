@@ -6,7 +6,7 @@ from typing import Optional, List
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, ValidationInfo, model_validator
 
 # Regex patterns
-PHONE_REGEX = r'^\+?[1-9]\d{1,14}$'   # E.164 format
+PHONE_REGEX = r'^\+[1-9]\d{1,14}$'   # E.164 format — + prefix is mandatory
 NAME_REGEX = r'^[a-zA-Z\s\'-]{2,50}$'  # Letters, spaces, hyphens, apostrophes
 USERNAME_REGEX = r'^[a-zA-Z0-9_]{3,20}$'
 PASSWORD_REGEX = r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$'
