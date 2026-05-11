@@ -485,7 +485,7 @@ class TestGetMyReview:
         assert resp.status_code == 200
         assert resp.json()["data"]["overall_rating"] == 4
 
-    def test_no_review_yet_returns_404(self, client, test_db, employee_token, employee_user, test_shift):
+    def test_no_review_yet_returns_200_with_null_data(self, client, test_db, employee_token, employee_user, test_shift):
         emp = employee_user["employee"]
         bk = _make_completed_booking(test_db, emp.tenant_id, emp.employee_id, test_shift.shift_id, 7002)
 
@@ -493,8 +493,8 @@ class TestGetMyReview:
             f"/api/v1/employee/bookings/{bk.booking_id}/review",
             headers={"Authorization": employee_token},
         )
-        assert resp.status_code == 404
-        assert "REVIEW_NOT_FOUND" in str(resp.json())
+        assert resp.status_code == 200
+        assert resp.json()["data"] is None
 
     def test_wrong_booking_returns_404(self, client, test_db, employee_token, test_tenant, test_shift):
         """Booking that belongs to another employee returns 404 to employee."""
@@ -570,7 +570,7 @@ class TestAdminGetBookingReview:
         )
         assert resp.status_code == 404
 
-    def test_no_review_on_booking_returns_404(self, client, test_db, admin_token,
+    def test_no_review_on_booking_returns_200_with_null_data(self, client, test_db, admin_token,
                                                employee_user, test_shift):
         emp = employee_user["employee"]
         bk = _make_completed_booking(test_db, emp.tenant_id, emp.employee_id, test_shift.shift_id, 6020)
@@ -579,8 +579,8 @@ class TestAdminGetBookingReview:
             f"/api/v1/bookings/{bk.booking_id}/review",
             headers={"Authorization": admin_token},
         )
-        assert resp.status_code == 404
-        assert "REVIEW_NOT_FOUND" in str(resp.json())
+        assert resp.status_code == 200
+        assert resp.json()["data"] is None
 
     def test_no_auth_returns_401(self, client, test_db, employee_user, test_shift):
         emp = employee_user["employee"]
