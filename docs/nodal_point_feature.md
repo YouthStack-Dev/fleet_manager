@@ -402,13 +402,56 @@ Authorization: Bearer <admin_token>
 ```
 PUT /api/v1/nodal-points/{nodal_point_id}?tenant_id=SAM001
 Authorization: Bearer <admin_token>
+Content-Type: application/json
 ```
+
+All fields are **optional** — supply only the ones you want to change. Omitted fields
+are left unchanged.
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `name` | string | 2–150 chars | Display name of the hub |
+| `address` | string | — | Human-readable street address |
+| `latitude` | float | −90 to 90 | Hub latitude in decimal degrees |
+| `longitude` | float | −180 to 180 | Hub longitude in decimal degrees |
+| `is_active` | boolean | — | `false` to soft-deactivate (no data is deleted) |
+
+**Example — rename and move the hub:**
 
 ```json
-{ "name": "MG Road Hub (West Gate)", "radius_meters": 250 }
+{
+  "name": "MG Road Hub (West Gate)",
+  "address": "West Gate, MG Road, Bengaluru",
+  "latitude": 12.9350,
+  "longitude": 77.6150
+}
 ```
 
-Only the fields provided are changed.
+**Example — deactivate only:**
+
+```json
+{ "is_active": false }
+```
+
+**Response 200**
+
+```json
+{
+  "success": true,
+  "message": "Nodal point updated",
+  "data": {
+    "nodal_point_id": 3,
+    "tenant_id": "SAM001",
+    "name": "MG Road Hub (West Gate)",
+    "address": "West Gate, MG Road, Bengaluru",
+    "latitude": 12.935,
+    "longitude": 77.615,
+    "is_active": true,
+    "created_at": "2026-05-12T13:27:36.993627",
+    "updated_at": "2026-05-12T14:00:00.000000"
+  }
+}
+```
 
 ---
 

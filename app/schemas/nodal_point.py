@@ -37,18 +37,45 @@ class NodalPointCreate(BaseModel):
 
 
 class NodalPointUpdate(BaseModel):
-    """Partial update for a nodal point."""
-    name: Optional[str] = Field(None, min_length=2, max_length=150)
-    address: Optional[str] = None
-    latitude: Optional[float] = Field(None, ge=-90, le=90)
-    longitude: Optional[float] = Field(None, ge=-180, le=180)
-    is_active: Optional[bool] = None
+    """
+    Partial update for a nodal point. All fields are optional — supply only the
+    fields you want to change. Omitted fields are left unchanged.
+    """
+    name: Optional[str] = Field(
+        None,
+        min_length=2,
+        max_length=150,
+        description="Display name of the hub (2–150 characters).",
+    )
+    address: Optional[str] = Field(
+        None,
+        description="Human-readable street address of the hub.",
+    )
+    latitude: Optional[float] = Field(
+        None,
+        ge=-90,
+        le=90,
+        description="Hub latitude in decimal degrees (−90 to 90).",
+    )
+    longitude: Optional[float] = Field(
+        None,
+        ge=-180,
+        le=180,
+        description="Hub longitude in decimal degrees (−180 to 180).",
+    )
+    is_active: Optional[bool] = Field(
+        None,
+        description="Set false to soft-deactivate the hub without deleting it.",
+    )
 
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
                 "name": "Gate B Pickup Point",
-                "is_active": False,
+                "address": "Gate B, Industrial Area, Sector 5",
+                "latitude": 12.9350,
+                "longitude": 77.6150,
+                "is_active": True,
             }
         }
     )
