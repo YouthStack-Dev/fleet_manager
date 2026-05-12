@@ -49,3 +49,11 @@ class Employee(Base):
         back_populates="employees",
         uselist=False
     )
+
+    # Nodal point assigned to this employee (one-to-one)
+    nodal_point_assignment = relationship(
+        "EmployeeNodalPoint",
+        back_populates="employee",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )

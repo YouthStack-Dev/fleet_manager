@@ -46,6 +46,14 @@ class Booking(Base):
     drop_longitude = Column(Float, nullable=True)
     drop_location = Column(String(255), nullable=True)
 
+    # Nodal point used for this booking (populated when shift pickup_type == 'Nodal')
+    nodal_point_id = Column(
+        Integer,
+        ForeignKey("nodal_points.nodal_point_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     status = Column(
         Enum(BookingStatusEnum, native_enum=False),
         default=BookingStatusEnum.REQUEST,
@@ -72,3 +80,6 @@ class Booking(Base):
     shift = relationship("Shift", back_populates="bookings")
     team = relationship("Team", back_populates="bookings")
     review = relationship("RideReview", back_populates="booking", uselist=False)
+
+    # Nodal point relationship (populated when shift pickup_type == 'Nodal')
+    nodal_point = relationship("NodalPoint", back_populates="bookings")
