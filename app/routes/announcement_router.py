@@ -96,12 +96,14 @@ def _ann_to_dict(ann: Announcement) -> dict:
     }
 
 
-def _rec_to_dict(rec) -> dict:
+def _rec_to_dict(rec, name_map: dict | None = None) -> dict:
+    name = (name_map or {}).get((rec.recipient_type, rec.recipient_user_id))
     return {
         "recipient_id":      rec.recipient_id,
         "announcement_id":   rec.announcement_id,
         "recipient_type":    rec.recipient_type,
         "recipient_user_id": rec.recipient_user_id,
+        "recipient_name":    name,
         "delivery_status":   _enum_val(rec.delivery_status),
         "push_sent_at":      rec.push_sent_at.isoformat()  if rec.push_sent_at  else None,
         "sms_sent_at":       rec.sms_sent_at.isoformat()   if rec.sms_sent_at   else None,
@@ -395,6 +397,9 @@ def list_announcement_recipients_endpoint(
     """List per-user delivery status for a published announcement."""
     logger.info(f"[announcement.recipients] START tenant={user_data.get('tenant_id')} announcement_id={announcement_id} page={page} page_size={page_size}")
     try:
+        from app.models.employee import Employee as EmployeeModel
+        from app.models.driver import Driver as DriverModel
+
         ann = _get_or_404(db, announcement_id, user_data.get("tenant_id"))
         items, total = list_recipients(
             db=db,
@@ -402,9 +407,22 @@ def list_announcement_recipients_endpoint(
             page=page,
             page_size=page_size,
         )
+
+        # Batch-load names for all recipients in this page
+        emp_ids    = [r.recipient_user_id for r in items if r.recipient_type == "employee"]
+        driver_ids = [r.recipient_user_id for r in items if r.recipient_type == "driver"]
+
+        name_map: dict = {}
+        if emp_ids:
+            for row in db.query(EmployeeModel.employee_id, EmployeeModel.name).filter(EmployeeModel.employee_id.in_(emp_ids)).all():
+                name_map[("employee", row.employee_id)] = row.name
+        if driver_ids:
+            for row in db.query(DriverModel.driver_id, DriverModel.name).filter(DriverModel.driver_id.in_(driver_ids)).all():
+                name_map[("driver", row.driver_id)] = row.name
+
         logger.info(f"[announcement.recipients] OK tenant={user_data.get('tenant_id')} announcement_id={announcement_id} total={total} page={page} returning={len(items)}")
         return ResponseWrapper.paginated(
-            items=[_rec_to_dict(r) for r in items],
+            items=[_rec_to_dict(r, name_map) for r in items],
             total=total,
             page=page,
             per_page=page_size,

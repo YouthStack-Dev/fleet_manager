@@ -34,6 +34,8 @@ from app.routes import (
     review_router,
     # Announcements
     announcement_router,
+    # Speed Violations
+    speed_violation_router,
     # Seed & dev utilities
     dev_testing_router,
 )
@@ -106,6 +108,9 @@ api_router.include_router(review_router,        prefix=V1)
 
 # Announcements / Broadcasts
 api_router.include_router(announcement_router, prefix=V1)
+
+# Speed Violations
+api_router.include_router(speed_violation_router, prefix=V1)
 
 # Seed & development utilities
 api_router.include_router(seed_router,        prefix=V1)

@@ -772,6 +772,138 @@ class EmailService:
             html_content=html_content
         )
 
+    async def send_speed_violation_alert_email(
+        self,
+        to_emails: List[str],
+        driver_name: str,
+        vehicle_rc: str,
+        speed_recorded: float,
+        speed_limit: float,
+        recorded_at: Any,
+        route_id: Optional[int] = None,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
+        violation_count_in_ride: int = 1,
+        is_escalation: bool = False,
+    ) -> bool:
+        """
+        Send a speed violation alert email to managers and the vendor.
+
+        Parameters
+        ----------
+        to_emails : list of recipient addresses
+        driver_name : display name of the driver
+        vehicle_rc : registration number of the vehicle
+        speed_recorded : actual GPS speed at time of violation (km/h)
+        speed_limit : configured speed limit (km/h)
+        recorded_at : datetime of the event
+        route_id : active route / ride ID (optional)
+        latitude / longitude : GPS coordinates (optional)
+        violation_count_in_ride : total violations on this ride so far
+        is_escalation : if True, uses red/critical styling and escalation subject
+        """
+        if not to_emails:
+            return False
+
+        overspeed_by = round(speed_recorded - speed_limit, 1)
+        overspeed_pct = round((overspeed_by / speed_limit) * 100, 1) if speed_limit else 0
+
+        # Determine formatting based on severity
+        header_bg   = "#c0392b" if is_escalation else "#e67e22"
+        badge_bg    = "#e74c3c" if is_escalation else "#f39c12"
+        header_icon = "🚨" if is_escalation else "⚠️"
+        header_text = "ESCALATION: Repeated Speeding" if is_escalation else "Speed Violation Alert"
+        subject_prefix = "🚨 CRITICAL" if is_escalation else "⚠️ ALERT"
+
+        # Format location string
+        if latitude is not None and longitude is not None:
+            location_str = f"{latitude:.6f}, {longitude:.6f}"
+            maps_link = f"https://maps.google.com/?q={latitude},{longitude}"
+            location_html = f'<a href="{maps_link}" style="color:#2980b9;">{location_str} (View on Map)</a>'
+        else:
+            location_html = "<em>GPS data unavailable</em>"
+
+        # Format timestamp
+        try:
+            ts_str = recorded_at.strftime("%d %b %Y, %H:%M:%S %Z") if hasattr(recorded_at, "strftime") else str(recorded_at)
+        except Exception:
+            ts_str = str(recorded_at)
+
+        html_content = f"""
+        <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;border:1px solid #ddd;border-radius:8px;overflow:hidden;">
+
+          <!-- Header -->
+          <div style="background:{header_bg};color:white;padding:22px 28px;">
+            <h1 style="margin:0;font-size:20px;">{header_icon} {header_text}</h1>
+            <p style="margin:6px 0 0;opacity:.9;font-size:13px;">Fleet Manager — Automated Safety Alert</p>
+          </div>
+
+          <!-- Badge row -->
+          <div style="background:{badge_bg};color:white;padding:10px 28px;font-size:14px;">
+            Driver exceeded speed limit by <strong>{overspeed_by} km/h ({overspeed_pct}%)</strong>
+            &nbsp;|&nbsp; Violations on this ride: <strong>{violation_count_in_ride}</strong>
+          </div>
+
+          <!-- Detail table -->
+          <div style="padding:24px 28px;background:#fafafa;">
+            <table style="width:100%;border-collapse:collapse;font-size:14px;">
+              <tr style="border-bottom:1px solid #eee;">
+                <td style="padding:10px 8px;color:#666;width:40%;">Driver Name</td>
+                <td style="padding:10px 8px;font-weight:bold;">{driver_name}</td>
+              </tr>
+              <tr style="border-bottom:1px solid #eee;background:#fff;">
+                <td style="padding:10px 8px;color:#666;">Vehicle Number</td>
+                <td style="padding:10px 8px;font-weight:bold;">{vehicle_rc}</td>
+              </tr>
+              <tr style="border-bottom:1px solid #eee;">
+                <td style="padding:10px 8px;color:#666;">Recorded Speed</td>
+                <td style="padding:10px 8px;font-weight:bold;color:{header_bg};">{speed_recorded:.1f} km/h</td>
+              </tr>
+              <tr style="border-bottom:1px solid #eee;background:#fff;">
+                <td style="padding:10px 8px;color:#666;">Configured Limit</td>
+                <td style="padding:10px 8px;">{speed_limit:.1f} km/h</td>
+              </tr>
+              <tr style="border-bottom:1px solid #eee;">
+                <td style="padding:10px 8px;color:#666;">Overspeed</td>
+                <td style="padding:10px 8px;color:{header_bg};font-weight:bold;">+{overspeed_by} km/h</td>
+              </tr>
+              <tr style="border-bottom:1px solid #eee;background:#fff;">
+                <td style="padding:10px 8px;color:#666;">Date &amp; Time</td>
+                <td style="padding:10px 8px;">{ts_str}</td>
+              </tr>
+              <tr style="border-bottom:1px solid #eee;">
+                <td style="padding:10px 8px;color:#666;">Route / Ride ID</td>
+                <td style="padding:10px 8px;">{route_id if route_id else "N/A"}</td>
+              </tr>
+              <tr style="background:#fff;">
+                <td style="padding:10px 8px;color:#666;">Location</td>
+                <td style="padding:10px 8px;">{location_html}</td>
+              </tr>
+            </table>
+          </div>
+
+          <!-- Action note -->
+          <div style="padding:16px 28px;border-top:1px solid #eee;background:#fff;font-size:13px;color:#555;">
+            {'<strong>Immediate action recommended.</strong> This driver has exceeded the speed limit multiple times on this ride. Please contact the driver or vendor.' if is_escalation else 'Please review the driver behaviour and take appropriate action if needed.'}
+          </div>
+
+          <!-- Footer -->
+          <div style="background:#f1f1f1;padding:12px 28px;text-align:center;font-size:11px;color:#999;">
+            &copy; {self.app_name} — This is an automated safety alert. Do not reply to this email.
+          </div>
+
+        </div>
+        """
+
+        subject = f"{subject_prefix}: {driver_name} recorded {speed_recorded:.1f} km/h (limit {speed_limit:.1f} km/h)"
+
+        return await self.send_email(
+            to_emails=to_emails,
+            subject=subject,
+            html_content=html_content,
+            priority=EmailPriority.URGENT if is_escalation else EmailPriority.HIGH,
+        )
+
 # Singleton instance
 email_service = EmailService()
 

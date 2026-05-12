@@ -6,7 +6,7 @@ from datetime import time
 
 from app.database.session import get_db
 from app.models.tenant_config import TenantConfig
-from app.schemas.tenant_config import TenantConfigCreate, TenantConfigUpdate, TenantConfigResponse
+from app.schemas.tenant_config import TenantConfigUpdate, TenantConfigResponse
 from app.crud.tenant_config import tenant_config_crud
 from common_utils.auth.permission_checker import PermissionChecker
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
@@ -170,6 +170,7 @@ def update_tenant_config(
                     "login_deboarding_otp": config_update.login_deboarding_otp,
                     "logout_boarding_otp": config_update.logout_boarding_otp,
                     "logout_deboarding_otp": config_update.logout_deboarding_otp,
+                    "speed_limit_kmph": config_update.speed_limit_kmph,
                 },
             )
         except Exception as audit_error:
