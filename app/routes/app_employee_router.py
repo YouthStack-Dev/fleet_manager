@@ -10,13 +10,14 @@ from pydantic import BaseModel
 from app.core.logging_config import get_logger
 from app.database.session import get_db
 from app.models.employee import Employee
-from app.models.shift import Shift
+from app.models.shift import Shift, PickupTypeEnum
 from app.models.vendor import Vendor
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
 from common_utils import get_current_ist_time
 from app.models.route_management import RouteManagement, RouteManagementBooking, RouteManagementStatusEnum
 from app.models.booking import Booking, BookingStatusEnum
+from app.models.nodal_point import EmployeeNodalPoint
 from app.models.tenant import Tenant
 from app.models.vehicle import Vehicle
 from app.models.driver import Driver
@@ -201,4 +202,193 @@ async def get_employee_bookings(
         logger.exception("Error fetching employee bookings")
         raise handle_http_error(e)
 
+
+# ──────────────────────────────────────────────────────────────
+# Nodal QR Onboarding
+# ──────────────────────────────────────────────────────────────
+
+class NodalQRScanRequest(BaseModel):
+    """
+    Payload sent by the employee app when scanning the QR code inside the vehicle.
+    The QR encodes the route_id (and optionally a verification token).
+    """
+    route_id: int
+
+
+@router.post("/nodal/scan", status_code=status.HTTP_200_OK)
+async def nodal_qr_scan(
+    payload: NodalQRScanRequest,
+    db: Session = Depends(get_db),
+    ctx=Depends(EmployeeAuth),
+):
+    """
+    Employee scans the QR code inside the vehicle at the nodal point.
+
+    Flow:
+    1. Validate that the employee has a SCHEDULED booking on this route for today.
+    2. Validate that the booking's shift is a Nodal pickup/drop shift.
+    3. Mark the employee's booking status as ONGOING (boarded).
+
+    The route_id is encoded in the vehicle's QR code.
+    """
+    try:
+        tenant_id = ctx["tenant_id"]
+        employee_id = ctx["employee_id"]
+        today = date.today()
+
+        logger.info(
+            f"[nodal.qr_scan] employee={employee_id} tenant={tenant_id} "
+            f"route_id={payload.route_id}"
+        )
+
+        # ── 1. Verify route exists and is Ongoing or Driver Assigned ──
+        route = (
+            db.query(RouteManagement)
+            .filter(
+                RouteManagement.route_id == payload.route_id,
+                RouteManagement.tenant_id == tenant_id,
+                RouteManagement.status.in_(
+                    [
+                        RouteManagementStatusEnum.DRIVER_ASSIGNED,
+                        RouteManagementStatusEnum.ONGOING,
+                    ]
+                ),
+            )
+            .first()
+        )
+        if not route:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    "Route not found, not yet started, or already completed",
+                    "ROUTE_NOT_FOUND",
+                ),
+            )
+
+        # ── 2. Find the employee's booking linked to this route for today ──
+        route_booking = (
+            db.query(RouteManagementBooking)
+            .filter(RouteManagementBooking.route_id == payload.route_id)
+            .join(Booking, RouteManagementBooking.booking_id == Booking.booking_id)
+            .filter(
+                Booking.employee_id == employee_id,
+                Booking.booking_date == today,
+                Booking.status == BookingStatusEnum.SCHEDULED,
+            )
+            .first()
+        )
+        if not route_booking:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    "No scheduled booking found for you on this route today",
+                    "BOOKING_NOT_FOUND",
+                ),
+            )
+
+        booking = (
+            db.query(Booking)
+            .filter(Booking.booking_id == route_booking.booking_id)
+            .first()
+        )
+
+        # ── 3. Confirm this is a Nodal shift ──
+        if booking.shift_id:
+            shift = db.query(Shift).filter(Shift.shift_id == booking.shift_id).first()
+            if shift and shift.pickup_type != PickupTypeEnum.NODAL:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        "This booking is not for a Nodal shift. "
+                        "Use the standard boarding flow.",
+                        "NOT_NODAL_SHIFT",
+                    ),
+                )
+
+        # ── 4. Mark booking as ONGOING (boarded) ──
+        booking.status = BookingStatusEnum.ONGOING
+        db.commit()
+        db.refresh(booking)
+
+        logger.info(
+            f"[nodal.qr_scan] employee={employee_id} boarding confirmed "
+            f"booking_id={booking.booking_id} route_id={payload.route_id}"
+        )
+
+        # Nodal point details for response
+        nodal_info = None
+        if booking.nodal_point_id and booking.nodal_point:
+            np = booking.nodal_point
+            nodal_info = {
+                "nodal_point_id": np.nodal_point_id,
+                "name": np.name,
+                "address": np.address,
+                "latitude": float(np.latitude),
+                "longitude": float(np.longitude),
+            }
+
+        return ResponseWrapper.success(
+            data={
+                "booking_id": booking.booking_id,
+                "status": booking.status.value,
+                "route_id": payload.route_id,
+                "nodal_point": nodal_info,
+                "message": "You have been marked as onboarded at the nodal point.",
+            },
+            message="Nodal onboarding successful",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.exception("Error during nodal QR scan")
+        raise handle_http_error(e)
+
+
+@router.get("/nodal/assignment", status_code=status.HTTP_200_OK)
+async def get_my_nodal_assignment(
+    db: Session = Depends(get_db),
+    ctx=Depends(EmployeeAuth),
+):
+    """
+    Return the nodal point assigned to the currently logged-in employee.
+    Used by the app to display the employee's pickup / drop hub.
+    """
+    try:
+        tenant_id = ctx["tenant_id"]
+        employee_id = ctx["employee_id"]
+
+        assignment = (
+            db.query(EmployeeNodalPoint)
+            .filter(EmployeeNodalPoint.employee_id == employee_id)
+            .first()
+        )
+        if not assignment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    "No nodal point assigned to you yet. Please contact your admin.",
+                    "ASSIGNMENT_NOT_FOUND",
+                ),
+            )
+
+        np = assignment.nodal_point
+        return ResponseWrapper.success(
+            data={
+                "nodal_point_id": np.nodal_point_id,
+                "name": np.name,
+                "address": np.address,
+                "latitude": float(np.latitude),
+                "longitude": float(np.longitude),
+                "is_overridden": assignment.is_overridden,
+            },
+            message="Nodal point assignment fetched",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error fetching employee nodal assignment")
+        raise handle_http_error(e)
 

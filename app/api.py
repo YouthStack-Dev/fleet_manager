@@ -22,6 +22,8 @@ from app.routes import (
     team_router, shift_router, weekoff_config_router, cutoff_router,
     # Bookings & routing
     booking_router, grouping, route_management,
+    # Nodal Points
+    nodal_point_router,
     # Alerts
     alert_router, alert_config_router,
     # Notifications
@@ -83,6 +85,9 @@ api_router.include_router(cutoff_router,             prefix=V1)
 api_router.include_router(booking_router,            prefix=V1)
 api_router.include_router(grouping.router,           prefix=V1)
 api_router.include_router(route_management.router,   prefix=V1)
+
+# Nodal Points
+api_router.include_router(nodal_point_router,        prefix=V1)
 
 # Alerts — carry /api/v1/... prefix internally
 api_router.include_router(alert_router)
