@@ -307,6 +307,12 @@ async def nodal_qr_scan(
 
         # ── 4. Mark booking as ONGOING (boarded) ──
         booking.status = BookingStatusEnum.ONGOING
+
+        # ── 5. Record actual pick-up time on the route–booking link ──
+        now_ist = get_current_ist_time()
+        route_booking.actual_pick_up_time = now_ist.strftime("%H:%M")
+
+        db.add_all([booking, route_booking])
         db.commit()
         db.refresh(booking)
 
