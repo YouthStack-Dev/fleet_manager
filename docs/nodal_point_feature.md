@@ -223,8 +223,11 @@ sequenceDiagram
 
 ### 3.4 Employee QR Scan — Boarding
 
-The vehicle displays a QR code encoding its `route_id`. The employee scans it on arrival
-at the hub.
+Each vehicle has a **permanently pasted QR sticker** that encodes its `vehicle_number`
+(the `rc_number` from the `vehicles` table). The employee scans it on arrival at the hub.
+
+> **Why `vehicle_number` instead of `route_id`?** Physical QR stickers are permanent but
+> `route_id` changes every day. Using `rc_number` ensures the QR never goes stale.
 
 ```mermaid
 sequenceDiagram
@@ -232,14 +235,19 @@ sequenceDiagram
     participant API as Fleet API
     participant DB
 
-    EmpApp->>API: POST /employee/nodal/scan\n{ route_id: 42 }\nBearer <employee_token>
+    EmpApp->>API: POST /employee/nodal/scan\n{ vehicle_number: "KA01AB1234" }\nBearer <employee_token>
 
-    API->>DB: SELECT route WHERE\n  route_id=42\n  AND tenant_id=emp.tenant\n  AND status IN (DRIVER_ASSIGNED, ONGOING)
+    API->>DB: SELECT vehicle WHERE\n  rc_number=vehicle_number\n  AND vendor.tenant_id=emp.tenant\n  AND is_active=true
+    alt vehicle not found
+        API-->>EmpApp: 404 VEHICLE_NOT_FOUND
+    end
+
+    API->>DB: SELECT route WHERE\n  assigned_vehicle_id=vehicle.vehicle_id\n  AND tenant_id=emp.tenant\n  AND status IN (DRIVER_ASSIGNED, ONGOING)
     alt route not found / wrong status
         API-->>EmpApp: 404 ROUTE_NOT_FOUND
     end
 
-    API->>DB: SELECT booking WHERE\n  route_management_bookings.route_id=42\n  AND booking.employee_id=emp_id\n  AND booking.booking_date=today\n  AND booking.status=SCHEDULED
+    API->>DB: SELECT booking WHERE\n  route_management_bookings.route_id=route.route_id\n  AND booking.employee_id=emp_id\n  AND booking.booking_date=today\n  AND booking.status=SCHEDULED
     alt no booking
         API-->>EmpApp: 404 BOOKING_NOT_FOUND
     end
@@ -594,11 +602,13 @@ Authorization: Bearer <employee_token>
 ```
 
 ```json
-{ "route_id": 42 }
+{ "vehicle_number": "KA01AB1234" }
 ```
 
-The vehicle's QR code encodes the `route_id`. The employee scans it on arrival at the
-hub. The system validates the booking and marks it `ONGOING`.
+The vehicle has a **permanently pasted QR sticker** encoding its `vehicle_number` (the
+`rc_number` from the `vehicles` table). The employee scans it on arrival at the hub.
+The API resolves the vehicle → today's active route → employee booking, then marks the
+booking `ONGOING` and records the pick-up time.
 
 **Response 200**
 
@@ -662,6 +672,8 @@ For NODAL shifts the response includes three extra fields vs normal shifts:
     "hub_latitude": 12.9716,
     "hub_longitude": 77.5946,
     "passenger_count": 3,
+    "boarded_count": 2,
+    "pending_count": 1,
     "bookings": [
       {
         "booking_id": 101,
@@ -670,7 +682,8 @@ For NODAL shifts the response includes three extra fields vs normal shifts:
         "employee_phone": "9000000001",
         "status": "Ongoing",
         "order_id": 1,
-        "is_boarding_otp_required": false
+        "is_boarding_otp_required": false,
+        "is_boarded": true
       }
     ]
   }
@@ -757,7 +770,8 @@ only a valid employee JWT is required.
 | `EMPLOYEE_NO_COORDINATES` | 400 | Auto-assign requested but employee has no `latitude`/`longitude` |
 | `NO_NODAL_POINTS` | 400 | Tenant has no active hubs — cannot auto-assign |
 | `ASSIGNMENT_NOT_FOUND` | 404 | Employee has no hub assignment |
-| `ROUTE_NOT_FOUND` | 404 | QR scan: route not active or wrong tenant |
+| `ROUTE_NOT_FOUND` | 404 | QR scan: no active route for vehicle, or wrong tenant |
+| `VEHICLE_NOT_FOUND` | 404 | QR scan: `vehicle_number` not found or not in tenant |
 | `BOOKING_NOT_FOUND` | 404 | QR scan: no SCHEDULED booking for employee on this route today |
 | `NOT_NODAL_SHIFT` | 400 | QR scan: booking's shift `pickup_type` is not `NODAL` |
 | `BOOKING_NOT_BOARDABLE` | 400 | Driver `trip/start`: booking status is not `SCHEDULED` or `ONGOING` (e.g. already `COMPLETED`) |

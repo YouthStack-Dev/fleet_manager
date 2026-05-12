@@ -97,19 +97,26 @@ def verify_otp(booking_otp: Optional[int], provided_otp: Optional[str], otp_type
         logger.info(f"[driver.verify_otp] No {otp_type} OTP required for booking {booking_id}")
 
 
-def get_next_stop(db: Session, route_id: int, current_order_id: int) -> Optional[dict]:
+def get_next_stop(db: Session, route_id: int, current_order_id: int, skip_ongoing: bool = False) -> Optional[dict]:
     """
     Fetches the next pending stop in the route after the given order_id.
     Returns serialized next stop data or None if no next stop exists.
     OPTIMIZED: Single query with join to fetch both RouteManagementBooking and Booking.
+
+    skip_ongoing=True: for NODAL routes — exclude ONGOING bookings (already QR-boarded)
+    so the driver's "next stop" view only shows passengers still waiting.
     """
+    excluded = [BookingStatusEnum.NO_SHOW, BookingStatusEnum.COMPLETED]
+    if skip_ongoing:
+        excluded.append(BookingStatusEnum.ONGOING)
+
     result = (
         db.query(RouteManagementBooking, Booking)
         .join(Booking, RouteManagementBooking.booking_id == Booking.booking_id)
         .filter(
             RouteManagementBooking.route_id == route_id,
             RouteManagementBooking.order_id > current_order_id,
-            Booking.status.notin_([BookingStatusEnum.NO_SHOW, BookingStatusEnum.COMPLETED]),
+            Booking.status.notin_(excluded),
         )
         .order_by(RouteManagementBooking.order_id)
         .first()
@@ -718,6 +725,7 @@ async def get_driver_trips(
                         "status": s["status"],
                         "order_id": s["order_id"],
                         "is_boarding_otp_required": s.get("is_boarding_otp_required"),
+                        "is_boarded": s["status"] == BookingStatusEnum.ONGOING.value,
                     })
                 # Batch-load nodal point details
                 nodal_ids = [k for k in grouped if isinstance(k, int)]
@@ -737,6 +745,8 @@ async def get_driver_trips(
                         "hub_latitude": float(np_obj.latitude) if np_obj else None,
                         "hub_longitude": float(np_obj.longitude) if np_obj else None,
                         "passenger_count": len(grouped[key]),
+                        "boarded_count": sum(1 for b in grouped[key] if b.get("is_boarded")),
+                        "pending_count": sum(1 for b in grouped[key] if not b.get("is_boarded")),
                         "bookings": grouped[key],
                     })
 
@@ -1185,7 +1195,7 @@ async def start_trip(
         )
 
         # --- Fetch next stop ---
-        next_stop = get_next_stop(db, route_id, rb.order_id)
+        next_stop = get_next_stop(db, route_id, rb.order_id, skip_ongoing=is_nodal_shift)
 
         return ResponseWrapper.success(
             message="Trip started successfully",

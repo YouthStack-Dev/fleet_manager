@@ -210,9 +210,10 @@ async def get_employee_bookings(
 class NodalQRScanRequest(BaseModel):
     """
     Payload sent by the employee app when scanning the QR code inside the vehicle.
-    The QR encodes the route_id (and optionally a verification token).
+    The QR encodes the vehicle's rc_number (vehicle_number).
+    Physical QR stickers are permanent — using vehicle_number avoids stale route_ids.
     """
-    route_id: int
+    vehicle_number: str
 
 
 @router.post("/nodal/scan", status_code=status.HTTP_200_OK)
@@ -225,11 +226,13 @@ async def nodal_qr_scan(
     Employee scans the QR code inside the vehicle at the nodal point.
 
     Flow:
-    1. Validate that the employee has a SCHEDULED booking on this route for today.
-    2. Validate that the booking's shift is a Nodal pickup/drop shift.
-    3. Mark the employee's booking status as ONGOING (boarded).
+    1. Resolve vehicle by rc_number (vehicle_number) within the tenant.
+    2. Find today's active (DRIVER_ASSIGNED / ONGOING) route for that vehicle.
+    3. Validate that the employee has a SCHEDULED booking on that route for today.
+    4. Validate that the booking's shift is a Nodal pickup/drop shift.
+    5. Mark the employee's booking status as ONGOING (boarded) and record pick-up time.
 
-    The route_id is encoded in the vehicle's QR code.
+    The vehicle_number (rc_number) is encoded in the permanently pasted QR sticker.
     """
     try:
         tenant_id = ctx["tenant_id"]
@@ -238,14 +241,34 @@ async def nodal_qr_scan(
 
         logger.info(
             f"[nodal.qr_scan] employee={employee_id} tenant={tenant_id} "
-            f"route_id={payload.route_id}"
+            f"vehicle_number={payload.vehicle_number}"
         )
 
-        # ── 1. Verify route exists and is Ongoing or Driver Assigned ──
+        # ── 1. Resolve vehicle by rc_number within the tenant ──
+        vehicle = (
+            db.query(Vehicle)
+            .join(Vendor, Vehicle.vendor_id == Vendor.vendor_id)
+            .filter(
+                Vehicle.rc_number == payload.vehicle_number,
+                Vendor.tenant_id == tenant_id,
+                Vehicle.is_active == True,
+            )
+            .first()
+        )
+        if not vehicle:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    "Vehicle not found or does not belong to your organisation",
+                    "VEHICLE_NOT_FOUND",
+                ),
+            )
+
+        # ── 2. Find today's active route assigned to this vehicle ──
         route = (
             db.query(RouteManagement)
             .filter(
-                RouteManagement.route_id == payload.route_id,
+                RouteManagement.assigned_vehicle_id == vehicle.vehicle_id,
                 RouteManagement.tenant_id == tenant_id,
                 RouteManagement.status.in_(
                     [
@@ -260,15 +283,15 @@ async def nodal_qr_scan(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ResponseWrapper.error(
-                    "Route not found, not yet started, or already completed",
+                    "No active route found for this vehicle today",
                     "ROUTE_NOT_FOUND",
                 ),
             )
 
-        # ── 2. Find the employee's booking linked to this route for today ──
+        # ── 3. Find the employee's booking linked to this route for today ──
         route_booking = (
             db.query(RouteManagementBooking)
-            .filter(RouteManagementBooking.route_id == payload.route_id)
+            .filter(RouteManagementBooking.route_id == route.route_id)
             .join(Booking, RouteManagementBooking.booking_id == Booking.booking_id)
             .filter(
                 Booking.employee_id == employee_id,
@@ -318,7 +341,7 @@ async def nodal_qr_scan(
 
         logger.info(
             f"[nodal.qr_scan] employee={employee_id} boarding confirmed "
-            f"booking_id={booking.booking_id} route_id={payload.route_id}"
+            f"booking_id={booking.booking_id} route_id={route.route_id}"
         )
 
         # Nodal point details for response
@@ -337,7 +360,7 @@ async def nodal_qr_scan(
             data={
                 "booking_id": booking.booking_id,
                 "status": booking.status.value,
-                "route_id": payload.route_id,
+                "route_id": route.route_id,
                 "nodal_point": nodal_info,
                 "message": "You have been marked as onboarded at the nodal point.",
             },
