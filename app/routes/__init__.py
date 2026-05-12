@@ -47,6 +47,7 @@ from app.routes.iam import permission_router, policy_router, policy_package_rout
 from app.routes.monitoring_router import router as monitoring_router
 from app.routes.audit_log_router import router as audit_log_router
 from app.routes.reports_router import router as reports_router
+from app.routes.log_stream_router import router as log_stream_router
 
 # ── Ride Reviews ──────────────────────────────────────────────
 from app.routes.review_router import router as review_router

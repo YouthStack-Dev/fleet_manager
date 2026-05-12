@@ -2274,6 +2274,7 @@ Fleet Management Team"""
             details.append({
                 "booking_id": booking.booking_id,
                 "employee_id": employee.employee_id,
+                "employee_name": employee.name,
                 "email_status": result_entry["email_status"],
                 "sms_status": result_entry["sms_status"],
                 "push_status": result_entry["push_status"],
@@ -2678,6 +2679,33 @@ async def get_notification_logs_by_date_shift(
             }
             for log in logs
         ]
+
+        # Enrich details with employee_name — collect all unique employee IDs
+        # across every log's details list, batch-query once, then fill in.
+        from app.models.employee import Employee as EmployeeModel
+        all_emp_ids = {
+            d["employee_id"]
+            for r in result
+            for d in (r["details"] or [])
+            if d.get("employee_id") and not d.get("employee_name")
+        }
+        emp_name_map: dict = {}
+        if all_emp_ids:
+            emp_rows = (
+                db.query(EmployeeModel.employee_id, EmployeeModel.name)
+                .filter(EmployeeModel.employee_id.in_(all_emp_ids))
+                .all()
+            )
+            emp_name_map = {row.employee_id: row.name for row in emp_rows}
+
+        for r in result:
+            enriched = []
+            for d in (r["details"] or []):
+                entry = dict(d)
+                if not entry.get("employee_name") and entry.get("employee_id"):
+                    entry["employee_name"] = emp_name_map.get(entry["employee_id"])
+                enriched.append(entry)
+            r["details"] = enriched
 
         # Aggregate totals across all logs for this date+shift
         total_email_sent = sum(r["email"]["sent"] for r in result)
