@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, Date, Text, ForeignKey, func, UniqueConstraint
+    Column, Integer, String, Boolean, DateTime, Date, Text, Float, ForeignKey, func, UniqueConstraint
 )
 from sqlalchemy.orm import relationship
 from app.database.session import Base
@@ -46,6 +46,11 @@ class Vehicle(Base):
     permit_url = Column(Text)
 
     is_active = Column(Boolean, default=True, nullable=False)
+
+    # Optional per-vehicle speed limit override (km/h).
+    # If set, this takes priority over the tenant-wide speed_limit_kmph.
+    speed_limit_override_kmph = Column(Float, nullable=True)
+
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 

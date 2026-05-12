@@ -20,7 +20,8 @@ class CRUDTenantConfig(CRUDBase[TenantConfig, TenantConfigCreate, TenantConfigUp
                 login_boarding_otp=True,         # Default OTP settings
                 login_deboarding_otp=True,
                 logout_boarding_otp=True,
-                logout_deboarding_otp=True
+                logout_deboarding_otp=True,
+                speed_limit_kmph=60.0,           # Default speed limit (km/h)
             )
             db.add(db_obj)
             db.flush()
@@ -36,7 +37,8 @@ class CRUDTenantConfig(CRUDBase[TenantConfig, TenantConfigCreate, TenantConfigUp
             login_boarding_otp=obj_in.login_boarding_otp,
             login_deboarding_otp=obj_in.login_deboarding_otp,
             logout_boarding_otp=obj_in.logout_boarding_otp,
-            logout_deboarding_otp=obj_in.logout_deboarding_otp
+            logout_deboarding_otp=obj_in.logout_deboarding_otp,
+            speed_limit_kmph=obj_in.speed_limit_kmph if obj_in.speed_limit_kmph is not None else 60.0,
         )
         db.add(db_obj)
         db.commit()
