@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, Time, ForeignKey, DateTime, func
+from sqlalchemy import Column, String, Boolean, Time, ForeignKey, DateTime, Float, func
 from app.database.session import Base
 from sqlalchemy.orm import relationship
 
@@ -23,6 +23,9 @@ class TenantConfig(Base):
     login_deboarding_otp = Column(Boolean, nullable=False, server_default="true")
     logout_boarding_otp = Column(Boolean, nullable=False, server_default="true")
     logout_deboarding_otp = Column(Boolean, nullable=False, server_default="true")
+
+    # Speed limit configuration (km/h) — used to detect speed violations
+    speed_limit_kmph = Column(Float, nullable=True, default=60.0)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
