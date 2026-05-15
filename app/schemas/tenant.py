@@ -174,3 +174,70 @@ class TenantPaginationResponse(BaseModel):
             }
         }
     )
+
+
+# ------------------------------
+# Driver-facing Tenant Response
+# ------------------------------
+class TenantDriverResponse(BaseModel):
+    """
+    Tenant details returned to the driver app.
+    Extends the base tenant fields with config values the driver app needs
+    (speed limit, OTP requirements, escort window).
+    """
+    tenant_id: str
+    name: str
+    address: str
+    latitude: float
+    longitude: float
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    # ── From TenantConfig ───────────────────────────────────────────
+    speed_limit_kmph: Optional[float] = Field(
+        None,
+        description="Tenant-wide speed limit in km/h. Violations above this threshold are recorded.",
+    )
+    login_boarding_otp: Optional[bool] = Field(
+        None,
+        description="Whether a boarding OTP is required for login (IN) shifts.",
+    )
+    login_deboarding_otp: Optional[bool] = Field(
+        None,
+        description="Whether a deboarding OTP is required for login (IN) shifts.",
+    )
+    logout_boarding_otp: Optional[bool] = Field(
+        None,
+        description="Whether a boarding OTP is required for logout (OUT) shifts.",
+    )
+    logout_deboarding_otp: Optional[bool] = Field(
+        None,
+        description="Whether a deboarding OTP is required for logout (OUT) shifts.",
+    )
+    escort_required_for_women: Optional[bool] = Field(
+        None,
+        description="Whether an escort is mandatory for women employees.",
+    )
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
+            "example": {
+                "tenant_id": "SAM001",
+                "name": "Sample Tenant",
+                "address": "123 Main St, Bengaluru",
+                "latitude": 12.9716,
+                "longitude": 77.5946,
+                "is_active": True,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "speed_limit_kmph": 60.0,
+                "login_boarding_otp": True,
+                "login_deboarding_otp": True,
+                "logout_boarding_otp": True,
+                "logout_deboarding_otp": True,
+                "escort_required_for_women": True,
+            }
+        },
+    )

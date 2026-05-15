@@ -45,6 +45,7 @@ from common_utils import get_current_ist_time
 from app.models.route_management import RouteManagement, RouteManagementBooking, RouteManagementStatusEnum
 from app.models.booking import Booking, BookingStatusEnum
 from app.models.tenant import Tenant
+from app.models.tenant_config import TenantConfig
 from app.models.vehicle import Vehicle
 from app.models.driver import Driver
 from geopy.distance import geodesic
@@ -328,7 +329,112 @@ def validate_driver_location(
 
 
 
+
+
+
+
 from sqlalchemy import func, and_
+
+# ──────────────────────────────────────────────────────────────
+# Driver Config — tenant details + speed limit
+# ──────────────────────────────────────────────────────────────
+
+@router.get("/config", status_code=status.HTTP_200_OK)
+async def get_driver_config(
+    db: Session = Depends(get_db),
+    ctx=Depends(DriverAuth),
+):
+    """
+    Returns the tenant's basic details and configuration values that the driver
+    app needs at startup:
+
+    - Company name, address, coordinates
+    - Speed limit in km/h (for in-app speedometer warnings)
+    - OTP requirements per shift direction (login/logout × boarding/deboarding)
+    - Escort requirement flag
+
+    If the driver's assigned vehicle has a per-vehicle speed limit override
+    (`speed_limit_override_kmph`), that value is returned as `effective_speed_limit_kmph`
+    and takes priority over the tenant-wide limit.
+    """
+    try:
+        tenant_id = ctx["tenant_id"]
+        driver_id = ctx["driver_id"]
+
+        # ── 1. Load tenant ──────────────────────────────────────────────────
+        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        if not tenant:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error("Tenant not found", "TENANT_NOT_FOUND"),
+            )
+
+        # ── 2. Load tenant config (one-to-one, may not exist yet) ──────────
+        cfg = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
+
+        # ── 3. Check for per-vehicle speed limit override ───────────────────
+        driver = db.query(Driver).filter(Driver.driver_id == driver_id).first()
+        vehicle_speed_limit = None
+        vehicle_rc = None
+        if driver:
+            vehicle = (
+                db.query(Vehicle)
+                .filter(
+                    Vehicle.driver_id == driver_id,
+                    Vehicle.is_active == True,
+                )
+                .first()
+            )
+            if vehicle:
+                vehicle_speed_limit = vehicle.speed_limit_override_kmph
+                vehicle_rc = vehicle.rc_number
+
+        tenant_speed_limit = cfg.speed_limit_kmph if cfg else None
+        effective_speed_limit = vehicle_speed_limit if vehicle_speed_limit is not None else tenant_speed_limit
+
+        return ResponseWrapper.success(
+            message="Driver config fetched successfully",
+            data={
+                "tenant": {
+                    "tenant_id": tenant.tenant_id,
+                    "name": tenant.name,
+                    "address": tenant.address,
+                    "latitude": float(tenant.latitude),
+                    "longitude": float(tenant.longitude),
+                    "is_active": tenant.is_active,
+                },
+                "speed": {
+                    "tenant_speed_limit_kmph": tenant_speed_limit,
+                    "vehicle_speed_limit_override_kmph": vehicle_speed_limit,
+                    "effective_speed_limit_kmph": effective_speed_limit,
+                    "assigned_vehicle_rc": vehicle_rc,
+                },
+                "otp": {
+                    "login_boarding_otp": cfg.login_boarding_otp if cfg else None,
+                    "login_deboarding_otp": cfg.login_deboarding_otp if cfg else None,
+                    "logout_boarding_otp": cfg.logout_boarding_otp if cfg else None,
+                    "logout_deboarding_otp": cfg.logout_deboarding_otp if cfg else None,
+                },
+                "safety": {
+                    "escort_required_for_women": cfg.escort_required_for_women if cfg else None,
+                    "escort_required_start_time": (
+                        cfg.escort_required_start_time.strftime("%H:%M")
+                        if cfg and cfg.escort_required_start_time else None
+                    ),
+                    "escort_required_end_time": (
+                        cfg.escort_required_end_time.strftime("%H:%M")
+                        if cfg and cfg.escort_required_end_time else None
+                    ),
+                },
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[driver.config] Error fetching driver config")
+        raise handle_http_error(e)
+
 
 @router.post("/duty/start", status_code=status.HTTP_200_OK)
 async def start_duty(
