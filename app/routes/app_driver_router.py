@@ -507,6 +507,7 @@ async def start_duty(
 
         # --- Update route to ONGOING ---
         route.status = RouteManagementStatusEnum.ONGOING
+        route.actual_start_time = now
         route.updated_at = now
 
         db.add(route)
@@ -1584,9 +1585,8 @@ async def end_duty(
 
         # --- Complete the route ---
         route.status = RouteManagementStatusEnum.COMPLETED
+        route.actual_end_time = now
         route.updated_at = now
-        if hasattr(route, "actual_end_time"):
-            setattr(route, "actual_end_time", now)
 
         db.add(route)
         db.commit()

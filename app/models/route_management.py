@@ -44,6 +44,8 @@ class RouteManagement(Base):
     actual_total_time = Column(Float, nullable=True)  # New column
     actual_total_distance = Column(Float, nullable=True)  # New column
     buffer_time = Column(Float, nullable=True)  # New column
+    actual_start_time = Column(DateTime, nullable=True)   # Set when driver starts duty
+    actual_end_time = Column(DateTime, nullable=True)     # Set when driver ends duty
 
     is_active = Column(Boolean, default=True, nullable=False)
     version = Column(Integer, default=1, nullable=False)
