@@ -38,6 +38,8 @@ from app.routes import (
     speed_violation_router,
     # Seed & dev utilities
     dev_testing_router,
+    # Dashboard
+    dashboard_router,
 )
 from app.seed.seed_api import router as seed_router
 
@@ -115,3 +117,6 @@ api_router.include_router(speed_violation_router, prefix=V1)
 # Seed & development utilities
 api_router.include_router(seed_router,        prefix=V1)
 api_router.include_router(dev_testing_router, prefix=V1)
+
+# Dashboard
+api_router.include_router(dashboard_router,   prefix=V1)
