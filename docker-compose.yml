@@ -106,7 +106,7 @@ services:
       
     volumes:
       - ./app/firebase/firebase_key.json:/app/app/firebase/firebase_key.json:ro
-      - /var/lib/fleet/uploads:/app/uploaded_files
+      - fleet_uploads:/app/uploaded_files
       - redis_data:/app/redis_data
       - .:/app
     depends_on:
@@ -147,3 +147,4 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  fleet_uploads:

@@ -7,7 +7,7 @@ from app.database.session import get_db
 from app.models.employee import Employee
 from app.models.team import Team
 from app.crud.team import team_crud
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from app.models.tenant import Tenant
 from app.schemas.team import TeamCreate, TeamUpdate, TeamResponse, TeamPaginationResponse
 from app.utils.pagination import paginate_query
@@ -119,6 +119,15 @@ def create_team(
             message="Team created successfully"
         )
     
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=ResponseWrapper.error(
+                message="A team with this name already exists for the tenant",
+                error_code="TEAM_DUPLICATE",
+            ),
+        )
     except SQLAlchemyError as e:
         # Handle DB errors in a structured way
         raise handle_db_error(e)

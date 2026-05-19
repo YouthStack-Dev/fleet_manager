@@ -7,13 +7,17 @@ from pydantic import BaseModel, Field
 from datetime import date , datetime, time
 from enum import Enum
 
+import math
+from collections import defaultdict
+
 from app.database.session import get_db
 from app.models.booking import Booking, BookingStatusEnum
 from app.models.cutoff import Cutoff
 from app.models.driver import Driver
 from app.models.escort import Escort
+from app.models.nodal_point import NodalPoint
 from app.models.route_management import RouteManagement, RouteManagementBooking, RouteManagementStatusEnum
-from app.models.shift import Shift  # Add shift model import
+from app.models.shift import Shift, PickupTypeEnum  # Add shift model import
 from app.models.tenant import Tenant  # Add tenant model import
 from app.models.tenant_config import TenantConfig
 from app.models.vehicle import Vehicle
@@ -35,6 +39,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from typing import Any
 
 from app.utils.otp_utils import get_required_otp_count, generate_otp_codes
+from app.utils.trip_enforcement import enforce_one_trip_per_shift
 
 # Create module logger with explicit name
 logger = get_logger("route_management")
@@ -675,6 +680,233 @@ async def create_routes(
                 data={"clusters": [], "total_bookings": 0, "total_clusters": 0},
                 message=f"No unrouted bookings found for shift {shift_id} on {booking_date}"
             )
+
+        # ---- NODAL PATH: skip clustering, group by nodal_point_id ----
+        is_nodal = (shift.pickup_type == PickupTypeEnum.NODAL)
+
+        if is_nodal:
+            logger.info(
+                f"[create_routes] NODAL shift detected. Grouping {len(bookings)} bookings by nodal_point_id "
+                f"(group_size={group_size})"
+            )
+
+            def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+                R = 6371.0
+                dlat = math.radians(float(lat2) - float(lat1))
+                dlon = math.radians(float(lon2) - float(lon1))
+                a = (
+                    math.sin(dlat / 2) ** 2
+                    + math.cos(math.radians(float(lat1)))
+                    * math.cos(math.radians(float(lat2)))
+                    * math.sin(dlon / 2) ** 2
+                )
+                return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+            # Group bookings by hub
+            hub_booking_map: dict[int, list] = defaultdict(list)
+            no_hub_bookings = []
+            for b in bookings:
+                if b.nodal_point_id:
+                    hub_booking_map[b.nodal_point_id].append(b)
+                else:
+                    no_hub_bookings.append(b)
+
+            if no_hub_bookings:
+                logger.warning(
+                    f"[create_routes] {len(no_hub_bookings)} bookings in NODAL shift have no "
+                    f"nodal_point_id — they will be skipped: "
+                    f"{[b.booking_id for b in no_hub_bookings]}"
+                )
+
+            # Batch-load nodal points
+            hub_ids = list(hub_booking_map.keys())
+            nodal_points_map: dict[int, NodalPoint] = {
+                np_obj.nodal_point_id: np_obj
+                for np_obj in db.query(NodalPoint).filter(NodalPoint.nodal_point_id.in_(hub_ids)).all()
+            }
+
+            # Fetch tenant for office coordinates
+            tenant_obj = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+            office_lat = float(tenant_obj.latitude) if tenant_obj and tenant_obj.latitude else None
+            office_lng = float(tenant_obj.longitude) if tenant_obj and tenant_obj.longitude else None
+
+            shift_minutes = shift.shift_time.hour * 60 + shift.shift_time.minute
+            BUFFER_MINUTES = 15
+            AVG_SPEED_KMH = 30.0  # conservative urban average
+
+            nodal_routes_created = 0
+            nodal_routes_failed = 0
+            nodal_cluster_data = []
+            cluster_idx = 0
+
+            for hub_id, hub_bookings in hub_booking_map.items():
+                nodal_point = nodal_points_map.get(hub_id)
+                if not nodal_point:
+                    logger.warning(
+                        f"[create_routes] NodalPoint id={hub_id} not found in DB — "
+                        f"skipping {len(hub_bookings)} bookings"
+                    )
+                    nodal_routes_failed += 1
+                    continue
+
+                hub_lat = float(nodal_point.latitude)
+                hub_lng = float(nodal_point.longitude)
+
+                # Estimate straight-line distance hub ↔ office
+                if office_lat is not None and office_lng is not None:
+                    dist_km = round(_haversine_km(hub_lat, hub_lng, office_lat, office_lng), 2)
+                    travel_minutes = (dist_km / AVG_SPEED_KMH) * 60
+                else:
+                    dist_km = 0.0
+                    travel_minutes = 0.0
+                    logger.warning(
+                        f"[create_routes] Tenant {tenant_id} has no office coordinates; "
+                        f"estimated_pick_up_time will be based on shift_time only"
+                    )
+
+                # Estimated pickup time at the hub
+                if shift_type == "IN":
+                    # Driver picks up at hub then drives to office — back-calculate from shift start
+                    est_pickup_minutes = shift_minutes - travel_minutes - BUFFER_MINUTES
+                else:
+                    # Driver leaves office at shift_time and drives to hub
+                    est_pickup_minutes = shift_minutes + travel_minutes + BUFFER_MINUTES
+
+                est_pickup_minutes = max(0.0, est_pickup_minutes)
+                est_pickup_fmt = (
+                    f"{int(est_pickup_minutes // 60):02d}:{int(est_pickup_minutes % 60):02d}"
+                )
+
+                # For IN shift, estimated drop at hub = shift_time (they arrive at office by shift start)
+                # For OUT shift, estimated drop at hub = est_pickup_minutes (that IS the drop)
+                shift_time_fmt = f"{shift.shift_time.hour:02d}:{shift.shift_time.minute:02d}"
+                est_drop_fmt = shift_time_fmt if shift_type == "IN" else est_pickup_fmt
+
+                # Split hub into capacity-sized chunks → one route per chunk
+                for chunk_start in range(0, len(hub_bookings), group_size):
+                    chunk = hub_bookings[chunk_start : chunk_start + group_size]
+                    cluster_idx += 1
+                    route_code = f"NODAL-HUB{hub_id}-{cluster_idx}"
+
+                    try:
+                        route = RouteManagement(
+                            tenant_id=tenant_id,
+                            shift_id=shift_id,
+                            route_code=route_code,
+                            estimated_total_time=round(travel_minutes + BUFFER_MINUTES, 1),
+                            estimated_total_distance=dist_km,
+                            buffer_time=float(BUFFER_MINUTES),
+                            status=RouteManagementStatusEnum.PLANNED,
+                        )
+                        db.add(route)
+                        db.flush()  # get route_id
+
+                        # Escort check
+                        from app.utils.otp_utils import update_route_escort_requirement
+                        update_route_escort_requirement(db, route.route_id, tenant_id)
+
+                        pickup_order = []
+                        for order_idx, booking in enumerate(chunk):
+                            route_booking = RouteManagementBooking(
+                                route_id=route.route_id,
+                                booking_id=booking.booking_id,
+                                order_id=order_idx + 1,
+                                estimated_pick_up_time=est_pickup_fmt,
+                                estimated_drop_time=est_drop_fmt,
+                                estimated_distance=dist_km,
+                            )
+                            db.add(route_booking)
+
+                            # Advance booking to SCHEDULED
+                            db.query(Booking).filter(
+                                Booking.booking_id == booking.booking_id,
+                                Booking.status == BookingStatusEnum.REQUEST,
+                            ).update(
+                                {
+                                    Booking.status: BookingStatusEnum.SCHEDULED,
+                                    Booking.updated_at: func.now(),
+                                },
+                                synchronize_session=False,
+                            )
+
+                            pickup_order.append({
+                                "order_id": order_idx + 1,
+                                "booking_id": booking.booking_id,
+                                "pickup_lat": hub_lat,
+                                "pickup_lng": hub_lng,
+                                "estimated_pickup_time_formatted": est_pickup_fmt,
+                                "estimated_drop_time_formatted": est_drop_fmt,
+                                "estimated_distance_km": dist_km,
+                            })
+
+                        db.commit()
+                        nodal_routes_created += 1
+                        logger.info(
+                            f"[create_routes] NODAL route created: route_id={route.route_id} "
+                            f"hub={nodal_point.name} bookings={[b.booking_id for b in chunk]}"
+                        )
+
+                        nodal_cluster_data.append({
+                            "cluster_id": cluster_idx,
+                            "hub_id": hub_id,
+                            "hub_name": nodal_point.name,
+                            "route_id": route.route_id,
+                            "route_code": route_code,
+                            "booking_ids": [b.booking_id for b in chunk],
+                            "optimized_route": [{
+                                "temp_route_id": route.route_id,
+                                "booking_ids": [b.booking_id for b in chunk],
+                                "pickup_order": pickup_order,
+                                "estimated_time": f"{int(travel_minutes + BUFFER_MINUTES)} mins",
+                                "estimated_distance": f"{dist_km} km",
+                                "hub_lat": hub_lat,
+                                "hub_lng": hub_lng,
+                                "hub_name": nodal_point.name,
+                            }],
+                        })
+
+                    except SQLAlchemyError as e:
+                        db.rollback()
+                        logger.error(
+                            f"[create_routes] Failed to save nodal route for hub {hub_id}: {e}"
+                        )
+                        nodal_routes_failed += 1
+
+            if nodal_routes_created == 0 and len(hub_booking_map) > 0:
+                raise HTTPException(
+                    status_code=422,
+                    detail=ResponseWrapper.error(
+                        message=(
+                            f"Could not create any nodal routes for shift {shift_id} on {booking_date}. "
+                            f"Check that all bookings have valid nodal_point_id values."
+                        ),
+                        error_code="NODAL_ROUTE_GENERATION_FAILED",
+                        details={
+                            "routes_created": 0,
+                            "routes_failed": nodal_routes_failed,
+                        },
+                    ),
+                )
+
+            nodal_message = (
+                f"Nodal routes created: {nodal_routes_created}"
+                if nodal_routes_failed == 0
+                else f"Nodal routes created: {nodal_routes_created}, failed: {nodal_routes_failed}"
+            )
+            shift_response = ShiftResponse.model_validate(shift, from_attributes=True)
+            return ResponseWrapper.success(
+                data={
+                    "shift": shift_response,
+                    "clusters": nodal_cluster_data,
+                    "total_bookings": len(bookings),
+                    "total_clusters": nodal_routes_created,
+                    "routes_created": nodal_routes_created,
+                    "routes_failed": nodal_routes_failed,
+                },
+                message=nodal_message,
+            )
+
+        # ---- DOOR-PICKUP PATH: existing clustering logic (unchanged) ----
 
         # ---- Prepare Rides for Clustering ----
         rides = []
@@ -2274,6 +2506,7 @@ Fleet Management Team"""
             details.append({
                 "booking_id": booking.booking_id,
                 "employee_id": employee.employee_id,
+                "employee_name": employee.name,
                 "email_status": result_entry["email_status"],
                 "sms_status": result_entry["sms_status"],
                 "push_status": result_entry["push_status"],
@@ -2678,6 +2911,33 @@ async def get_notification_logs_by_date_shift(
             }
             for log in logs
         ]
+
+        # Enrich details with employee_name — collect all unique employee IDs
+        # across every log's details list, batch-query once, then fill in.
+        from app.models.employee import Employee as EmployeeModel
+        all_emp_ids = {
+            d["employee_id"]
+            for r in result
+            for d in (r["details"] or [])
+            if d.get("employee_id") and not d.get("employee_name")
+        }
+        emp_name_map: dict = {}
+        if all_emp_ids:
+            emp_rows = (
+                db.query(EmployeeModel.employee_id, EmployeeModel.name)
+                .filter(EmployeeModel.employee_id.in_(all_emp_ids))
+                .all()
+            )
+            emp_name_map = {row.employee_id: row.name for row in emp_rows}
+
+        for r in result:
+            enriched = []
+            for d in (r["details"] or []):
+                entry = dict(d)
+                if not entry.get("employee_name") and entry.get("employee_id"):
+                    entry["employee_name"] = emp_name_map.get(entry["employee_id"])
+                enriched.append(entry)
+            r["details"] = enriched
 
         # Aggregate totals across all logs for this date+shift
         total_email_sent = sum(r["email"]["sent"] for r in result)
@@ -3428,23 +3688,19 @@ async def update_route(
             booking_details = get_booking_by_id(booking, db)
             request_bookings.append(booking_details)
 
-        # --- Remove booking from any other active route before adding ---
+        # --- One-trip-per-shift enforcement (respects tenant config flags) ---
         if update_request.operation == "add":
-            for booking_id in request_booking_ids:
-                existing_links = db.query(RouteManagementBooking).join(RouteManagement).filter(
-                    RouteManagementBooking.booking_id == booking_id,
-                    RouteManagementBooking.route_id != route_id,
-                    RouteManagement.tenant_id == tenant_id
-                ).all()
-
-                for link in existing_links:
-                    logger.info(
-                        f"Removing booking {booking_id} from route {link.route_id} "
-                        f"because it is being moved to route {route_id}"
-                    )
-                    db.delete(link)
-
-            db.flush()  # ensure removal is persisted before adding in new route
+            tenant_config = get_tenant_config_with_cache(db, tenant_id)
+            one_trip_enabled = getattr(tenant_config, "one_trip_per_shift_enabled", True)
+            auto_move = getattr(tenant_config, "auto_move_on_conflict", True)
+            enforce_one_trip_per_shift(
+                db=db,
+                route_id=route_id,
+                tenant_id=tenant_id,
+                booking_ids=request_booking_ids,
+                one_trip_per_shift_enabled=one_trip_enabled,
+                auto_move_on_conflict=auto_move,
+            )
 
         
         logger.debug(f"Fetched request bookings: {request_bookings}")

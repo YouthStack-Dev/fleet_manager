@@ -184,6 +184,9 @@ def client(test_db, monkeypatch):
     # Patch the PermissionChecker's __call__ method
     monkeypatch.setattr(PermissionChecker, "__call__", mock_permission_checker_call)
     
+    # Prevent lifespan from running Alembic migrations (needs real Postgres)
+    monkeypatch.setattr("main.run_migrations", lambda: None)
+    
     with TestClient(app) as test_client:
         yield test_client
     
@@ -746,6 +749,7 @@ def employee_token(employee_user):
                 "escort.create", "escort.read", "escort.update", "escort.delete",
                 "tenant_config.read", "tenant_config.update", "tenant_config.escort",
                 "app-employee.read", "app-employee.write",
+                "employee_app.read", "employee_app.create",
                 # Dict format permissions (for alert module)
                 {"module": "alert", "action": ["create", "read", "respond", "close", "escalate"]}
             ]

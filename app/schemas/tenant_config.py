@@ -7,12 +7,19 @@ class TenantConfigBase(BaseModel):
     escort_required_start_time: Optional[time] = None
     escort_required_end_time: Optional[time] = None
     escort_required_for_women: bool = True
-    
+
     # OTP requirements (boarding/deboarding flags)
     login_boarding_otp: bool = True
     login_deboarding_otp: bool = True
     logout_boarding_otp: bool = True
     logout_deboarding_otp: bool = True
+
+    # Speed limit configuration (km/h)
+    speed_limit_kmph: Optional[float] = 60.0
+
+    # One-trip-per-shift enforcement
+    one_trip_per_shift_enabled: bool = True
+    auto_move_on_conflict: bool = True
 
     @field_validator('escort_required_start_time', 'escort_required_end_time')
     def validate_time_format(cls, v):
@@ -35,7 +42,8 @@ class TenantConfigCreate(TenantConfigBase):
                 "login_boarding_otp": True,
                 "login_deboarding_otp": True,
                 "logout_boarding_otp": True,
-                "logout_deboarding_otp": False
+                "logout_deboarding_otp": False,
+                "speed_limit_kmph": 60.0
             }
         }
     )
@@ -45,12 +53,19 @@ class TenantConfigUpdate(BaseModel):
     escort_required_start_time: Optional[time] = None
     escort_required_end_time: Optional[time] = None
     escort_required_for_women: Optional[bool] = None
-    
+
     # OTP requirements (boarding/deboarding flags)
     login_boarding_otp: Optional[bool] = None
     login_deboarding_otp: Optional[bool] = None
     logout_boarding_otp: Optional[bool] = None
     logout_deboarding_otp: Optional[bool] = None
+
+    # Speed limit configuration (km/h)
+    speed_limit_kmph: Optional[float] = None
+
+    # One-trip-per-shift enforcement
+    one_trip_per_shift_enabled: Optional[bool] = None
+    auto_move_on_conflict: Optional[bool] = None
 
     @field_validator('escort_required_start_time', 'escort_required_end_time')
     def validate_time_format(cls, v):

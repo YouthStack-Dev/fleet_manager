@@ -44,6 +44,16 @@ class RouteManagement(Base):
     actual_total_time = Column(Float, nullable=True)  # New column
     actual_total_distance = Column(Float, nullable=True)  # New column
     buffer_time = Column(Float, nullable=True)  # New column
+    actual_start_time = Column(DateTime, nullable=True)   # Set when driver starts duty
+    actual_end_time = Column(DateTime, nullable=True)     # Set when driver ends duty
+
+    # --- OTA / OTD Delay Tagging ---
+    # Summary of the last delay tag applied to this route.
+    # Full audit history lives in route_delay_events.
+    delay_type = Column(String(20), nullable=True)        # "LATE" | "EARLY" | "ON_TIME"
+    delay_minutes = Column(Integer, nullable=True)        # positive = late, negative = early
+    delay_tagged_at = Column(DateTime, nullable=True)     # timestamp of last tagging
+    ota_grace_minutes = Column(Integer, nullable=False, default=5, server_default="5")
 
     is_active = Column(Boolean, default=True, nullable=False)
     version = Column(Integer, default=1, nullable=False)
@@ -51,6 +61,7 @@ class RouteManagement(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
     route_management_bookings = relationship("RouteManagementBooking", back_populates="route_management", cascade="all, delete-orphan")
+    delay_events = relationship("RouteDelayEvent", back_populates="route", cascade="all, delete-orphan")
 
 
 class RouteManagementBooking(Base):

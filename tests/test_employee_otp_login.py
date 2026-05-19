@@ -3,7 +3,7 @@ Test cases for Employee OTP-based login
 """
 import pytest
 from fastapi.testclient import TestClient
-from app.main import app
+from main import app
 from app.database.session import get_db
 from unittest.mock import MagicMock, patch
 import json

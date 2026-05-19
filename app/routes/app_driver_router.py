@@ -37,16 +37,19 @@ from datetime import date, datetime, timedelta
 from app.core.logging_config import get_logger
 from app.database.session import get_db
 from app.models.employee import Employee
-from app.models.shift import Shift
+from app.models.shift import Shift, PickupTypeEnum
+from app.models.nodal_point import NodalPoint
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
 from common_utils.auth.permission_checker import PermissionChecker
 from common_utils import get_current_ist_time
 from app.models.route_management import RouteManagement, RouteManagementBooking, RouteManagementStatusEnum
 from app.models.booking import Booking, BookingStatusEnum
 from app.models.tenant import Tenant
+from app.models.tenant_config import TenantConfig
 from app.models.vehicle import Vehicle
 from app.models.driver import Driver
 from geopy.distance import geodesic
+from app.utils.delay_tagging import tag_trip_delay
 
 # Notification services
 from app.core.email_service import EmailService
@@ -61,7 +64,7 @@ router = APIRouter(prefix="/driver", tags=["Driver App"])
 # Dependencies & Utilities
 # ---------------------------
 
-async def DriverAuth(user_data=Depends(PermissionChecker(["app-driver.read", "app-driver.write"]))):
+async def DriverAuth(user_data=Depends(PermissionChecker(["driver_app.read", "driver_app.update"]))):
     """
     Ensures the token belongs to a driver persona and returns (tenant_id, driver_id, user_id).
     """
@@ -96,19 +99,26 @@ def verify_otp(booking_otp: Optional[int], provided_otp: Optional[str], otp_type
         logger.info(f"[driver.verify_otp] No {otp_type} OTP required for booking {booking_id}")
 
 
-def get_next_stop(db: Session, route_id: int, current_order_id: int) -> Optional[dict]:
+def get_next_stop(db: Session, route_id: int, current_order_id: int, skip_ongoing: bool = False) -> Optional[dict]:
     """
     Fetches the next pending stop in the route after the given order_id.
     Returns serialized next stop data or None if no next stop exists.
     OPTIMIZED: Single query with join to fetch both RouteManagementBooking and Booking.
+
+    skip_ongoing=True: for NODAL routes — exclude ONGOING bookings (already QR-boarded)
+    so the driver's "next stop" view only shows passengers still waiting.
     """
+    excluded = [BookingStatusEnum.NO_SHOW, BookingStatusEnum.COMPLETED]
+    if skip_ongoing:
+        excluded.append(BookingStatusEnum.ONGOING)
+
     result = (
         db.query(RouteManagementBooking, Booking)
         .join(Booking, RouteManagementBooking.booking_id == Booking.booking_id)
         .filter(
             RouteManagementBooking.route_id == route_id,
             RouteManagementBooking.order_id > current_order_id,
-            Booking.status.notin_([BookingStatusEnum.NO_SHOW, BookingStatusEnum.COMPLETED]),
+            Booking.status.notin_(excluded),
         )
         .order_by(RouteManagementBooking.order_id)
         .first()
@@ -320,7 +330,112 @@ def validate_driver_location(
 
 
 
+
+
+
+
 from sqlalchemy import func, and_
+
+# ──────────────────────────────────────────────────────────────
+# Driver Config — tenant details + speed limit
+# ──────────────────────────────────────────────────────────────
+
+@router.get("/config", status_code=status.HTTP_200_OK)
+async def get_driver_config(
+    db: Session = Depends(get_db),
+    ctx=Depends(DriverAuth),
+):
+    """
+    Returns the tenant's basic details and configuration values that the driver
+    app needs at startup:
+
+    - Company name, address, coordinates
+    - Speed limit in km/h (for in-app speedometer warnings)
+    - OTP requirements per shift direction (login/logout × boarding/deboarding)
+    - Escort requirement flag
+
+    If the driver's assigned vehicle has a per-vehicle speed limit override
+    (`speed_limit_override_kmph`), that value is returned as `effective_speed_limit_kmph`
+    and takes priority over the tenant-wide limit.
+    """
+    try:
+        tenant_id = ctx["tenant_id"]
+        driver_id = ctx["driver_id"]
+
+        # ── 1. Load tenant ──────────────────────────────────────────────────
+        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        if not tenant:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error("Tenant not found", "TENANT_NOT_FOUND"),
+            )
+
+        # ── 2. Load tenant config (one-to-one, may not exist yet) ──────────
+        cfg = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
+
+        # ── 3. Check for per-vehicle speed limit override ───────────────────
+        driver = db.query(Driver).filter(Driver.driver_id == driver_id).first()
+        vehicle_speed_limit = None
+        vehicle_rc = None
+        if driver:
+            vehicle = (
+                db.query(Vehicle)
+                .filter(
+                    Vehicle.driver_id == driver_id,
+                    Vehicle.is_active == True,
+                )
+                .first()
+            )
+            if vehicle:
+                vehicle_speed_limit = vehicle.speed_limit_override_kmph
+                vehicle_rc = vehicle.rc_number
+
+        tenant_speed_limit = cfg.speed_limit_kmph if cfg else None
+        effective_speed_limit = vehicle_speed_limit if vehicle_speed_limit is not None else tenant_speed_limit
+
+        return ResponseWrapper.success(
+            message="Driver config fetched successfully",
+            data={
+                "tenant": {
+                    "tenant_id": tenant.tenant_id,
+                    "name": tenant.name,
+                    "address": tenant.address,
+                    "latitude": float(tenant.latitude),
+                    "longitude": float(tenant.longitude),
+                    "is_active": tenant.is_active,
+                },
+                "speed": {
+                    "tenant_speed_limit_kmph": tenant_speed_limit,
+                    "vehicle_speed_limit_override_kmph": vehicle_speed_limit,
+                    "effective_speed_limit_kmph": effective_speed_limit,
+                    "assigned_vehicle_rc": vehicle_rc,
+                },
+                "otp": {
+                    "login_boarding_otp": cfg.login_boarding_otp if cfg else None,
+                    "login_deboarding_otp": cfg.login_deboarding_otp if cfg else None,
+                    "logout_boarding_otp": cfg.logout_boarding_otp if cfg else None,
+                    "logout_deboarding_otp": cfg.logout_deboarding_otp if cfg else None,
+                },
+                "safety": {
+                    "escort_required_for_women": cfg.escort_required_for_women if cfg else None,
+                    "escort_required_start_time": (
+                        cfg.escort_required_start_time.strftime("%H:%M")
+                        if cfg and cfg.escort_required_start_time else None
+                    ),
+                    "escort_required_end_time": (
+                        cfg.escort_required_end_time.strftime("%H:%M")
+                        if cfg and cfg.escort_required_end_time else None
+                    ),
+                },
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[driver.config] Error fetching driver config")
+        raise handle_http_error(e)
+
 
 @router.post("/duty/start", status_code=status.HTTP_200_OK)
 async def start_duty(
@@ -393,6 +508,7 @@ async def start_duty(
 
         # --- Update route to ONGOING ---
         route.status = RouteManagementStatusEnum.ONGOING
+        route.actual_start_time = now
         route.updated_at = now
 
         db.add(route)
@@ -677,8 +793,10 @@ async def get_driver_trips(
                     "booking_type": booking.booking_type.value if booking.booking_type else None,
                     "reason": booking.reason,
                     "is_active": getattr(booking, "is_active", True),
-                    "is_boarding_otp_required": booking.boarding_otp is not None,
-                    "is_deboarding_otp_required": booking.deboarding_otp is not None,
+                     "is_boarding_otp_required": booking.boarding_otp is not None,
+                     "is_deboarding_otp_required": booking.deboarding_otp is not None,
+                     "nodal_point_id": booking.nodal_point_id,
+                     "is_nodal_stop": booking.nodal_point_id is not None,
                     "created_at": booking.created_at.isoformat() if booking.created_at else None,
                     "updated_at": booking.updated_at.isoformat() if booking.updated_at else None,
                     "order_id": rb.order_id,
@@ -698,6 +816,47 @@ async def get_driver_trips(
 
             # Use batch-loaded shift (no additional query!)
             shift = shifts_dict.get(route.shift_id) if route.shift_id else None
+            pickup_type_val = shift.pickup_type.value if shift and shift.pickup_type else None
+
+            # ── Hub groups for NODAL routes ─────────────────────────────────
+            hub_groups = None
+            if shift and shift.pickup_type == PickupTypeEnum.NODAL:
+                from collections import defaultdict
+                grouped: dict = defaultdict(list)
+                for s in stops:
+                    key = s.get("nodal_point_id") or "unassigned"
+                    grouped[key].append({
+                        "booking_id": s["booking_id"],
+                        "employee_id": s["employee_id"],
+                        "employee_name": s.get("employee_name"),
+                        "employee_phone": s.get("employee_phone"),
+                        "status": s["status"],
+                        "order_id": s["order_id"],
+                        "is_boarding_otp_required": s.get("is_boarding_otp_required"),
+                        "is_boarded": s["status"] == BookingStatusEnum.ONGOING.value,
+                    })
+                # Batch-load nodal point details
+                nodal_ids = [k for k in grouped if isinstance(k, int)]
+                np_map = {
+                    np.nodal_point_id: np
+                    for np in db.query(NodalPoint)
+                    .filter(NodalPoint.nodal_point_id.in_(nodal_ids))
+                    .all()
+                } if nodal_ids else {}
+                hub_groups = []
+                for key in sorted(grouped.keys(), key=lambda x: x if isinstance(x, int) else 9999999):
+                    np_obj = np_map.get(key)
+                    hub_groups.append({
+                        "nodal_point_id": key if isinstance(key, int) else None,
+                        "hub_name": np_obj.name if np_obj else None,
+                        "hub_address": np_obj.address if np_obj else None,
+                        "hub_latitude": float(np_obj.latitude) if np_obj else None,
+                        "hub_longitude": float(np_obj.longitude) if np_obj else None,
+                        "passenger_count": len(grouped[key]),
+                        "boarded_count": sum(1 for b in grouped[key] if b.get("is_boarded")),
+                        "pending_count": sum(1 for b in grouped[key] if not b.get("is_boarded")),
+                        "bookings": grouped[key],
+                    })
 
             response_routes.append({
                 "route_id": route.route_id,
@@ -712,6 +871,7 @@ async def get_driver_trips(
                 "escort_boarded": getattr(route, "escort_boarded", False),
                 "shift_time": shift.shift_time.strftime("%H:%M:%S") if shift and shift.shift_time else None,
                 "log_type": shift.log_type.value if shift and shift.log_type else None,
+                "pickup_type": pickup_type_val,
                 "status": route.status.value,
                 "estimated_total_time": route.estimated_total_time,
                 "estimated_total_distance": route.estimated_total_distance,
@@ -720,6 +880,7 @@ async def get_driver_trips(
                 "buffer_time": route.buffer_time,
                 "start_time": first_pickup_dt.strftime("%Y-%m-%d %H:%M"),
                 "stops": stops,
+                "hub_groups": hub_groups,
                 "summary": {
                     "total_stops": len(stops),
                     "total_distance_km": float(route.actual_total_distance or route.estimated_total_distance or 0),
@@ -1075,11 +1236,19 @@ async def start_trip(
                 ),
             )
 
-        # allow start from first available booking if previous ones are no-show
-        check_previous_bookings_completed(db, route_id, rb.order_id)
+        # ── Detect nodal shift ──────────────────────────────────────────────
+        is_nodal_shift = False
+        if booking.shift_id:
+            _shift = db.query(Shift).filter(Shift.shift_id == booking.shift_id).first()
+            if _shift and _shift.pickup_type == PickupTypeEnum.NODAL:
+                is_nodal_shift = True
+
+        # ── Sequential gate (skip for nodal — hub passengers board simultaneously) ──
+        if not is_nodal_shift:
+            check_previous_bookings_completed(db, route_id, rb.order_id)
 
         # Booking object already validated by validate_booking_in_route
-        
+
         # --- Validate driver's location is near pickup location ---
         validate_driver_location(
             current_latitude, current_longitude,
@@ -1087,13 +1256,35 @@ async def start_trip(
             "pickup", booking_id
         )
 
-        # --- Verify boarding OTP if present ---
-        verify_otp(booking.boarding_otp, otp, "boarding", booking_id)
-
-        # --- Update booking status and pickup time (route already ONGOING) ---
+        # ── Boarding confirmation ────────────────────────────────────────────
         now = get_current_ist_time()
-        booking.status = BookingStatusEnum.ONGOING
-        rb.actual_pick_up_time = now.strftime("%H:%M")
+        if is_nodal_shift:
+            # Nodal: QR scan already moves booking to ONGOING; driver call just
+            # records pick-up time and fetches next stop.  If the employee hasn't
+            # scanned yet (SCHEDULED), the driver can still confirm them manually.
+            if booking.status not in [BookingStatusEnum.SCHEDULED, BookingStatusEnum.ONGOING]:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Booking is not in a boardable state for nodal confirmation",
+                        error_code="BOOKING_NOT_BOARDABLE",
+                        details={"current_status": booking.status.value},
+                    ),
+                )
+            if booking.status == BookingStatusEnum.SCHEDULED:
+                booking.status = BookingStatusEnum.ONGOING
+                logger.info(
+                    f"[driver.start_trip] Nodal manual board: "
+                    f"booking={booking_id} set to ONGOING"
+                )
+        else:
+            # Normal pickup: verify boarding OTP and set status
+            verify_otp(booking.boarding_otp, otp, "boarding", booking_id)
+            booking.status = BookingStatusEnum.ONGOING
+
+        # Record actual pick-up time if not already set by QR scan
+        if not rb.actual_pick_up_time:
+            rb.actual_pick_up_time = now.strftime("%H:%M")
 
         db.add_all([booking, rb])
         db.commit()
@@ -1112,7 +1303,7 @@ async def start_trip(
         )
 
         # --- Fetch next stop ---
-        next_stop = get_next_stop(db, route_id, rb.order_id)
+        next_stop = get_next_stop(db, route_id, rb.order_id, skip_ongoing=is_nodal_shift)
 
         return ResponseWrapper.success(
             message="Trip started successfully",
@@ -1395,9 +1586,17 @@ async def end_duty(
 
         # --- Complete the route ---
         route.status = RouteManagementStatusEnum.COMPLETED
+        route.actual_end_time = now
         route.updated_at = now
-        if hasattr(route, "actual_end_time"):
-            setattr(route, "actual_end_time", now)
+
+        # --- Tag OTD delay (best-effort; never blocks duty completion) ---
+        try:
+            tag_trip_delay(db=db, route=route, now=now)
+        except Exception as delay_err:
+            logger.warning(
+                "[driver.end_duty] Delay tagging failed for route %s (non-fatal): %s",
+                route_id, delay_err,
+            )
 
         db.add(route)
         db.commit()

@@ -33,6 +33,9 @@ from app.routes.booking_router import router as booking_router
 from app.routes import grouping
 from app.routes import route_management
 
+# ── Nodal Points ──────────────────────────────────────────────
+from app.routes.nodal_point_router import router as nodal_point_router
+
 # ── Alerts (SOS) ──────────────────────────────────────────────
 from app.routes.alert_router import router as alert_router
 from app.routes.alert_config_router import router as alert_config_router
@@ -47,12 +50,16 @@ from app.routes.iam import permission_router, policy_router, policy_package_rout
 from app.routes.monitoring_router import router as monitoring_router
 from app.routes.audit_log_router import router as audit_log_router
 from app.routes.reports_router import router as reports_router
+from app.routes.log_stream_router import router as log_stream_router
 
 # ── Ride Reviews ──────────────────────────────────────────────
 from app.routes.review_router import router as review_router
 
 # ── Announcements / Broadcasts ────────────────────────────────
 from app.routes.announcement_router import router as announcement_router
+
+# ── Speed Violations ──────────────────────────────────────────
+from app.routes.speed_violation_router import router as speed_violation_router
 
 # ── Seed & development utilities ──────────────────────────────
 from app.routes.dev_testing_routes import router as dev_testing_router

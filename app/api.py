@@ -22,6 +22,8 @@ from app.routes import (
     team_router, shift_router, weekoff_config_router, cutoff_router,
     # Bookings & routing
     booking_router, grouping, route_management,
+    # Nodal Points
+    nodal_point_router,
     # Alerts
     alert_router, alert_config_router,
     # Notifications
@@ -29,11 +31,13 @@ from app.routes import (
     # IAM
     permission_router, policy_router, policy_package_router, role_router,
     # Observability & reporting
-    monitoring_router, audit_log_router, reports_router,
+    monitoring_router, audit_log_router, reports_router, log_stream_router,
     # Ride Reviews
     review_router,
     # Announcements
     announcement_router,
+    # Speed Violations
+    speed_violation_router,
     # Seed & dev utilities
     dev_testing_router,
 )
@@ -82,6 +86,9 @@ api_router.include_router(booking_router,            prefix=V1)
 api_router.include_router(grouping.router,           prefix=V1)
 api_router.include_router(route_management.router,   prefix=V1)
 
+# Nodal Points
+api_router.include_router(nodal_point_router,        prefix=V1)
+
 # Alerts — carry /api/v1/... prefix internally
 api_router.include_router(alert_router)
 api_router.include_router(alert_config_router)
@@ -99,12 +106,16 @@ api_router.include_router(role_router,           prefix=f"{V1}/iam")
 api_router.include_router(monitoring_router, prefix=V1)
 api_router.include_router(audit_log_router,  prefix=V1)
 api_router.include_router(reports_router,    prefix=V1)
+api_router.include_router(log_stream_router, prefix=V1)
 
 # Ride reviews
 api_router.include_router(review_router,        prefix=V1)
 
 # Announcements / Broadcasts
 api_router.include_router(announcement_router, prefix=V1)
+
+# Speed Violations
+api_router.include_router(speed_violation_router, prefix=V1)
 
 # Seed & development utilities
 api_router.include_router(seed_router,        prefix=V1)

@@ -29,7 +29,7 @@ from app.schemas.auth import (
     OTPRequestSchema, OTPVerifySchema, SelectTenantSchema, SwitchTenantSchema
 )
 from app.schemas.driver import DriverResponse
-from app.schemas.tenant import TenantResponse
+from app.schemas.tenant import TenantResponse, TenantDriverResponse
 from app.schemas.vendor import VendorResponse
 from app.schemas.vendor_user import VendorUserResponse
 from common_utils.auth.utils import (
@@ -3100,6 +3100,27 @@ async def driver_select_tenant(
         
         logger.info(f"✅ [DRIVER LOGIN] Login SUCCESSFUL - Driver: {driver.name} (ID: {driver.driver_id}), Email: {driver.email}, Tenant: {tenant.name if tenant else tenant_id}, Vendor: {driver.vendor_id}, Device: {android_id[:8]}...{android_id[-4:]}, Roles: {roles}, Permissions: {len(all_permissions)} modules")
         
+        # Build driver-facing tenant object (includes speed limit + OTP config)
+        tenant_data = None
+        if tenant:
+            cfg = tenant.config  # TenantConfig (one-to-one, may be None)
+            tenant_data = TenantDriverResponse(
+                tenant_id=tenant.tenant_id,
+                name=tenant.name,
+                address=tenant.address,
+                latitude=float(tenant.latitude),
+                longitude=float(tenant.longitude),
+                is_active=tenant.is_active,
+                created_at=tenant.created_at,
+                updated_at=tenant.updated_at,
+                speed_limit_kmph=cfg.speed_limit_kmph if cfg else None,
+                login_boarding_otp=cfg.login_boarding_otp if cfg else None,
+                login_deboarding_otp=cfg.login_deboarding_otp if cfg else None,
+                logout_boarding_otp=cfg.logout_boarding_otp if cfg else None,
+                logout_deboarding_otp=cfg.logout_deboarding_otp if cfg else None,
+                escort_required_for_women=cfg.escort_required_for_women if cfg else None,
+            )
+
         return ResponseWrapper.success(
             message="Driver login successful",
             data={
@@ -3109,7 +3130,7 @@ async def driver_select_tenant(
                 "expires_in": 900,  # 15 minutes
                 "user": {
                     "driver": DriverResponse.model_validate(driver),
-                    "tenant": TenantResponse.model_validate(tenant) if tenant else None,
+                    "tenant": tenant_data,
                     "roles": roles,
                     "permissions": all_permissions,
                     "company_permissions": package_permissions,

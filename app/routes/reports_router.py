@@ -12,6 +12,7 @@ from openpyxl.utils import get_column_letter
 from app.database.session import get_db
 from app.models.booking import Booking, BookingStatusEnum
 from app.models.route_management import RouteManagement, RouteManagementBooking, RouteManagementStatusEnum
+from app.models.route_delay_event import RouteDelayEvent
 from app.models.driver import Driver
 from app.models.vehicle import Vehicle
 from app.models.vendor import Vendor
@@ -691,4 +692,203 @@ async def get_bookings_analytics(
         raise
     except Exception as e:
         logger.exception(f"[get_bookings_analytics] Error: {e}")
+        raise handle_db_error(e)
+
+
+# ---------------------------------------------------------------------------
+# Feature 6: OTA / OTD Delay Reports
+# ---------------------------------------------------------------------------
+
+@router.get("/delays", status_code=http_status.HTTP_200_OK)
+async def get_delay_report(
+    start_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: date = Query(..., description="End date (YYYY-MM-DD)"),
+    delay_type: Optional[str] = Query(None, description="Filter: LATE | EARLY | ON_TIME"),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (admin only; employees use token)"),
+    db: Session = Depends(get_db),
+    ctx=Depends(PermissionChecker(["report.read"], check_tenant=True)),
+):
+    """
+    Return a summary of OTD delay-tagged routes for the given date range.
+
+    Each row includes route metadata and the latest delay tag.
+    Results are ordered by route creation date descending.
+
+    Query params
+    ------------
+    start_date  – inclusive lower bound on route.created_at date
+    end_date    – inclusive upper bound
+    delay_type  – optional filter (LATE | EARLY | ON_TIME)
+    tenant_id   – admin-only override; otherwise resolved from token
+    """
+    try:
+        user_data = ctx
+        token_tenant_id = user_data.get("tenant_id")
+
+        # Resolve tenant
+        resolved_tenant_id = tenant_id or token_tenant_id
+        if not resolved_tenant_id:
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant context not available",
+                    error_code="TENANT_ID_MISSING",
+                ),
+            )
+
+        validate_date_range(start_date, end_date)
+
+        start_dt = datetime.combine(start_date, datetime.min.time())
+        end_dt = datetime.combine(end_date, datetime.max.time().replace(microsecond=0))
+
+        query = (
+            db.query(RouteManagement)
+            .filter(
+                RouteManagement.tenant_id == resolved_tenant_id,
+                RouteManagement.delay_tagged_at.isnot(None),
+                RouteManagement.delay_tagged_at >= start_dt,
+                RouteManagement.delay_tagged_at <= end_dt,
+            )
+        )
+
+        if delay_type:
+            query = query.filter(RouteManagement.delay_type == delay_type.upper())
+
+        routes = query.order_by(RouteManagement.delay_tagged_at.desc()).all()
+
+        rows = []
+        for r in routes:
+            rows.append({
+                "route_id": r.route_id,
+                "route_code": r.route_code,
+                "shift_id": r.shift_id,
+                "status": r.status.value if r.status else None,
+                "assigned_driver_id": r.assigned_driver_id,
+                "actual_start_time": r.actual_start_time.isoformat() if r.actual_start_time else None,
+                "actual_end_time": r.actual_end_time.isoformat() if r.actual_end_time else None,
+                "estimated_total_time_min": r.estimated_total_time,
+                "delay_type": r.delay_type,
+                "delay_minutes": r.delay_minutes,
+                "delay_tagged_at": r.delay_tagged_at.isoformat() if r.delay_tagged_at else None,
+                "ota_grace_minutes": r.ota_grace_minutes,
+            })
+
+        # Aggregate summary
+        total = len(rows)
+        late_count = sum(1 for row in rows if row["delay_type"] == "LATE")
+        early_count = sum(1 for row in rows if row["delay_type"] == "EARLY")
+        on_time_count = sum(1 for row in rows if row["delay_type"] == "ON_TIME")
+        avg_delay = (
+            round(sum(row["delay_minutes"] for row in rows if row["delay_minutes"] is not None) / total, 1)
+            if total else 0
+        )
+
+        return ResponseWrapper.success(
+            data={
+                "summary": {
+                    "total_routes_tagged": total,
+                    "late": late_count,
+                    "early": early_count,
+                    "on_time": on_time_count,
+                    "average_delay_minutes": avg_delay,
+                },
+                "routes": rows,
+            },
+            message="Delay report generated successfully",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[get_delay_report] Error: %s", e)
+        raise handle_db_error(e)
+
+
+@router.get("/delays/{route_id}", status_code=http_status.HTTP_200_OK)
+async def get_route_delay_detail(
+    route_id: int,
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (admin only)"),
+    db: Session = Depends(get_db),
+    ctx=Depends(PermissionChecker(["report.read"], check_tenant=True)),
+):
+    """
+    Return the full delay event history for a specific route.
+
+    Each row in `events` corresponds to one RouteDelayEvent (OTA or OTD).
+    Also returns the summary delay fields from the route itself.
+    """
+    try:
+        user_data = ctx
+        token_tenant_id = user_data.get("tenant_id")
+        resolved_tenant_id = tenant_id or token_tenant_id
+
+        if not resolved_tenant_id:
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant context not available",
+                    error_code="TENANT_ID_MISSING",
+                ),
+            )
+
+        route = (
+            db.query(RouteManagement)
+            .filter(
+                RouteManagement.route_id == route_id,
+                RouteManagement.tenant_id == resolved_tenant_id,
+            )
+            .first()
+        )
+        if not route:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Route {route_id} not found",
+                    error_code="ROUTE_NOT_FOUND",
+                ),
+            )
+
+        events = (
+            db.query(RouteDelayEvent)
+            .filter(RouteDelayEvent.route_id == route_id)
+            .order_by(RouteDelayEvent.tagged_at.asc())
+            .all()
+        )
+
+        event_list = [
+            {
+                "id": ev.id,
+                "event_kind": ev.event_kind,
+                "delay_type": ev.delay_type,
+                "delay_minutes": ev.delay_minutes,
+                "notes": ev.notes,
+                "tagged_at": ev.tagged_at.isoformat() if ev.tagged_at else None,
+            }
+            for ev in events
+        ]
+
+        return ResponseWrapper.success(
+            data={
+                "route_id": route.route_id,
+                "route_code": route.route_code,
+                "shift_id": route.shift_id,
+                "status": route.status.value if route.status else None,
+                "actual_start_time": route.actual_start_time.isoformat() if route.actual_start_time else None,
+                "actual_end_time": route.actual_end_time.isoformat() if route.actual_end_time else None,
+                "estimated_total_time_min": route.estimated_total_time,
+                "delay_summary": {
+                    "delay_type": route.delay_type,
+                    "delay_minutes": route.delay_minutes,
+                    "delay_tagged_at": route.delay_tagged_at.isoformat() if route.delay_tagged_at else None,
+                    "ota_grace_minutes": route.ota_grace_minutes,
+                },
+                "events": event_list,
+            },
+            message="Route delay detail fetched successfully",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[get_route_delay_detail] Error: %s", e)
         raise handle_db_error(e)

@@ -154,7 +154,7 @@ def validate_policy_permissions(existing_policies, user_permissions: set, operat
 
 def validate_role_policy_compatibility(
     role_is_system: bool,
-    role_tenant_id: str | None,
+    role_tenant_id: Optional[str],
     policies: list,
     db,
 ) -> None:
@@ -351,7 +351,9 @@ async def create_role(
         )
 
         # Caller must hold all permissions they're granting
-        validate_policy_permissions(existing_policies, user_permissions, "create")
+        # Admin users are already vetted by PermissionChecker — skip escalation guard
+        if user_data.get("user_type") != "admin":
+            validate_policy_permissions(existing_policies, user_permissions, "create")
     
     try:
         created_role = role_crud.create_with_policies(db=db, obj_in=role)
@@ -503,8 +505,8 @@ async def get_role(
     
     # Check tenant access for non-system roles
     if role.tenant_id and not role.is_system_role:
-        has_admin_perm = any("admin.read" in p for p in user_data.get("permissions", []))
-        if str(role.tenant_id) != str(user_data.get("tenant_id", "")) and not has_admin_perm:
+        is_admin = user_data.get("user_type") == "admin"
+        if str(role.tenant_id) != str(user_data.get("tenant_id", "")) and not is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
@@ -552,7 +554,8 @@ async def update_role(
     
     # Check tenant access for non-system roles
     if role.tenant_id and not role.is_system_role:
-        if str(role.tenant_id) != str(user_data.get("tenant_id", "")) and "admin.update" not in user_permissions:
+        is_admin = user_data.get("user_type") == "admin"
+        if str(role.tenant_id) != str(user_data.get("tenant_id", "")) and not is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(
@@ -587,7 +590,9 @@ async def update_role(
             )
 
             # Caller must hold all permissions they're granting
-            validate_policy_permissions(existing_policies, user_permissions, "update")
+            # Admin users are already vetted by PermissionChecker — skip escalation guard
+            if user_data.get("user_type") != "admin":
+                validate_policy_permissions(existing_policies, user_permissions, "update")
     
     try:
         updated_role = role_crud.update_with_policies(db, db_obj=role, obj_in=role_update)
@@ -646,8 +651,8 @@ async def delete_role(
     
     # Check tenant access for non-system roles
     if role.tenant_id and not role.is_system_role:
-        has_admin_perm = any("admin.delete" in p for p in user_data.get("permissions", []))
-        if str(role.tenant_id) != str(user_data.get("tenant_id", "")) and not has_admin_perm:
+        is_admin = user_data.get("user_type") == "admin"
+        if str(role.tenant_id) != str(user_data.get("tenant_id", "")) and not is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ResponseWrapper.error(

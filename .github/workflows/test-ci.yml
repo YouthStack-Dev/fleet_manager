@@ -1,0 +1,324 @@
+# # Fleet Manager — Full Test CI Pipeline
+# #
+# # Stages (run in dependency order):
+# #   1. unit          → pure logic, no DB/HTTP     (~30 s)
+# #   2. integration   → CRUD layer, SQLite         (~60 s)
+# #   3. api           → TestClient HTTP round-trip (~90 s)
+# #   4. smoke         → pre-deploy stability gate  (~30 s)
+# #   5. coverage      → upload merged report       (always)
+# #
+# # Performance (Locust) tests are NOT run here — they require a live server.
+# # Trigger them manually via the `performance` workflow dispatch.
+# #
+# # Triggers:
+# #   push  → main, develop, feat-*
+# #   PR    → main, develop
+
+# name: Test CI
+
+# on:
+#   push:
+#     branches: [ main, develop, feat-* ]
+#     paths:
+#       - 'app/**'
+#       - 'common_utils/**'
+#       - 'tests/**'
+#       - 'main.py'
+#       - 'requirements.txt'
+#       - 'pytest.ini'
+#       - '.github/workflows/test-ci.yml'
+#   pull_request:
+#     branches: [ main, develop ]
+#     paths:
+#       - 'app/**'
+#       - 'common_utils/**'
+#       - 'tests/**'
+#       - 'main.py'
+#       - 'requirements.txt'
+#       - 'pytest.ini'
+
+# # Cancel in-progress runs for the same branch/PR to save CI minutes.
+# concurrency:
+#   group: test-ci-${{ github.ref }}
+#   cancel-in-progress: true
+
+# # ─── Shared environment ───────────────────────────────────────────────────────
+# env:
+#   PYTHON_VERSION: '3.11'
+#   # SQLite in-memory is used for all test stages, so no real DB creds needed.
+#   # Settings() still requires these env vars to be present, so we supply safe
+#   # dummy values that work without a real Postgres instance.
+#   DATABASE_URL: "sqlite:///:memory:"
+#   POSTGRES_HOST: "localhost"
+#   POSTGRES_USER: "fleetadmin"
+#   POSTGRES_PASSWORD: "testpassword"
+#   POSTGRES_DB: "fleet_test_db"
+#   POSTGRES_PORT: "5432"
+#   PORT: "5432"
+#   ENV: "test"
+#   SECRET_KEY: "ci-test-secret-key-32-chars-minimum!!"
+#   USE_REDIS: "false"
+#   RUN_MIGRATIONS_ON_STARTUP: "false"
+
+# # ─────────────────────────────────────────────────────────────────────────────
+# # Stage 1 — Unit tests
+# # Pure function / business-logic tests; no DB, no HTTP.
+# # ─────────────────────────────────────────────────────────────────────────────
+# jobs:
+#   unit:
+#     name: Unit Tests
+#     runs-on: ubuntu-latest
+
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
+
+#       - name: Set up Python ${{ env.PYTHON_VERSION }}
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+#           cache: pip
+
+#       - name: Install dependencies
+#         run: |
+#           python -m pip install --upgrade pip
+#           pip install -r requirements.txt
+
+#       - name: Run unit tests
+#         run: |
+#           pytest tests/unit \
+#             -m unit \
+#             --cov=app --cov=common_utils \
+#             --cov-report=xml:coverage-unit.xml \
+#             --cov-report=term-missing \
+#             -v \
+#             --timeout=30
+
+#       - name: Upload unit coverage artifact
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: coverage-unit
+#           path: coverage-unit.xml
+#           retention-days: 7
+
+# # ─────────────────────────────────────────────────────────────────────────────
+# # Stage 2 — Integration tests
+# # CRUD layer; SQLite in-memory with savepoint/rollback pattern.
+# # ─────────────────────────────────────────────────────────────────────────────
+#   integration:
+#     name: Integration Tests
+#     runs-on: ubuntu-latest
+#     needs: unit   # Only run if unit tests pass.
+
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
+
+#       - name: Set up Python ${{ env.PYTHON_VERSION }}
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+#           cache: pip
+
+#       - name: Install dependencies
+#         run: |
+#           python -m pip install --upgrade pip
+#           pip install -r requirements.txt
+
+#       - name: Run integration tests
+#         run: |
+#           pytest tests/integration \
+#             -m integration \
+#             --cov=app --cov=common_utils \
+#             --cov-report=xml:coverage-integration.xml \
+#             --cov-report=term-missing \
+#             -v \
+#             --timeout=60
+
+#       - name: Upload integration coverage artifact
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: coverage-integration
+#           path: coverage-integration.xml
+#           retention-days: 7
+
+# # ─────────────────────────────────────────────────────────────────────────────
+# # Stage 3 — API tests
+# # Full HTTP round-trip tests via FastAPI TestClient.
+# # ─────────────────────────────────────────────────────────────────────────────
+#   api:
+#     name: API Tests
+#     runs-on: ubuntu-latest
+#     needs: integration   # Integration layer must be green first.
+
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
+
+#       - name: Set up Python ${{ env.PYTHON_VERSION }}
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+#           cache: pip
+
+#       - name: Install dependencies
+#         run: |
+#           python -m pip install --upgrade pip
+#           pip install -r requirements.txt
+
+#       - name: Run API tests
+#         # Run the 33 existing API test files at the tests/ root.
+#         # Exclude unit/integration/smoke/performance sub-packages so we don't
+#         # re-run other markers under a different label.
+#         run: |
+#           pytest tests \
+#             --ignore=tests/unit \
+#             --ignore=tests/integration \
+#             --ignore=tests/smoke \
+#             --ignore=tests/performance \
+#             --cov=app --cov=common_utils \
+#             --cov-report=xml:coverage-api.xml \
+#             --cov-report=term-missing \
+#             -v \
+#             --timeout=60
+
+#       - name: Upload API coverage artifact
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: coverage-api
+#           path: coverage-api.xml
+#           retention-days: 7
+
+# # ─────────────────────────────────────────────────────────────────────────────
+# # Stage 4 — Smoke tests
+# # Lightweight pre-deploy stability gate.
+# # Runs AFTER api so we have full confidence before declaring "deploy-ready".
+# # ─────────────────────────────────────────────────────────────────────────────
+#   smoke:
+#     name: Smoke Tests
+#     runs-on: ubuntu-latest
+#     needs: api   # Smoke is the final gate — all previous stages must pass.
+
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
+
+#       - name: Set up Python ${{ env.PYTHON_VERSION }}
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+#           cache: pip
+
+#       - name: Install dependencies
+#         run: |
+#           python -m pip install --upgrade pip
+#           pip install -r requirements.txt
+
+#       - name: Run smoke tests
+#         run: |
+#           pytest tests/smoke \
+#             -m smoke \
+#             -v \
+#             --timeout=30
+
+# # ─────────────────────────────────────────────────────────────────────────────
+# # Stage 5 — Coverage report (always runs; merges all stage reports)
+# # ─────────────────────────────────────────────────────────────────────────────
+#   coverage:
+#     name: Coverage Report
+#     runs-on: ubuntu-latest
+#     needs: [ unit, integration, api, smoke ]
+#     # Upload coverage even if smoke fails; the report is still useful.
+#     if: always()
+
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
+
+#       - name: Set up Python ${{ env.PYTHON_VERSION }}
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+#           cache: pip
+
+#       - name: Install dependencies
+#         run: |
+#           python -m pip install --upgrade pip
+#           pip install -r requirements.txt
+
+#       - name: Download unit coverage
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: coverage-unit
+#           path: coverage-reports/
+#         continue-on-error: true
+
+#       - name: Download integration coverage
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: coverage-integration
+#           path: coverage-reports/
+#         continue-on-error: true
+
+#       - name: Download api coverage
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: coverage-api
+#           path: coverage-reports/
+#         continue-on-error: true
+
+#       - name: Merge coverage reports
+#         run: |
+#           pip install coverage
+#           # Combine all XML reports into a single .coverage data file.
+#           coverage combine coverage-reports/*.xml 2>/dev/null || true
+#           # Re-run the full suite quickly without tests to generate a merged report.
+#           # (Alternative: use coverage xml --append for each stage — see note below.)
+#           echo "Coverage artifacts downloaded; see individual stage reports above."
+
+#       - name: Generate combined coverage summary
+#         run: |
+#           echo "## Test Coverage Summary" >> $GITHUB_STEP_SUMMARY
+#           echo "" >> $GITHUB_STEP_SUMMARY
+#           echo "| Stage      | Report                        |" >> $GITHUB_STEP_SUMMARY
+#           echo "|------------|-------------------------------|" >> $GITHUB_STEP_SUMMARY
+#           echo "| Unit       | coverage-unit.xml             |" >> $GITHUB_STEP_SUMMARY
+#           echo "| Integration| coverage-integration.xml      |" >> $GITHUB_STEP_SUMMARY
+#           echo "| API        | coverage-api.xml              |" >> $GITHUB_STEP_SUMMARY
+#           echo "" >> $GITHUB_STEP_SUMMARY
+#           echo "_Smoke tests do not produce a coverage report (stability only)._" >> $GITHUB_STEP_SUMMARY
+
+#       - name: Upload merged coverage to Codecov (optional)
+#         # Remove this step if Codecov is not configured for the repo.
+#         uses: codecov/codecov-action@v4
+#         with:
+#           files: >-
+#             coverage-reports/coverage-unit.xml,
+#             coverage-reports/coverage-integration.xml,
+#             coverage-reports/coverage-api.xml
+#           fail_ci_if_error: false
+#           verbose: false
+#         continue-on-error: true
+
+# # ─────────────────────────────────────────────────────────────────────────────
+# # Stage 6 — Deploy gate (informational job)
+# # Sets a green/red badge that deployment pipelines can gate on.
+# # ─────────────────────────────────────────────────────────────────────────────
+#   deploy-gate:
+#     name: Deploy Gate
+#     runs-on: ubuntu-latest
+#     needs: [ unit, integration, api, smoke ]
+#     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+
+#     steps:
+#       - name: All tests passed — safe to deploy
+#         run: |
+#           echo "All test stages passed."
+#           echo "Smoke gate: GREEN"
+#           echo "Branch: ${{ github.ref_name }}"
+#           echo "Commit: ${{ github.sha }}"
+#           echo "" >> $GITHUB_STEP_SUMMARY
+#           echo "## Deploy Gate: PASSED" >> $GITHUB_STEP_SUMMARY
+#           echo "" >> $GITHUB_STEP_SUMMARY
+#           echo "All 4 test stages (unit → integration → api → smoke) passed." >> $GITHUB_STEP_SUMMARY
+#           echo "Branch \`${{ github.ref_name }}\` @ \`${{ github.sha }}\` is deploy-ready." >> $GITHUB_STEP_SUMMARY

@@ -36,3 +36,6 @@ class Tenant(Base):
     # New: One-to-one relationship to PolicyPackage
     policy_package = relationship("PolicyPackage", back_populates="tenant", uselist=False, cascade="all, delete-orphan")
 
+    # Nodal points defined for this tenant
+    nodal_points = relationship("NodalPoint", back_populates="tenant", cascade="all, delete-orphan")
+

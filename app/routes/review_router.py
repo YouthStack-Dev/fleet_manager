@@ -535,7 +535,7 @@ async def get_my_review(
     Employee reads the review they previously submitted.
     Edge cases:
     - Booking doesn't belong to this employee: 404
-    - Review not yet submitted: 404
+    - Review not yet submitted: 200 with data=null (consistent with driver/vehicle review endpoints)
     """
     logger.info(f"[review.get_my] START tenant={user_data.get('tenant_id')} employee={user_data.get('user_id')} booking_id={booking_id}")
     try:
@@ -568,10 +568,10 @@ async def get_my_review(
             .first()
         )
         if not review:
-            logger.warning(f"[review.get_my] 404 REVIEW_NOT_FOUND tenant={tenant_id} employee={employee_id} booking_id={booking_id}")
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=ResponseWrapper.error("No review found for this booking", "REVIEW_NOT_FOUND"),
+            logger.info(f"[review.get_my] NO_REVIEW tenant={tenant_id} employee={employee_id} booking_id={booking_id} — returning null")
+            return ResponseWrapper.success(
+                data=None,
+                message="No review submitted for this booking yet",
             )
 
         logger.info(f"[review.get_my] OK tenant={tenant_id} employee={employee_id} booking_id={booking_id} review_id={review.review_id}")
@@ -700,7 +700,7 @@ async def get_booking_review(
     Admin or manager fetches the review for any booking in their tenant.
     Edge cases:
     - Booking from a different tenant: 404
-    - Review not yet submitted: 404
+    - Review not yet submitted: 200 with data=null (consistent with driver/vehicle review endpoints)
     """
     logger.info(f"[review.get_booking] START tenant={user_data.get('tenant_id')} booking_id={booking_id}")
     try:
@@ -725,10 +725,10 @@ async def get_booking_review(
             .first()
         )
         if not review:
-            logger.warning(f"[review.get_booking] 404 REVIEW_NOT_FOUND tenant={tenant_id} booking_id={booking_id}")
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=ResponseWrapper.error("No review found for this booking", "REVIEW_NOT_FOUND"),
+            logger.info(f"[review.get_booking] NO_REVIEW tenant={tenant_id} booking_id={booking_id} — returning null")
+            return ResponseWrapper.success(
+                data=None,
+                message="No review submitted for this booking yet",
             )
 
         logger.info(f"[review.get_booking] OK tenant={tenant_id} booking_id={booking_id} review_id={review.review_id}")

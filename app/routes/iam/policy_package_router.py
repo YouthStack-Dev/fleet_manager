@@ -83,7 +83,7 @@ def _get_package_or_404(db: Session, package_id: int):
 async def get_policy_package(
     tenant_id: Optional[str] = Query(None, description="Tenant ID (admin only — ignored for employee/vendor)"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["policy-package.read"], check_tenant=True)),
+    user_data=Depends(PermissionChecker(["policy_package.read"], check_tenant=True)),
 ):
     """
     Get the policy package (permission boundary) for a tenant.
@@ -147,7 +147,7 @@ async def update_package_permissions(
     package_id: int,
     payload: PackagePermissionsBody,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["policy-package.update"], check_tenant=True)),
+    user_data=Depends(PermissionChecker(["policy_package.update"], check_tenant=True)),
 ):
     """
     **Replace** the full permission set on a tenant's policy package. Super-admin only.

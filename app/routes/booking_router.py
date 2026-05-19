@@ -3,8 +3,9 @@ from sqlalchemy import func
 from app.models.cutoff import Cutoff
 from app.models.driver import Driver
 from app.models.employee import Employee
+from app.models.nodal_point import EmployeeNodalPoint
 from app.models.route_management import RouteManagement, RouteManagementBooking, RouteManagementStatusEnum
-from app.models.shift import Shift, ShiftLogTypeEnum
+from app.models.shift import Shift, ShiftLogTypeEnum, PickupTypeEnum
 from app.models.tenant import Tenant
 from app.models.vehicle import Vehicle
 from app.models.vendor import Vendor
@@ -340,14 +341,69 @@ def create_booking(
                         ),
                     )
 
-            # 4️⃣ Compute pickup/drop based on shift
+            # 4️⃣ Compute pickup/drop based on shift type and pickup_type
             shift_log_type = get_shift_log_type(shift)
-            if shift_log_type == "IN":  # home → office
+
+            # Determine if this is a Nodal shift
+            shift_pickup_type = (
+                shift.get("pickup_type") if isinstance(shift, dict)
+                else (shift.pickup_type.value if shift.pickup_type else None)
+            )
+            is_nodal = shift_pickup_type == PickupTypeEnum.NODAL.value
+
+            nodal_point_id = None
+
+            if is_nodal:
+                # For nodal shifts, use the employee's assigned nodal point
+                assignment = (
+                    db.query(EmployeeNodalPoint)
+                    .filter(EmployeeNodalPoint.employee_id == employee.employee_id)
+                    .first()
+                )
+                if not assignment:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=ResponseWrapper.error(
+                            message=(
+                                "Employee has no nodal point assigned. "
+                                "Please assign a nodal point to this employee before booking a Nodal shift."
+                            ),
+                            error_code="NO_NODAL_ASSIGNMENT",
+                        ),
+                    )
+                nodal_point = assignment.nodal_point
+                if not nodal_point or not nodal_point.is_active:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=ResponseWrapper.error(
+                            message="Assigned nodal point is inactive. Please re-assign an active nodal point.",
+                            error_code="NODAL_POINT_INACTIVE",
+                        ),
+                    )
+                nodal_point_id = nodal_point.nodal_point_id
+
+                if shift_log_type == "IN":  # home → nodal point → office
+                    # Employee travels to nodal point; vehicle picks up at nodal point
+                    pickup_lat = float(nodal_point.latitude)
+                    pickup_lng = float(nodal_point.longitude)
+                    pickup_addr = nodal_point.address or nodal_point.name
+                    drop_lat = float(tenant.latitude) if tenant.latitude else None
+                    drop_lng = float(tenant.longitude) if tenant.longitude else None
+                    drop_addr = tenant.address
+                else:  # OUT: office → nodal point (employee walks/rides home from there)
+                    pickup_lat = float(tenant.latitude) if tenant.latitude else None
+                    pickup_lng = float(tenant.longitude) if tenant.longitude else None
+                    pickup_addr = tenant.address
+                    drop_lat = float(nodal_point.latitude)
+                    drop_lng = float(nodal_point.longitude)
+                    drop_addr = nodal_point.address or nodal_point.name
+
+            elif shift_log_type == "IN":  # regular home → office
                 pickup_lat, pickup_lng = employee.latitude, employee.longitude
                 pickup_addr = employee.address
                 drop_lat, drop_lng = tenant.latitude, tenant.longitude
                 drop_addr = tenant.address
-            else:  # OUT: office → home
+            else:  # regular OUT: office → home
                 pickup_lat, pickup_lng = tenant.latitude, tenant.longitude
                 pickup_addr = tenant.address
                 drop_lat, drop_lng = employee.latitude, employee.longitude
@@ -369,6 +425,7 @@ def create_booking(
                 'drop_location': drop_addr,
                 'status': BookingStatusEnum.REQUEST,
                 'booking_type': booking.booking_type,
+                'nodal_point_id': nodal_point_id,
             }
             bookings_to_create.append(booking_data)
 

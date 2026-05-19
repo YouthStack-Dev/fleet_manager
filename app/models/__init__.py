@@ -17,6 +17,12 @@ from app.models.audit_log import AuditLog
 from app.models.tenant_config import TenantConfig
 from app.models.escort import Escort
 
+# Speed violations
+from app.models.speed_violation import SpeedViolation
+
+# Route delay events (OTA/OTD tagging)
+from app.models.route_delay_event import RouteDelayEvent
+
 # Push notification models
 from app.models.user_session import UserSession
 

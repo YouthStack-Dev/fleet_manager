@@ -22,7 +22,7 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/alert-config", tags=["alert-configuration"])
 
 
-async def get_current_employee(user_data=Depends(PermissionChecker(["tenant_config.read", "tenant_config.write"]))):
+async def get_current_employee(user_data=Depends(PermissionChecker(["tenant_config.read", "tenant_config.update"]))):
     """Ensures the token belongs to an employee persona and returns employee data."""
     if user_data.get("user_type") not in ["employee", "admin"]:
         raise HTTPException(

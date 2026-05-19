@@ -3,6 +3,21 @@ from typing import Optional, List, Any
 from datetime import datetime, time
 from enum import Enum
 
+
+def _coerce_gender(v):
+    """Convert empty string to None so the frontend can send '' instead of null."""
+    if v == "" or v is None:
+        return None
+    return v
+
+
+def _coerce_female_constraint(v):
+    """Convert empty string to None so the frontend can send '' instead of null."""
+    if v == "" or v is None:
+        return None
+    return v
+
+
 class ShiftLogTypeEnum(str, Enum):
     IN = "IN"
     OUT = "OUT"
@@ -16,6 +31,20 @@ class GenderEnum(str, Enum):
     FEMALE = "Female"
     OTHER = "Other"
 
+class FemaleConstraintEnum(str, Enum):
+    """
+    Shift-level rule controlling when an escort is deployed for female passengers.
+
+    FIRST_LAST_FEMALE         – escort required if the first OR last stop has a female employee
+    SECOND_SECOND_LAST_FEMALE – escort required if the 2nd OR 2nd-last stop has a female employee
+    ANY_FEMALE                – escort required if ANY female is on the route
+    DISABLE                   – never deploy an escort for this shift (overrides tenant config)
+    """
+    FIRST_LAST_FEMALE = "First/Last Female"
+    SECOND_SECOND_LAST_FEMALE = "Second/Second Last Female"
+    ANY_FEMALE = "Any Female"
+    DISABLE = "Disable"
+
 class ShiftBase(BaseModel):
     tenant_id: Optional[str] = None
     shift_code: str
@@ -23,6 +52,7 @@ class ShiftBase(BaseModel):
     shift_time: Any  # Accept both time and str, serialize to str
     pickup_type: Optional[PickupTypeEnum] = None
     gender: Optional[GenderEnum] = None
+    female_constraint: Optional[FemaleConstraintEnum] = None
     waiting_time_minutes: int = 0
     is_active: bool = True
 
@@ -33,9 +63,19 @@ class ShiftCreate(BaseModel):
     shift_time: str
     pickup_type: PickupTypeEnum
     gender: Optional[GenderEnum] = None
+    female_constraint: Optional[FemaleConstraintEnum] = None
     waiting_time_minutes: int = 0
     is_active: bool = True
 
+    @field_validator("gender", mode="before")
+    @classmethod
+    def normalize_gender(cls, v):
+        return _coerce_gender(v)
+
+    @field_validator("female_constraint", mode="before")
+    @classmethod
+    def normalize_female_constraint(cls, v):
+        return _coerce_female_constraint(v)
 
     @field_validator("shift_time")
     def validate_shift_time(cls, v):
@@ -52,6 +92,7 @@ class ShiftCreate(BaseModel):
                 "shift_time": "09:00",
                 "pickup_type": "Pickup",
                 "gender": "Female",
+                "female_constraint": "Any Female",
                 "waiting_time_minutes": 5,
                 "is_active": True
             }
@@ -64,8 +105,19 @@ class ShiftUpdate(BaseModel):
     shift_time: Optional[str] = None
     pickup_type: Optional[PickupTypeEnum] = None
     gender: Optional[GenderEnum] = None
+    female_constraint: Optional[FemaleConstraintEnum] = None
     waiting_time_minutes: Optional[int] = None
     is_active: Optional[bool] = None
+
+    @field_validator("gender", mode="before")
+    @classmethod
+    def normalize_gender(cls, v):
+        return _coerce_gender(v)
+
+    @field_validator("female_constraint", mode="before")
+    @classmethod
+    def normalize_female_constraint(cls, v):
+        return _coerce_female_constraint(v)
 
     @field_validator("shift_time")
     def validate_shift_time(cls, v):
@@ -84,6 +136,7 @@ class ShiftUpdate(BaseModel):
                 "shift_time": "18:30",
                 "pickup_type": "Nodal",
                 "gender": None,
+                "female_constraint": "First/Last Female",
                 "waiting_time_minutes": 10,
                 "is_active": True
             }

@@ -107,7 +107,7 @@ class TestCreateTeam:
     def test_create_team_duplicate_name(
         self, client, admin_token, admin_user, sample_team_data, test_db
     ):
-        """Test creating team with duplicate name fails with 500 (router doesn't handle IntegrityError)."""
+        """Test creating team with duplicate name fails with 409 CONFLICT."""
         # Create first team
         response1 = client.post(
             "/api/v1/teams/",
@@ -123,9 +123,8 @@ class TestCreateTeam:
             headers={"Authorization": admin_token}
         )
         
-        # Currently returns 500 because router doesn't handle IntegrityError
-        # TODO: Should be 409 CONFLICT with proper error handling
-        assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+        # Router now catches IntegrityError and returns 409 CONFLICT
+        assert response.status_code == status.HTTP_409_CONFLICT
 
 
 class TestListTeams:
