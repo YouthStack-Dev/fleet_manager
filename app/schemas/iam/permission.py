@@ -12,6 +12,9 @@ class ActionEnum(str, Enum):
     CLOSE = "close"
     RESPOND = "respond"
     ESCALATE = "escalate"
+    WRITE = "write"
+    ACCESS = "access"
+    ESCORT = "escort"
 
 class PermissionBase(BaseModel):
     module: str = Field(..., min_length=1, max_length=100)
