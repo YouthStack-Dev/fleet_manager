@@ -149,6 +149,7 @@ def seed_iam(db: Session):
         "tenant_config",
         "alert",
         "policy-package",
+        "nodal_point",
     ]
 
     actions = ["create", "read", "update", "delete"]

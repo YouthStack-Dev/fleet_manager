@@ -33,6 +33,9 @@ from app.routes.booking_router import router as booking_router
 from app.routes import grouping
 from app.routes import route_management
 
+# ── Nodal Points ──────────────────────────────────────────────
+from app.routes.nodal_point_router import router as nodal_point_router
+
 # ── Alerts (SOS) ──────────────────────────────────────────────
 from app.routes.alert_router import router as alert_router
 from app.routes.alert_config_router import router as alert_config_router

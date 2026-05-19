@@ -4,7 +4,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from app.database.session import Base
 from enum import Enum as PyEnum
-from app.models.enums import GenderEnum  # shared enum — do not redefine locally
+from app.models.enums import GenderEnum, FemaleConstraintEnum  # shared enum — do not redefine locally
 
 
 class ShiftLogTypeEnum(str, PyEnum):
@@ -28,6 +28,7 @@ class Shift(Base):
     shift_time = Column(Time, nullable=False)
     pickup_type = Column(Enum(PickupTypeEnum, native_enum=False))
     gender = Column(Enum(GenderEnum, native_enum=False))
+    female_constraint = Column(Enum(FemaleConstraintEnum, native_enum=False), nullable=True)
     waiting_time_minutes = Column(Integer, default=0, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=func.now(), nullable=False)
