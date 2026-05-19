@@ -123,18 +123,17 @@ def seed_iam(db: Session):
         "booking",
         "driver",
         "employee_app",
-        "app-driver",
+        "driver_app",
         "employee",
-        "route-booking",
         "route",
         "shift",
         "team",
         "admin_tenant",
         "vehicle",
-        "vehicle-type",
+        "vehicle_type",
         "vendor",
-        "vendor-user",
-        "weekoff-config",
+        "vendor_user",
+        "weekoff_config",
         "cutoff",
         "permissions",
         "policy",
@@ -148,9 +147,8 @@ def seed_iam(db: Session):
         "escort",
         "tenant_config",
         "alert",
-        "policy-package",
+        "policy_package",
         "nodal_point",
-        "driver_app",
         "speed_violation",
     ]
 
@@ -160,9 +158,7 @@ def seed_iam(db: Session):
     # Any module not listed here gets the standard `actions` list above.
     module_actions_override = {
         "alert":          ["create", "read", "respond", "close", "escalate", "update", "delete"],
-        "tenant_config":  ["create", "read", "update", "delete", "write", "escort"],
-        "app-driver":     ["create", "read", "update", "delete", "write"],
-        "driver_app":     ["create", "read", "update", "delete", "access"],
+        "tenant_config":  ["create", "read", "update", "delete", "escort"],
     }
 
     permissions_map = {}

@@ -571,7 +571,7 @@ def driver_list_announcements(
     content_type: Optional[str] = Query(
         None, description="Filter by content type: text | image | video | audio | pdf | link"
     ),
-    user_data=Depends(PermissionChecker(["app-driver.read", "app-driver.write"])),
+    user_data=Depends(PermissionChecker(["driver_app.read", "driver_app.update"])),
     db: Session = Depends(get_db),
 ):
     """
@@ -636,7 +636,7 @@ def driver_list_announcements(
 @router.post("/driver/announcements/{announcement_id}/read")
 def driver_mark_announcement_read(
     announcement_id: int,
-    user_data=Depends(PermissionChecker(["app-driver.read", "app-driver.write"])),
+    user_data=Depends(PermissionChecker(["driver_app.read", "driver_app.update"])),
     db: Session = Depends(get_db),
 ):
     """Mark an announcement as read for the authenticated driver."""

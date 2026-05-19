@@ -409,7 +409,7 @@ def report_speed_violation(
     payload: SpeedViolationCreate,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["driver_app.access"], check_tenant=True)),
+    user_data=Depends(PermissionChecker(["driver_app.read"], check_tenant=True)),
 ):
     """
     Called by the driver mobile app whenever GPS speed exceeds the configured threshold.

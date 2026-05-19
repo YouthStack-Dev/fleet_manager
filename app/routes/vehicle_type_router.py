@@ -117,7 +117,7 @@ def create_vehicle_type(
     vehicle_in: VehicleTypeCreate,
     request: Request,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vehicle-type.create"], check_tenant=False)),
+    user_data=Depends(PermissionChecker(["vehicle_type.create"], check_tenant=False)),
 ):
     """
     Create a new vehicle type.
@@ -204,7 +204,7 @@ def get_all_vehicle_types(
     name: Optional[str] = None,
     active_only: Optional[bool] = None,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vehicle-type.read"], check_tenant=False)),
+    user_data=Depends(PermissionChecker(["vehicle_type.read"], check_tenant=False)),
 ):
     """
     Fetch vehicle types:
@@ -245,7 +245,7 @@ def get_vehicle_type(
     vehicle_type_id: int,
     vendor_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vehicle-type.read"], check_tenant=False)),
+    user_data=Depends(PermissionChecker(["vehicle_type.read"], check_tenant=False)),
 ):
     """
     Get single vehicle type by ID.
@@ -295,7 +295,7 @@ def update_vehicle_type(
     *,
     request: Request,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vehicle-type.update"], check_tenant=False)),
+    user_data=Depends(PermissionChecker(["vehicle_type.update"], check_tenant=False)),
 ):
     """
     Update vehicle type.
@@ -399,7 +399,7 @@ def toggle_vehicle_type_status(
     request: Request,
     vendor_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vehicle-type.update"], check_tenant=False)),
+    user_data=Depends(PermissionChecker(["vehicle_type.update"], check_tenant=False)),
 ):
     """
     Toggle active status.
