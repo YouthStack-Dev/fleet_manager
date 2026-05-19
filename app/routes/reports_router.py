@@ -706,7 +706,7 @@ async def get_delay_report(
     delay_type: Optional[str] = Query(None, description="Filter: LATE | EARLY | ON_TIME"),
     tenant_id: Optional[str] = Query(None, description="Tenant ID (admin only; employees use token)"),
     db: Session = Depends(get_db),
-    ctx=Depends(PermissionChecker(["reports.read"])),
+    ctx=Depends(PermissionChecker(["report.read"], check_tenant=True)),
 ):
     """
     Return a summary of OTD delay-tagged routes for the given date range.
@@ -809,7 +809,7 @@ async def get_route_delay_detail(
     route_id: int,
     tenant_id: Optional[str] = Query(None, description="Tenant ID (admin only)"),
     db: Session = Depends(get_db),
-    ctx=Depends(PermissionChecker(["reports.read"])),
+    ctx=Depends(PermissionChecker(["report.read"], check_tenant=True)),
 ):
     """
     Return the full delay event history for a specific route.
