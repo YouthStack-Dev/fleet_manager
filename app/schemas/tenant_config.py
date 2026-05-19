@@ -17,6 +17,10 @@ class TenantConfigBase(BaseModel):
     # Speed limit configuration (km/h)
     speed_limit_kmph: Optional[float] = 60.0
 
+    # One-trip-per-shift enforcement
+    one_trip_per_shift_enabled: bool = True
+    auto_move_on_conflict: bool = True
+
     @field_validator('escort_required_start_time', 'escort_required_end_time')
     def validate_time_format(cls, v):
         """Validate time format"""
@@ -58,6 +62,10 @@ class TenantConfigUpdate(BaseModel):
 
     # Speed limit configuration (km/h)
     speed_limit_kmph: Optional[float] = None
+
+    # One-trip-per-shift enforcement
+    one_trip_per_shift_enabled: Optional[bool] = None
+    auto_move_on_conflict: Optional[bool] = None
 
     @field_validator('escort_required_start_time', 'escort_required_end_time')
     def validate_time_format(cls, v):

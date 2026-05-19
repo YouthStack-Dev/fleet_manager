@@ -39,6 +39,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from typing import Any
 
 from app.utils.otp_utils import get_required_otp_count, generate_otp_codes
+from app.utils.trip_enforcement import enforce_one_trip_per_shift
 
 # Create module logger with explicit name
 logger = get_logger("route_management")
@@ -3687,23 +3688,19 @@ async def update_route(
             booking_details = get_booking_by_id(booking, db)
             request_bookings.append(booking_details)
 
-        # --- Remove booking from any other active route before adding ---
+        # --- One-trip-per-shift enforcement (respects tenant config flags) ---
         if update_request.operation == "add":
-            for booking_id in request_booking_ids:
-                existing_links = db.query(RouteManagementBooking).join(RouteManagement).filter(
-                    RouteManagementBooking.booking_id == booking_id,
-                    RouteManagementBooking.route_id != route_id,
-                    RouteManagement.tenant_id == tenant_id
-                ).all()
-
-                for link in existing_links:
-                    logger.info(
-                        f"Removing booking {booking_id} from route {link.route_id} "
-                        f"because it is being moved to route {route_id}"
-                    )
-                    db.delete(link)
-
-            db.flush()  # ensure removal is persisted before adding in new route
+            tenant_config = get_tenant_config_with_cache(db, tenant_id)
+            one_trip_enabled = getattr(tenant_config, "one_trip_per_shift_enabled", True)
+            auto_move = getattr(tenant_config, "auto_move_on_conflict", True)
+            enforce_one_trip_per_shift(
+                db=db,
+                route_id=route_id,
+                tenant_id=tenant_id,
+                booking_ids=request_booking_ids,
+                one_trip_per_shift_enabled=one_trip_enabled,
+                auto_move_on_conflict=auto_move,
+            )
 
         
         logger.debug(f"Fetched request bookings: {request_bookings}")

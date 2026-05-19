@@ -12,8 +12,6 @@ class ActionEnum(str, Enum):
     CLOSE = "close"
     RESPOND = "respond"
     ESCALATE = "escalate"
-    WRITE = "write"
-    ACCESS = "access"
     ESCORT = "escort"
 
 class PermissionBase(BaseModel):

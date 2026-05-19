@@ -25,7 +25,7 @@ router = APIRouter(prefix="/weekoff-configs", tags=["weekoff configs"])
 def get_weekoff_by_employee(
     employee_id: int,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["weekoff-config.read"], check_tenant=True)),
+    user_data=Depends(PermissionChecker(["weekoff_config.read"], check_tenant=True)),
 ):
     """
     Fetch weekoff config for an employee.
@@ -67,7 +67,7 @@ def get_weekoffs_by_team(
     limit: int = 100,
     is_active: Optional[bool] = None,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["weekoff-config.read"])),
+    user_data=Depends(PermissionChecker(["weekoff_config.read"])),
 ):
     """
     Fetch weekoff configs for all employees in a team.
@@ -154,7 +154,7 @@ def get_weekoffs_by_tenant(
     limit: int = 100,
     is_active: Optional[bool] = None,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["weekoff-config.read"])),
+    user_data=Depends(PermissionChecker(["weekoff_config.read"])),
 ):
     """
     Fetch weekoff configs for all employees in a tenant.
@@ -264,7 +264,7 @@ def update_weekoff_by_employee(
     update_in: WeekoffConfigUpdate,
     request: Request,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["weekoff-config.update"])),
+    user_data=Depends(PermissionChecker(["weekoff_config.update"])),
 ):
     """
     Update weekoff config for an employee.
@@ -397,7 +397,7 @@ def update_weekoff_by_team(
     update_in: WeekoffConfigUpdate,
     request: Request,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["weekoff-config.update"])),
+    user_data=Depends(PermissionChecker(["weekoff_config.update"])),
 ):
     """
     Bulk update weekoff configs for all employees under a team.
@@ -516,7 +516,7 @@ def update_weekoff_by_tenant(
     update_in: WeekoffConfigUpdate,
     request: Request,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["weekoff-config.update"])),
+    user_data=Depends(PermissionChecker(["weekoff_config.update"])),
 ):
     """
     Bulk update weekoff configs for all employees under a tenant.

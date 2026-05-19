@@ -351,7 +351,9 @@ async def create_role(
         )
 
         # Caller must hold all permissions they're granting
-        validate_policy_permissions(existing_policies, user_permissions, "create")
+        # Admin users are already vetted by PermissionChecker — skip escalation guard
+        if user_data.get("user_type") != "admin":
+            validate_policy_permissions(existing_policies, user_permissions, "create")
     
     try:
         created_role = role_crud.create_with_policies(db=db, obj_in=role)
@@ -588,7 +590,9 @@ async def update_role(
             )
 
             # Caller must hold all permissions they're granting
-            validate_policy_permissions(existing_policies, user_permissions, "update")
+            # Admin users are already vetted by PermissionChecker — skip escalation guard
+            if user_data.get("user_type") != "admin":
+                validate_policy_permissions(existing_policies, user_permissions, "update")
     
     try:
         updated_role = role_crud.update_with_policies(db, db_obj=role, obj_in=role_update)

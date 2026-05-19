@@ -26,7 +26,7 @@ def create_vendor_user(
     background_tasks: BackgroundTasks,
     request: Request,
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vendor-user.create"], check_tenant=False))
+    user_data=Depends(PermissionChecker(["vendor_user.create"], check_tenant=False))
 ):
     """
     Create a new vendor user.
@@ -277,7 +277,7 @@ def read_vendor_users(
     is_active: Optional[bool] = None,
     tenant_id: Optional[str] = Query(None, description="Tenant ID (required for admin, automatic for employee)"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vendor-user.read"], check_tenant=False))
+    user_data=Depends(PermissionChecker(["vendor_user.read"], check_tenant=False))
 ):
     """
     Get all vendor users with pagination and filtering.
@@ -366,7 +366,7 @@ def read_vendor_user(
     vendor_user_id: int,
     tenant_id: Optional[str] = Query(None, description="Tenant ID (required for admin, automatic for employee)"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vendor-user.read"], check_tenant=False))
+    user_data=Depends(PermissionChecker(["vendor_user.read"], check_tenant=False))
 ):
     """
     Get a specific vendor user by ID.
@@ -450,7 +450,7 @@ def update_vendor_user(
     request: Request,
     tenant_id: Optional[str] = Query(None, description="Tenant ID (required for admin, automatic for employee)"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vendor-user.update"], check_tenant=False))
+    user_data=Depends(PermissionChecker(["vendor_user.update"], check_tenant=False))
 ):
     """
     Update a vendor user.
@@ -643,7 +643,7 @@ def toggle_vendor_user_status(
     request: Request,
     tenant_id: Optional[str] = Query(None, description="Tenant ID (required for admin, automatic for employee)"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vendor-user.update"], check_tenant=False))
+    user_data=Depends(PermissionChecker(["vendor_user.update"], check_tenant=False))
 ):
     """
     Toggle vendor user active status.
@@ -756,7 +756,7 @@ def delete_vendor_user(
     vendor_user_id: int,
     tenant_id: Optional[str] = Query(None, description="Tenant ID (required for admin, automatic for employee)"),
     db: Session = Depends(get_db),
-    user_data=Depends(PermissionChecker(["vendor-user.delete"], check_tenant=False))
+    user_data=Depends(PermissionChecker(["vendor_user.delete"], check_tenant=False))
 ):
     """
     Delete a vendor user by ID.
