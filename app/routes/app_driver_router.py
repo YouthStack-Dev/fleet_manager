@@ -49,6 +49,7 @@ from app.models.tenant_config import TenantConfig
 from app.models.vehicle import Vehicle
 from app.models.driver import Driver
 from geopy.distance import geodesic
+from app.utils.delay_tagging import tag_trip_delay
 
 # Notification services
 from app.core.email_service import EmailService
@@ -1587,6 +1588,15 @@ async def end_duty(
         route.status = RouteManagementStatusEnum.COMPLETED
         route.actual_end_time = now
         route.updated_at = now
+
+        # --- Tag OTD delay (best-effort; never blocks duty completion) ---
+        try:
+            tag_trip_delay(db=db, route=route, now=now)
+        except Exception as delay_err:
+            logger.warning(
+                "[driver.end_duty] Delay tagging failed for route %s (non-fatal): %s",
+                route_id, delay_err,
+            )
 
         db.add(route)
         db.commit()

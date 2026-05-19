@@ -524,6 +524,8 @@ def seed_vendors(db: Session):
     """
     Seed one default vendor (MLT) per tenant (idempotent).
     Vendor code stored as {tenant_id}-MLT.
+    Idempotency checked on (tenant_id, vendor_code) AND (tenant_id, email)
+    to avoid UniqueViolation on re-runs when stale partial data exists.
     """
     tenants = db.query(Tenant).all()
     if not tenants:
@@ -532,6 +534,10 @@ def seed_vendors(db: Session):
 
     for tenant in tenants:
         vendor_code = f"{tenant.tenant_id}-MLT"
+        # Tenant-scoped email so (tenant_id, email) unique constraint is safe
+        vendor_email = f"mlt-{tenant.tenant_id.lower()}@vendor.com"
+
+        # Check by vendor_code (primary idempotency key)
         existing = (
             db.query(Vendor)
             .filter(Vendor.tenant_id == tenant.tenant_id, Vendor.vendor_code == vendor_code)
@@ -541,11 +547,23 @@ def seed_vendors(db: Session):
             logger.info(f"Vendor '{vendor_code}' already exists for tenant {tenant.tenant_id}, skipping.")
             continue
 
+        # Guard: also skip if this email is already taken within the tenant
+        email_clash = (
+            db.query(Vendor)
+            .filter(Vendor.tenant_id == tenant.tenant_id, Vendor.email == vendor_email)
+            .first()
+        )
+        if email_clash:
+            logger.info(
+                f"Vendor email '{vendor_email}' already exists for tenant {tenant.tenant_id}, skipping."
+            )
+            continue
+
         vendor = Vendor(
             tenant_id=tenant.tenant_id,
             vendor_code=vendor_code,
             name="MLT Logistics",
-            email="mlt@vendor.com",
+            email=vendor_email,
             phone=f"9999999999",
             is_active=True,
         )

@@ -151,13 +151,39 @@ async def get_employee_bookings(
             .all()
         )
 
+        # --- Batch-load route info to avoid N+1 queries ---
+        booking_ids = [b.booking_id for b in bookings]
+        route_booking_map: dict = {}  # booking_id → RouteManagementBooking
+        route_map: dict = {}          # route_id    → RouteManagement
+
+        if booking_ids:
+            rbs = (
+                db.query(RouteManagementBooking)
+                .filter(RouteManagementBooking.booking_id.in_(booking_ids))
+                .all()
+            )
+            for rb in rbs:
+                # Keep the first link per booking (there should only be one)
+                if rb.booking_id not in route_booking_map:
+                    route_booking_map[rb.booking_id] = rb
+
+            route_ids = list({rb.route_id for rb in rbs})
+            if route_ids:
+                routes = (
+                    db.query(RouteManagement)
+                    .filter(RouteManagement.route_id.in_(route_ids))
+                    .all()
+                )
+                route_map = {r.route_id: r for r in routes}
+        # --- End batch load ---
+
         bookings_list = []
         for booking in bookings:
-            # Get route_details
-            route_booking = db.query(RouteManagementBooking).filter(RouteManagementBooking.booking_id == booking.booking_id).first()
+            # Get route_details from pre-loaded maps
+            route_booking = route_booking_map.get(booking.booking_id)
             route_details = None
             if route_booking:
-                route = db.query(RouteManagement).filter(RouteManagement.route_id == route_booking.route_id).first()
+                route = route_map.get(route_booking.route_id)
                 if route:
                     route_details = serialize_route(db, route)
 

@@ -27,6 +27,11 @@ class TenantConfig(Base):
     # Speed limit configuration (km/h) — used to detect speed violations
     speed_limit_kmph = Column(Float, nullable=True, default=60.0)
 
+    # One-trip-per-shift enforcement
+    one_trip_per_shift_enabled = Column(Boolean, default=True, nullable=False, server_default="true")
+    # When True: conflicting booking is auto-moved to new route; when False: operation is blocked
+    auto_move_on_conflict = Column(Boolean, default=True, nullable=False, server_default="true")
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
