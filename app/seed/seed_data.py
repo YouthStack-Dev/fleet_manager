@@ -150,15 +150,24 @@ def seed_iam(db: Session):
         "alert",
         "policy-package",
         "nodal_point",
+        "driver_app",
+        "speed_violation",
     ]
 
     actions = ["create", "read", "update", "delete"]
-    alert_actions = ["create", "read", "respond", "close", "escalate", "update", "delete"]
+
+    # Modules that need actions beyond the standard CRUD set.
+    # Any module not listed here gets the standard `actions` list above.
+    module_actions_override = {
+        "alert":          ["create", "read", "respond", "close", "escalate", "update", "delete"],
+        "tenant_config":  ["create", "read", "update", "delete", "write", "escort"],
+        "app-driver":     ["create", "read", "update", "delete", "write"],
+        "driver_app":     ["create", "read", "update", "delete", "access"],
+    }
 
     permissions_map = {}
     for module in modules:
-        # Use alert_actions for alert module, standard actions for others
-        module_actions = alert_actions if module == "alert" else actions
+        module_actions = module_actions_override.get(module, actions)
         for action in module_actions:
             existing = (
                 db.query(Permission)
@@ -183,8 +192,7 @@ def seed_iam(db: Session):
     policies_map = {}
     for module in modules:
         policy_name = f"{module.capitalize()}Policy".replace("-", "").replace(".", "")
-        # Use alert_actions for alert module, standard actions for others
-        module_actions = alert_actions if module == "alert" else actions
+        module_actions = module_actions_override.get(module, actions)
         perms = [f"{module}:{a}" for a in module_actions]
 
         policy = db.query(Policy).filter(Policy.name == policy_name, Policy.is_system_policy == True).first()
