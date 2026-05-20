@@ -25,6 +25,10 @@ class TenantConfigBase(BaseModel):
     schedule_reminder_enabled: bool = False
     schedule_reminder_minutes: int = 30
 
+    # OTA/OTD Delay Classification (Feature 4)
+    delay_driver_grace_minutes: int = 10
+    delay_employee_grace_minutes: int = 5
+
     @field_validator('escort_required_start_time', 'escort_required_end_time')
     def validate_time_format(cls, v):
         """Validate time format"""
@@ -37,6 +41,20 @@ class TenantConfigBase(BaseModel):
         """Reminder window must be between 1 and 240 minutes"""
         if not (1 <= v <= 240):
             raise ValueError('schedule_reminder_minutes must be between 1 and 240')
+        return v
+
+    @field_validator('delay_driver_grace_minutes')
+    def validate_driver_grace(cls, v):
+        """Driver grace must be between 0 and 60 minutes"""
+        if not (0 <= v <= 60):
+            raise ValueError('delay_driver_grace_minutes must be between 0 and 60')
+        return v
+
+    @field_validator('delay_employee_grace_minutes')
+    def validate_employee_grace(cls, v):
+        """Employee grace must be between 0 and 60 minutes"""
+        if not (0 <= v <= 60):
+            raise ValueError('delay_employee_grace_minutes must be between 0 and 60')
         return v
 
 class TenantConfigCreate(TenantConfigBase):
@@ -56,7 +74,9 @@ class TenantConfigCreate(TenantConfigBase):
                 "logout_deboarding_otp": False,
                 "speed_limit_kmph": 60.0,
                 "schedule_reminder_enabled": True,
-                "schedule_reminder_minutes": 30
+                "schedule_reminder_minutes": 30,
+                "delay_driver_grace_minutes": 10,
+                "delay_employee_grace_minutes": 5
             }
         }
     )
@@ -84,6 +104,10 @@ class TenantConfigUpdate(BaseModel):
     schedule_reminder_enabled: Optional[bool] = None
     schedule_reminder_minutes: Optional[int] = None
 
+    # OTA/OTD Delay Classification (Feature 4)
+    delay_driver_grace_minutes: Optional[int] = None
+    delay_employee_grace_minutes: Optional[int] = None
+
     @field_validator('escort_required_start_time', 'escort_required_end_time')
     def validate_time_format(cls, v):
         """Validate time format"""
@@ -98,6 +122,20 @@ class TenantConfigUpdate(BaseModel):
             raise ValueError('schedule_reminder_minutes must be between 1 and 240')
         return v
 
+    @field_validator('delay_driver_grace_minutes')
+    def validate_driver_grace(cls, v):
+        """Driver grace must be between 0 and 60 minutes"""
+        if v is not None and not (0 <= v <= 60):
+            raise ValueError('delay_driver_grace_minutes must be between 0 and 60')
+        return v
+
+    @field_validator('delay_employee_grace_minutes')
+    def validate_employee_grace(cls, v):
+        """Employee grace must be between 0 and 60 minutes"""
+        if v is not None and not (0 <= v <= 60):
+            raise ValueError('delay_employee_grace_minutes must be between 0 and 60')
+        return v
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
@@ -107,7 +145,9 @@ class TenantConfigUpdate(BaseModel):
                 "login_boarding_otp": True,
                 "logout_deboarding_otp": True,
                 "schedule_reminder_enabled": True,
-                "schedule_reminder_minutes": 30
+                "schedule_reminder_minutes": 30,
+                "delay_driver_grace_minutes": 10,
+                "delay_employee_grace_minutes": 5
             }
         }
     )

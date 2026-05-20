@@ -704,6 +704,10 @@ async def get_delay_report(
     start_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
     end_date: date = Query(..., description="End date (YYYY-MM-DD)"),
     delay_type: Optional[str] = Query(None, description="Filter: LATE | EARLY | ON_TIME"),
+    delay_category: Optional[str] = Query(
+        None,
+        description="Filter by root-cause category: DRIVER_DELAY | EMPLOYEE_DELAY | TRAFFIC_DELAY | NONE",
+    ),
     tenant_id: Optional[str] = Query(None, description="Tenant ID (admin only; employees use token)"),
     db: Session = Depends(get_db),
     ctx=Depends(PermissionChecker(["report.read"], check_tenant=True)),
@@ -716,10 +720,12 @@ async def get_delay_report(
 
     Query params
     ------------
-    start_date  – inclusive lower bound on route.created_at date
-    end_date    – inclusive upper bound
-    delay_type  – optional filter (LATE | EARLY | ON_TIME)
-    tenant_id   – admin-only override; otherwise resolved from token
+    start_date     – inclusive lower bound on route.delay_tagged_at date
+    end_date       – inclusive upper bound
+    delay_type     – optional filter (LATE | EARLY | ON_TIME)
+    delay_category – optional filter (DRIVER_DELAY | EMPLOYEE_DELAY |
+                     TRAFFIC_DELAY | NONE)
+    tenant_id      – admin-only override; otherwise resolved from token
     """
     try:
         user_data = ctx
@@ -756,8 +762,41 @@ async def get_delay_report(
 
         routes = query.order_by(RouteManagement.delay_tagged_at.desc()).all()
 
+        # Resolve the latest delay_category from route_delay_events when needed
+        route_ids = [r.route_id for r in routes]
+
+        # Build a map: route_id → latest delay_category from route_delay_events
+        category_map: dict = {}
+        if route_ids:
+            from sqlalchemy import func as sqlfunc
+            latest_events = (
+                db.query(
+                    RouteDelayEvent.route_id,
+                    RouteDelayEvent.delay_category,
+                )
+                .filter(
+                    RouteDelayEvent.route_id.in_(route_ids),
+                    RouteDelayEvent.event_kind == "OTD",
+                )
+                .order_by(
+                    RouteDelayEvent.route_id,
+                    RouteDelayEvent.tagged_at.desc(),
+                )
+                .all()
+            )
+            # Keep only the first (most recent) per route_id
+            seen: set = set()
+            for ev_route_id, ev_category in latest_events:
+                if ev_route_id not in seen:
+                    category_map[ev_route_id] = ev_category
+                    seen.add(ev_route_id)
+
         rows = []
         for r in routes:
+            cat = category_map.get(r.route_id)
+            # Apply delay_category filter if requested
+            if delay_category and (cat or "").upper() != delay_category.upper():
+                continue
             rows.append({
                 "route_id": r.route_id,
                 "route_code": r.route_code,
@@ -769,6 +808,7 @@ async def get_delay_report(
                 "estimated_total_time_min": r.estimated_total_time,
                 "delay_type": r.delay_type,
                 "delay_minutes": r.delay_minutes,
+                "delay_category": cat,
                 "delay_tagged_at": r.delay_tagged_at.isoformat() if r.delay_tagged_at else None,
                 "ota_grace_minutes": r.ota_grace_minutes,
             })
@@ -783,6 +823,12 @@ async def get_delay_report(
             if total else 0
         )
 
+        # Category breakdown
+        driver_delay_count   = sum(1 for row in rows if row["delay_category"] == "DRIVER_DELAY")
+        employee_delay_count = sum(1 for row in rows if row["delay_category"] == "EMPLOYEE_DELAY")
+        traffic_delay_count  = sum(1 for row in rows if row["delay_category"] == "TRAFFIC_DELAY")
+        none_count           = sum(1 for row in rows if row["delay_category"] in ("NONE", None))
+
         return ResponseWrapper.success(
             data={
                 "summary": {
@@ -791,6 +837,12 @@ async def get_delay_report(
                     "early": early_count,
                     "on_time": on_time_count,
                     "average_delay_minutes": avg_delay,
+                    "by_category": {
+                        "DRIVER_DELAY": driver_delay_count,
+                        "EMPLOYEE_DELAY": employee_delay_count,
+                        "TRAFFIC_DELAY": traffic_delay_count,
+                        "NONE": none_count,
+                    },
                 },
                 "routes": rows,
             },
@@ -861,6 +913,7 @@ async def get_route_delay_detail(
                 "event_kind": ev.event_kind,
                 "delay_type": ev.delay_type,
                 "delay_minutes": ev.delay_minutes,
+                "delay_category": ev.delay_category,
                 "notes": ev.notes,
                 "tagged_at": ev.tagged_at.isoformat() if ev.tagged_at else None,
             }
