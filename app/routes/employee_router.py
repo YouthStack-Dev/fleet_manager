@@ -1,10 +1,11 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query, Request, UploadFile, File
 from app.core.email_service import get_email_service, get_sms_service
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import Optional, List, Dict, Any
 from app.database.session import get_db
 from app.models.employee import Employee
 from app.models.iam.role import Role
+from app.models.nodal_point import EmployeeNodalPoint, NodalPoint
 from app.schemas.employee import EmployeeCreate, EmployeeUpdate, EmployeeResponse, EmployeePaginationResponse
 from app.utils.pagination import paginate_query
 from common_utils.auth.permission_checker import PermissionChecker
@@ -1032,6 +1033,25 @@ def validate_employee_row(
     }
 
 
+def _build_nodal_point_dict(emp: Employee) -> Optional[dict]:
+    """
+    Extract nodal point info from the already-loaded ORM relationship.
+    Returns None when the employee has no nodal assignment.
+    """
+    assignment = emp.nodal_point_assignment
+    if not assignment or not assignment.nodal_point:
+        return None
+    np = assignment.nodal_point
+    return {
+        "nodal_point_id": np.nodal_point_id,
+        "name": np.name,
+        "address": np.address,
+        "latitude": float(np.latitude),
+        "longitude": float(np.longitude),
+        "is_overridden": assignment.is_overridden,
+    }
+
+
 @router.get("/", status_code=status.HTTP_200_OK)
 def read_employees(
     skip: int = 0,
@@ -1110,8 +1130,17 @@ def read_employees(
                     ),
                 )
 
-        # Query employees
-        query = db.query(Employee).filter(Employee.tenant_id == tenant_id)
+        # Query employees — LEFT OUTER JOIN nodal assignment + nodal point in
+        # one SQL round-trip so we never issue N extra queries for nodal data.
+        query = (
+            db.query(Employee)
+            .filter(Employee.tenant_id == tenant_id)
+            .options(
+                joinedload(Employee.nodal_point_assignment).joinedload(
+                    EmployeeNodalPoint.nodal_point
+                )
+            )
+        )
 
         if name:
             query = query.filter(Employee.name.ilike(f"%{name}%"))
@@ -1130,6 +1159,8 @@ def read_employees(
                 emp_dict["tenant_latitude"] = float(emp.tenant.latitude) if emp.tenant.latitude else None
                 emp_dict["tenant_longitude"] = float(emp.tenant.longitude) if emp.tenant.longitude else None
                 emp_dict["tenant_address"] = emp.tenant.address
+            # Add nodal point (already loaded via joinedload — no extra query)
+            emp_dict["nodal_point"] = _build_nodal_point_dict(emp)
             employees.append(emp_dict)
 
         return ResponseWrapper.success(
@@ -1172,7 +1203,15 @@ def read_employee(
             )
 
         # 🔒 Tenant enforcement
-        query = db.query(Employee).filter(Employee.employee_id == employee_id)
+        query = (
+            db.query(Employee)
+            .filter(Employee.employee_id == employee_id)
+            .options(
+                joinedload(Employee.nodal_point_assignment).joinedload(
+                    EmployeeNodalPoint.nodal_point
+                )
+            )
+        )
         if user_type == "employee":
             query = query.filter(Employee.tenant_id == tenant_id)
 
@@ -1192,6 +1231,8 @@ def read_employee(
             employee_data["tenant_latitude"] = float(db_employee.tenant.latitude) if db_employee.tenant.latitude else None
             employee_data["tenant_longitude"] = float(db_employee.tenant.longitude) if db_employee.tenant.longitude else None
             employee_data["tenant_address"] = db_employee.tenant.address
+        # Add nodal point (already loaded via joinedload — no extra query)
+        employee_data["nodal_point"] = _build_nodal_point_dict(db_employee)
 
         return ResponseWrapper.success(
             data={"employee": employee_data}, message="Employee fetched successfully"
