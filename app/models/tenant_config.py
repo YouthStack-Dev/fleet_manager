@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, Time, ForeignKey, DateTime, Float, func
+from sqlalchemy import Column, Integer, String, Boolean, Time, ForeignKey, DateTime, Float, func
 from app.database.session import Base
 from sqlalchemy.orm import relationship
 
@@ -31,6 +31,12 @@ class TenantConfig(Base):
     one_trip_per_shift_enabled = Column(Boolean, default=True, nullable=False, server_default="true")
     # When True: conflicting booking is auto-moved to new route; when False: operation is blocked
     auto_move_on_conflict = Column(Boolean, default=True, nullable=False, server_default="true")
+
+    # ── Schedule Reminder Notifications ───────────────────────────
+    # Enable/disable pre-trip push + SMS reminders for this tenant
+    schedule_reminder_enabled = Column(Boolean, default=False, nullable=False, server_default="false")
+    # How many minutes before pickup time to send the reminder (default: 30)
+    schedule_reminder_minutes = Column(Integer, nullable=False, server_default="30")
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

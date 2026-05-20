@@ -22,6 +22,7 @@ from app.config import settings
 from app.core.logging_config import get_logger, setup_logging
 from app.middleware import ErrorTrackingMiddleware, MetricsAuthMiddleware, RequestTrackingMiddleware
 from app.middleware.url_validation import URLValidationMiddleware
+from app.services.scheduler_service import SchedulerService
 
 # ── Prometheus ─────────────────────────────────────────────────
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -105,8 +106,15 @@ async def lifespan(app: FastAPI):
     # asyncio.create_task(monitor_database_periodically())
     # logger.info("🔄 Background monitoring task started")
 
+    # ── Background scheduler ───────────────────────────────────
+    scheduler = SchedulerService()
+    scheduler.start()
+    logger.info("Background scheduler started")
+
     yield  # ← application runs here
 
+    # ── Graceful shutdown ──────────────────────────────────────
+    scheduler.stop(wait=True)
     logger.info("🛑 Application shutting down…")
 
 

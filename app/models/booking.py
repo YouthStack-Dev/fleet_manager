@@ -71,6 +71,9 @@ class Booking(Base):
     # Audit & lifecycle
     reason = Column(Text, nullable=True)  # reason for cancellation/update
 
+    # Schedule reminder — set once the pre-trip push+SMS reminder is sent
+    reminder_sent_at = Column(DateTime, nullable=True, index=True)
+
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
