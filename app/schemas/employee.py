@@ -272,6 +272,18 @@ class EmployeeUpdate(BaseModel, BaseValidatorsMixin):
         }
     )
 
+class EmployeeNodalPointInfo(BaseModel):
+    """Nodal point assigned to an employee, embedded inside EmployeeResponse."""
+    nodal_point_id: int
+    name: str
+    address: Optional[str] = None
+    latitude: float
+    longitude: float
+    is_overridden: bool  # True = admin manually chose; False = auto-assigned nearest
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class EmployeeResponse(EmployeeBase):
     employee_id: int
     created_at: datetime
@@ -279,6 +291,7 @@ class EmployeeResponse(EmployeeBase):
     tenant_latitude: Optional[float] = None
     tenant_longitude: Optional[float] = None
     tenant_address: Optional[str] = None
+    nodal_point: Optional[EmployeeNodalPointInfo] = None  # None when not a nodal-shift tenant
 
     model_config = ConfigDict(from_attributes=True)
 
