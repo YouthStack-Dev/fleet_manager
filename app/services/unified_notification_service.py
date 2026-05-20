@@ -355,3 +355,102 @@ class UnifiedNotificationService:
         )
         
         return result
+
+    def send_trip_reminder(
+        self,
+        employee_id: int,
+        employee_phone: Optional[str],
+        pickup_time_str: str,
+        vehicle_plate: str,
+        driver_name: str,
+        driver_phone: str,
+        booking_id: int,
+        route_id: int,
+        send_sms: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Send a pre-trip pickup reminder to a single employee via push notification
+        and optionally via SMS.
+
+        Push body:
+            "Your cab arrives at HH:MM. Vehicle: <plate>. Driver: <name> <phone>"
+
+        Args:
+            employee_id:     Employee's user_id (used for FCM token lookup)
+            employee_phone:  E.164 phone number, used when send_sms=True
+            pickup_time_str: Estimated pickup time as "HH:MM" or "HH:MM:SS"
+            vehicle_plate:   Vehicle registration number shown to the employee
+            driver_name:     Driver's display name
+            driver_phone:    Driver's contact number shown to the employee
+            booking_id:      For the FCM data payload (deep-link / logging)
+            route_id:        For the FCM data payload
+            send_sms:        Also send an SMS via SMSService if True
+
+        Returns:
+            Dict with keys:
+                push_success (bool), sms_success (bool | None), errors (list[str])
+        """
+        # Normalise time to HH:MM
+        pickup_display = pickup_time_str[:5] if len(pickup_time_str) >= 5 else pickup_time_str
+
+        title = "Cab Reminder"
+        body = (
+            f"Your cab arrives at {pickup_display}. "
+            f"Vehicle: {vehicle_plate}. "
+            f"Driver: {driver_name} {driver_phone}"
+        )
+
+        data_payload: Dict[str, str] = {
+            "type": "trip_reminder",
+            "booking_id": str(booking_id),
+            "route_id": str(route_id),
+            "pickup_time": pickup_display,
+            "vehicle_plate": vehicle_plate,
+            "driver_name": driver_name,
+            "driver_phone": driver_phone,
+        }
+
+        errors: list = []
+
+        # ── Push notification ──────────────────────────────────────
+        push_result = self.send_to_user(
+            user_type="employee",
+            user_id=employee_id,
+            title=title,
+            body=body,
+            data=data_payload,
+            priority="high",
+        )
+        push_success = push_result.get("success", False)
+        if not push_success:
+            errors.append(f"push: {push_result.get('error', 'unknown')}")
+
+        logger.info(
+            "[unified_notification_service] Trip reminder push "
+            "employee_id=%s booking_id=%s success=%s",
+            employee_id, booking_id, push_success,
+        )
+
+        # ── Optional SMS ───────────────────────────────────────────
+        sms_success: Optional[bool] = None
+        if send_sms and employee_phone:
+            try:
+                from app.services.sms_service import SMSService
+                sms = SMSService()
+                sms_success = sms.send_sms(to_phone=employee_phone, message=body)
+                if not sms_success:
+                    errors.append("sms: send failed")
+            except Exception as exc:
+                logger.error(
+                    "[unified_notification_service] SMS reminder failed "
+                    "employee_id=%s booking_id=%s error=%s",
+                    employee_id, booking_id, exc,
+                )
+                errors.append(f"sms: {exc}")
+                sms_success = False
+
+        return {
+            "push_success": push_success,
+            "sms_success": sms_success,
+            "errors": errors,
+        }
