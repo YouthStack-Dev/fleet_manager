@@ -38,6 +38,20 @@ class TenantConfig(Base):
     # How many minutes before pickup time to send the reminder (default: 30)
     schedule_reminder_minutes = Column(Integer, nullable=False, server_default="30")
 
+    # ── OTA/OTD Delay Classification (Feature 4) ───────────────────
+    # Grace window before a first-stop lateness is attributed to the driver
+    delay_driver_grace_minutes = Column(Integer, nullable=False, server_default="10")
+    # Per-stop grace window before employee boarding lateness is counted
+    delay_employee_grace_minutes = Column(Integer, nullable=False, server_default="5")
+
+    # ── Driver Duty Hours & Rest-Time Enforcement (Feature 1) ──────
+    # Maximum minutes a driver may be on duty within any 24-hour window
+    # (default 600 = 10 hours; required rest = 24h - max_duty)
+    driver_max_duty_minutes = Column(Integer, nullable=False, server_default="600")
+    # 'warn'  → assignment proceeds but response includes a warning
+    # 'block' → assignment is rejected with HTTP 409 if rest is insufficient
+    driver_rest_enforcement = Column(String(10), nullable=False, server_default="warn")
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 

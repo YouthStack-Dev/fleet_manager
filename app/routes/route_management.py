@@ -2037,6 +2037,63 @@ async def assign_vehicle_to_route(
                 message="Vehicle and driver are already assigned to this route. No changes made.",
             )
 
+        # ---- Driver Duty Hours & Rest-Time Enforcement (Feature 1) ----
+        duty_warnings: list = []
+        try:
+            from app.services.driver_duty_hours_service import check_rest
+            tenant_cfg = db.query(TenantConfig).filter(
+                TenantConfig.tenant_id == tenant_id
+            ).first()
+            max_duty = (tenant_cfg.driver_max_duty_minutes if tenant_cfg else 600)
+            enforcement = (tenant_cfg.driver_rest_enforcement if tenant_cfg else "warn")
+
+            rest_result = check_rest(
+                driver_id=driver.driver_id,
+                proposed_start_dt=datetime.utcnow(),
+                db=db,
+                max_duty_minutes=max_duty,
+            )
+
+            if not rest_result["ok"]:
+                logger.warning(
+                    f"[assign_vehicle_to_route] Driver {driver.driver_id} rest check FAILED — "
+                    f"gap={rest_result['rest_gap_minutes']}m required={rest_result['required_rest_minutes']}m "
+                    f"enforcement={enforcement}"
+                )
+                if enforcement == "block":
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=ResponseWrapper.error(
+                            message=(
+                                f"Driver has insufficient rest. "
+                                f"Longest rest gap: {rest_result['rest_gap_minutes']} min, "
+                                f"required: {rest_result['required_rest_minutes']} min."
+                            ),
+                            error_code="DRIVER_INSUFFICIENT_REST",
+                            details={
+                                "driver_id": driver.driver_id,
+                                "rest_gap_minutes": rest_result["rest_gap_minutes"],
+                                "required_rest_minutes": rest_result["required_rest_minutes"],
+                                "total_duty_minutes_24h": rest_result["total_duty_minutes"],
+                                "last_trip_end": (
+                                    rest_result["last_trip_end"].isoformat()
+                                    if rest_result["last_trip_end"] else None
+                                ),
+                            },
+                        ),
+                    )
+                else:
+                    duty_warnings.append(
+                        f"driver_rest_insufficient: gap={rest_result['rest_gap_minutes']}m "
+                        f"(required {rest_result['required_rest_minutes']}m)"
+                    )
+        except HTTPException:
+            raise
+        except Exception as duty_check_err:
+            logger.warning(
+                f"[assign_vehicle_to_route] Duty hours check failed unexpectedly: {duty_check_err}"
+            )
+
         # ---- Apply assignment ----
         route.assigned_vehicle_id = vehicle.vehicle_id
         route.assigned_driver_id = driver.driver_id
@@ -2082,6 +2139,7 @@ async def assign_vehicle_to_route(
                 "assigned_vehicle_id": route.assigned_vehicle_id,
                 "assigned_driver_id": route.assigned_driver_id,
                 "status": safe_get_enum_value(route, "status"),
+                "warnings": duty_warnings if duty_warnings else [],
             },
             message="Vehicle and driver assigned successfully",
         )

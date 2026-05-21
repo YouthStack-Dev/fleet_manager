@@ -22,6 +22,12 @@ class CRUDTenantConfig(CRUDBase[TenantConfig, TenantConfigCreate, TenantConfigUp
                 logout_boarding_otp=True,
                 logout_deboarding_otp=True,
                 speed_limit_kmph=60.0,           # Default speed limit (km/h)
+                # Feature 4: OTA/OTD Delay Classification
+                delay_driver_grace_minutes=10,
+                delay_employee_grace_minutes=5,
+                # Feature 1: Driver Duty Hours & Rest-Time Enforcement
+                driver_max_duty_minutes=600,
+                driver_rest_enforcement="warn",
             )
             db.add(db_obj)
             db.flush()
