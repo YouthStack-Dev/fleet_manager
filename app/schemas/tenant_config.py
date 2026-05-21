@@ -25,6 +25,14 @@ class TenantConfigBase(BaseModel):
     schedule_reminder_enabled: bool = False
     schedule_reminder_minutes: int = 30
 
+    # OTA/OTD Delay Classification (Feature 4)
+    delay_driver_grace_minutes: int = 10
+    delay_employee_grace_minutes: int = 5
+
+    # Driver Duty Hours & Rest-Time Enforcement (Feature 1)
+    driver_max_duty_minutes: int = 600
+    driver_rest_enforcement: str = "warn"
+
     @field_validator('escort_required_start_time', 'escort_required_end_time')
     def validate_time_format(cls, v):
         """Validate time format"""
@@ -37,6 +45,34 @@ class TenantConfigBase(BaseModel):
         """Reminder window must be between 1 and 240 minutes"""
         if not (1 <= v <= 240):
             raise ValueError('schedule_reminder_minutes must be between 1 and 240')
+        return v
+
+    @field_validator('delay_driver_grace_minutes')
+    def validate_driver_grace(cls, v):
+        """Driver grace must be between 0 and 60 minutes"""
+        if not (0 <= v <= 60):
+            raise ValueError('delay_driver_grace_minutes must be between 0 and 60')
+        return v
+
+    @field_validator('delay_employee_grace_minutes')
+    def validate_employee_grace(cls, v):
+        """Employee grace must be between 0 and 60 minutes"""
+        if not (0 <= v <= 60):
+            raise ValueError('delay_employee_grace_minutes must be between 0 and 60')
+        return v
+
+    @field_validator('driver_max_duty_minutes')
+    def validate_max_duty_minutes(cls, v):
+        """Max duty must be between 60 and 1440 minutes (1 hour – 24 hours)"""
+        if not (60 <= v <= 1440):
+            raise ValueError('driver_max_duty_minutes must be between 60 and 1440')
+        return v
+
+    @field_validator('driver_rest_enforcement')
+    def validate_rest_enforcement(cls, v):
+        """Enforcement mode must be 'warn' or 'block'"""
+        if v not in ("warn", "block"):
+            raise ValueError("driver_rest_enforcement must be 'warn' or 'block'")
         return v
 
 class TenantConfigCreate(TenantConfigBase):
@@ -56,7 +92,11 @@ class TenantConfigCreate(TenantConfigBase):
                 "logout_deboarding_otp": False,
                 "speed_limit_kmph": 60.0,
                 "schedule_reminder_enabled": True,
-                "schedule_reminder_minutes": 30
+                "schedule_reminder_minutes": 30,
+                "delay_driver_grace_minutes": 10,
+                "delay_employee_grace_minutes": 5,
+                "driver_max_duty_minutes": 600,
+                "driver_rest_enforcement": "warn"
             }
         }
     )
@@ -84,6 +124,14 @@ class TenantConfigUpdate(BaseModel):
     schedule_reminder_enabled: Optional[bool] = None
     schedule_reminder_minutes: Optional[int] = None
 
+    # OTA/OTD Delay Classification (Feature 4)
+    delay_driver_grace_minutes: Optional[int] = None
+    delay_employee_grace_minutes: Optional[int] = None
+
+    # Driver Duty Hours & Rest-Time Enforcement (Feature 1)
+    driver_max_duty_minutes: Optional[int] = None
+    driver_rest_enforcement: Optional[str] = None
+
     @field_validator('escort_required_start_time', 'escort_required_end_time')
     def validate_time_format(cls, v):
         """Validate time format"""
@@ -98,6 +146,34 @@ class TenantConfigUpdate(BaseModel):
             raise ValueError('schedule_reminder_minutes must be between 1 and 240')
         return v
 
+    @field_validator('delay_driver_grace_minutes')
+    def validate_driver_grace(cls, v):
+        """Driver grace must be between 0 and 60 minutes"""
+        if v is not None and not (0 <= v <= 60):
+            raise ValueError('delay_driver_grace_minutes must be between 0 and 60')
+        return v
+
+    @field_validator('delay_employee_grace_minutes')
+    def validate_employee_grace(cls, v):
+        """Employee grace must be between 0 and 60 minutes"""
+        if v is not None and not (0 <= v <= 60):
+            raise ValueError('delay_employee_grace_minutes must be between 0 and 60')
+        return v
+
+    @field_validator('driver_max_duty_minutes')
+    def validate_max_duty_minutes(cls, v):
+        """Max duty must be between 60 and 1440 minutes"""
+        if v is not None and not (60 <= v <= 1440):
+            raise ValueError('driver_max_duty_minutes must be between 60 and 1440')
+        return v
+
+    @field_validator('driver_rest_enforcement')
+    def validate_rest_enforcement(cls, v):
+        """Enforcement mode must be 'warn' or 'block'"""
+        if v is not None and v not in ("warn", "block"):
+            raise ValueError("driver_rest_enforcement must be 'warn' or 'block'")
+        return v
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
@@ -107,7 +183,11 @@ class TenantConfigUpdate(BaseModel):
                 "login_boarding_otp": True,
                 "logout_deboarding_otp": True,
                 "schedule_reminder_enabled": True,
-                "schedule_reminder_minutes": 30
+                "schedule_reminder_minutes": 30,
+                "delay_driver_grace_minutes": 10,
+                "delay_employee_grace_minutes": 5,
+                "driver_max_duty_minutes": 600,
+                "driver_rest_enforcement": "warn"
             }
         }
     )
@@ -118,5 +198,4 @@ class TenantConfigResponse(TenantConfigBase):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

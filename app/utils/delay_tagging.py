@@ -16,6 +16,12 @@ delay_type
   "EARLY"   — delay_minutes < -ota_grace_minutes
   "ON_TIME" — within ±grace window
 
+delay_category  (Feature 4 — OTA/OTD Delay Classification)
+  "NONE"           — route was ON_TIME or EARLY
+  "DRIVER_DELAY"   — driver arrived at first stop late
+  "EMPLOYEE_DELAY" — an employee caused boarding delay
+  "TRAFFIC_DELAY"  — delay attributable to traffic / other causes
+
 The summary columns on RouteManagement are updated in-place.
 A RouteDelayEvent row is inserted for full audit history.
 
@@ -37,6 +43,7 @@ from sqlalchemy.orm import Session
 
 from app.models.route_management import RouteManagement
 from app.models.route_delay_event import RouteDelayEvent
+from app.models.tenant_config import TenantConfig
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +105,7 @@ def tag_trip_delay(
     Side effects
     ------------
     - Sets route.delay_type, route.delay_minutes, route.delay_tagged_at
-    - Inserts one RouteDelayEvent(event_kind="OTD") row
+    - Inserts one RouteDelayEvent(event_kind="OTD") row with delay_category
     - Logs result at INFO level
     """
     # --- Guard: can only tag if we have start time and estimated duration ---
@@ -139,6 +146,11 @@ def tag_trip_delay(
     route.delay_minutes = delay_minutes
     route.delay_tagged_at = now
 
+    # --- Resolve delay classification category (Feature 4) ---------------
+    delay_category = _resolve_delay_category(
+        db=db, route=route, delay_type=delay_type
+    )
+
     # --- Insert audit event ---
     event = RouteDelayEvent(
         route_id=route.route_id,
@@ -146,10 +158,12 @@ def tag_trip_delay(
         event_kind="OTD",
         delay_type=delay_type,
         delay_minutes=delay_minutes,
+        delay_category=delay_category,
         notes=(
             f"planned_end={planned_end_time.isoformat()}, "
             f"actual_end={actual_end_time.isoformat()}, "
-            f"grace={grace}min"
+            f"grace={grace}min, "
+            f"category={delay_category}"
         ),
         tagged_at=now,
     )
@@ -157,12 +171,66 @@ def tag_trip_delay(
 
     logger.info(
         "[tag_trip_delay] route=%s tenant=%s OTD delay_type=%s delay_minutes=%d "
-        "(planned_end=%s, actual_end=%s, grace=%dmin)",
+        "delay_category=%s (planned_end=%s, actual_end=%s, grace=%dmin)",
         route.route_id,
         route.tenant_id,
         delay_type,
         delay_minutes,
+        delay_category,
         planned_end_time.strftime("%H:%M"),
         actual_end_time.strftime("%H:%M"),
         grace,
     )
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_delay_category(
+    db: Session,
+    route: RouteManagement,
+    delay_type: str,
+) -> str:
+    """
+    Look up tenant grace config and call the classification service.
+
+    Falls back to safe defaults if TenantConfig is missing.
+    Never raises.
+    """
+    try:
+        # Import here to avoid circular-import at module load time
+        from app.services.delay_classification_service import classify_delay_category
+
+        # Fetch per-tenant grace overrides (best-effort; defaults used on miss)
+        config: Optional[TenantConfig] = (
+            db.query(TenantConfig)
+            .filter(TenantConfig.tenant_id == route.tenant_id)
+            .first()
+        )
+        driver_grace = (
+            config.delay_driver_grace_minutes
+            if config and config.delay_driver_grace_minutes is not None
+            else 10
+        )
+        employee_grace = (
+            config.delay_employee_grace_minutes
+            if config and config.delay_employee_grace_minutes is not None
+            else 5
+        )
+
+        return classify_delay_category(
+            route=route,
+            delay_type=delay_type,
+            db=db,
+            driver_grace_minutes=driver_grace,
+            employee_grace_minutes=employee_grace,
+        )
+    except Exception:
+        logger.exception(
+            "[tag_trip_delay] Failed to classify delay category for route=%s "
+            "— defaulting to TRAFFIC_DELAY",
+            route.route_id,
+        )
+        return "TRAFFIC_DELAY"
+

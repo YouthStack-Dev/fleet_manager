@@ -39,6 +39,11 @@ class RouteDelayEvent(Base):
     # positive = late, negative = early
     delay_minutes = Column(Integer, nullable=False, default=0)
 
+    # Root-cause category (Feature 4 — OTA/OTD Delay Classification)
+    # DRIVER_DELAY | EMPLOYEE_DELAY | TRAFFIC_DELAY | NONE
+    # NULL for rows recorded before Feature 4 was deployed.
+    delay_category = Column(String(30), nullable=True)
+
     notes = Column(Text, nullable=True)
 
     tagged_at = Column(

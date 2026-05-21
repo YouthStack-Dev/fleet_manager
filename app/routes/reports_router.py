@@ -704,6 +704,10 @@ async def get_delay_report(
     start_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
     end_date: date = Query(..., description="End date (YYYY-MM-DD)"),
     delay_type: Optional[str] = Query(None, description="Filter: LATE | EARLY | ON_TIME"),
+    delay_category: Optional[str] = Query(
+        None,
+        description="Filter by root-cause category: DRIVER_DELAY | EMPLOYEE_DELAY | TRAFFIC_DELAY | NONE",
+    ),
     tenant_id: Optional[str] = Query(None, description="Tenant ID (admin only; employees use token)"),
     db: Session = Depends(get_db),
     ctx=Depends(PermissionChecker(["report.read"], check_tenant=True)),
@@ -716,10 +720,12 @@ async def get_delay_report(
 
     Query params
     ------------
-    start_date  – inclusive lower bound on route.created_at date
-    end_date    – inclusive upper bound
-    delay_type  – optional filter (LATE | EARLY | ON_TIME)
-    tenant_id   – admin-only override; otherwise resolved from token
+    start_date     – inclusive lower bound on route.delay_tagged_at date
+    end_date       – inclusive upper bound
+    delay_type     – optional filter (LATE | EARLY | ON_TIME)
+    delay_category – optional filter (DRIVER_DELAY | EMPLOYEE_DELAY |
+                     TRAFFIC_DELAY | NONE)
+    tenant_id      – admin-only override; otherwise resolved from token
     """
     try:
         user_data = ctx
@@ -756,8 +762,41 @@ async def get_delay_report(
 
         routes = query.order_by(RouteManagement.delay_tagged_at.desc()).all()
 
+        # Resolve the latest delay_category from route_delay_events when needed
+        route_ids = [r.route_id for r in routes]
+
+        # Build a map: route_id → latest delay_category from route_delay_events
+        category_map: dict = {}
+        if route_ids:
+            from sqlalchemy import func as sqlfunc
+            latest_events = (
+                db.query(
+                    RouteDelayEvent.route_id,
+                    RouteDelayEvent.delay_category,
+                )
+                .filter(
+                    RouteDelayEvent.route_id.in_(route_ids),
+                    RouteDelayEvent.event_kind == "OTD",
+                )
+                .order_by(
+                    RouteDelayEvent.route_id,
+                    RouteDelayEvent.tagged_at.desc(),
+                )
+                .all()
+            )
+            # Keep only the first (most recent) per route_id
+            seen: set = set()
+            for ev_route_id, ev_category in latest_events:
+                if ev_route_id not in seen:
+                    category_map[ev_route_id] = ev_category
+                    seen.add(ev_route_id)
+
         rows = []
         for r in routes:
+            cat = category_map.get(r.route_id)
+            # Apply delay_category filter if requested
+            if delay_category and (cat or "").upper() != delay_category.upper():
+                continue
             rows.append({
                 "route_id": r.route_id,
                 "route_code": r.route_code,
@@ -769,6 +808,7 @@ async def get_delay_report(
                 "estimated_total_time_min": r.estimated_total_time,
                 "delay_type": r.delay_type,
                 "delay_minutes": r.delay_minutes,
+                "delay_category": cat,
                 "delay_tagged_at": r.delay_tagged_at.isoformat() if r.delay_tagged_at else None,
                 "ota_grace_minutes": r.ota_grace_minutes,
             })
@@ -783,6 +823,12 @@ async def get_delay_report(
             if total else 0
         )
 
+        # Category breakdown
+        driver_delay_count   = sum(1 for row in rows if row["delay_category"] == "DRIVER_DELAY")
+        employee_delay_count = sum(1 for row in rows if row["delay_category"] == "EMPLOYEE_DELAY")
+        traffic_delay_count  = sum(1 for row in rows if row["delay_category"] == "TRAFFIC_DELAY")
+        none_count           = sum(1 for row in rows if row["delay_category"] in ("NONE", None))
+
         return ResponseWrapper.success(
             data={
                 "summary": {
@@ -791,6 +837,12 @@ async def get_delay_report(
                     "early": early_count,
                     "on_time": on_time_count,
                     "average_delay_minutes": avg_delay,
+                    "by_category": {
+                        "DRIVER_DELAY": driver_delay_count,
+                        "EMPLOYEE_DELAY": employee_delay_count,
+                        "TRAFFIC_DELAY": traffic_delay_count,
+                        "NONE": none_count,
+                    },
                 },
                 "routes": rows,
             },
@@ -861,6 +913,7 @@ async def get_route_delay_detail(
                 "event_kind": ev.event_kind,
                 "delay_type": ev.delay_type,
                 "delay_minutes": ev.delay_minutes,
+                "delay_category": ev.delay_category,
                 "notes": ev.notes,
                 "tagged_at": ev.tagged_at.isoformat() if ev.tagged_at else None,
             }
@@ -891,4 +944,181 @@ async def get_route_delay_detail(
         raise
     except Exception as e:
         logger.exception("[get_route_delay_detail] Error: %s", e)
+        raise handle_db_error(e)
+
+
+# ---------------------------------------------------------------------------
+# GET /reports/driver-duty-hours
+# Feature 1 — Driver Duty Hours & Rest-Time Enforcement
+# ---------------------------------------------------------------------------
+
+@router.get("/driver-duty-hours", status_code=http_status.HTTP_200_OK)
+def get_driver_duty_hours_report(
+    start_date: date = Query(..., description="Start date (inclusive)"),
+    end_date: date = Query(..., description="End date (inclusive)"),
+    driver_id: Optional[int] = Query(None, description="Filter by driver ID"),
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["report.read"], check_tenant=True)),
+):
+    """
+    Report: hours driven per driver within the date range, with rest-violation flags.
+
+    For every completed route in the window, the endpoint sums duty minutes
+    per driver per day.  A violation is flagged when the driver's longest
+    continuous rest gap within any 24-hour window is shorter than
+    ``required_rest_minutes`` (derived from ``tenant_configs.driver_max_duty_minutes``).
+
+    Response shape
+    --------------
+    {
+        "data": {
+            "drivers": [
+                {
+                    "driver_id":              int,
+                    "driver_name":            str,
+                    "total_duty_minutes":     int,
+                    "total_routes":           int,
+                    "rest_violations":        int,   // # trips where rest was insufficient
+                    "routes": [
+                        {
+                            "route_id":       int,
+                            "route_code":     str | null,
+                            "actual_start":   str | null,
+                            "actual_end":     str | null,
+                            "duty_minutes":   int,
+                            "rest_ok":        bool,
+                            "rest_gap_minutes": int
+                        }, ...
+                    ]
+                }, ...
+            ],
+            "summary": {
+                "total_drivers":   int,
+                "total_routes":    int,
+                "total_violations": int,
+                "driver_max_duty_minutes": int
+            }
+        }
+    }
+    """
+    try:
+        validate_date_range(start_date, end_date)
+
+        tenant_id: str = user_data.get("tenant_id")
+
+        # Load tenant config for duty limits
+        from app.models.tenant_config import TenantConfig
+        from app.services.driver_duty_hours_service import check_rest
+
+        tenant_cfg = db.query(TenantConfig).filter(
+            TenantConfig.tenant_id == tenant_id
+        ).first()
+        max_duty = tenant_cfg.driver_max_duty_minutes if tenant_cfg else 600
+
+        # Convert dates to datetimes for comparison
+        window_start_dt = datetime.combine(start_date, datetime.min.time())
+        window_end_dt   = datetime.combine(end_date,   datetime.max.time())
+
+        # Query completed routes in the date window
+        routes_q = (
+            db.query(RouteManagement)
+            .filter(
+                RouteManagement.tenant_id == tenant_id,
+                RouteManagement.status == RouteManagementStatusEnum.COMPLETED,
+                RouteManagement.actual_start_time.isnot(None),
+                RouteManagement.actual_start_time >= window_start_dt,
+                RouteManagement.actual_start_time <= window_end_dt,
+                RouteManagement.assigned_driver_id.isnot(None),
+            )
+        )
+        if driver_id is not None:
+            routes_q = routes_q.filter(RouteManagement.assigned_driver_id == driver_id)
+
+        routes = routes_q.order_by(RouteManagement.actual_start_time.asc()).all()
+
+        # Collect unique driver IDs and batch-fetch their records
+        driver_ids = list({r.assigned_driver_id for r in routes})
+        drivers = (
+            db.query(Driver)
+            .filter(Driver.driver_id.in_(driver_ids))
+            .all()
+        ) if driver_ids else []
+        driver_map: dict[int, Driver] = {d.driver_id: d for d in drivers}
+
+        # Group routes by driver
+        from collections import defaultdict
+        by_driver: dict[int, list] = defaultdict(list)
+        for route in routes:
+            by_driver[route.assigned_driver_id].append(route)
+
+        driver_rows = []
+        total_violations_global = 0
+
+        for did, driver_routes in by_driver.items():
+            driver_obj = driver_map.get(did)
+            driver_name = driver_obj.name if driver_obj else f"Driver #{did}"
+
+            total_duty = 0
+            violations = 0
+            route_items = []
+
+            for route in driver_routes:
+                start_dt = route.actual_start_time
+                end_dt   = route.actual_end_time
+
+                duty_min = 0
+                if start_dt and end_dt:
+                    duty_min = max(0, int((end_dt - start_dt).total_seconds() / 60))
+                total_duty += duty_min
+
+                # Per-trip rest check: was rest sufficient before THIS trip?
+                rest_result = check_rest(
+                    driver_id=did,
+                    proposed_start_dt=start_dt,
+                    db=db,
+                    max_duty_minutes=max_duty,
+                )
+                if not rest_result["ok"]:
+                    violations += 1
+
+                route_items.append({
+                    "route_id":         route.route_id,
+                    "route_code":       route.route_code,
+                    "actual_start":     start_dt.isoformat() if start_dt else None,
+                    "actual_end":       end_dt.isoformat()   if end_dt   else None,
+                    "duty_minutes":     duty_min,
+                    "rest_ok":          rest_result["ok"],
+                    "rest_gap_minutes": rest_result["rest_gap_minutes"],
+                })
+
+            total_violations_global += violations
+            driver_rows.append({
+                "driver_id":          did,
+                "driver_name":        driver_name,
+                "total_duty_minutes": total_duty,
+                "total_routes":       len(driver_routes),
+                "rest_violations":    violations,
+                "routes":             route_items,
+            })
+
+        # Sort by driver name for consistent output
+        driver_rows.sort(key=lambda x: x["driver_name"])
+
+        return ResponseWrapper.success(
+            data={
+                "drivers": driver_rows,
+                "summary": {
+                    "total_drivers":           len(driver_rows),
+                    "total_routes":            len(routes),
+                    "total_violations":        total_violations_global,
+                    "driver_max_duty_minutes": max_duty,
+                },
+            },
+            message="Driver duty hours report fetched successfully",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[get_driver_duty_hours_report] Error: %s", e)
         raise handle_db_error(e)
