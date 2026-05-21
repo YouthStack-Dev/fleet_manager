@@ -52,6 +52,13 @@ class TenantConfig(Base):
     # 'block' → assignment is rejected with HTTP 409 if rest is insufficient
     driver_rest_enforcement = Column(String(10), nullable=False, server_default="warn")
 
+    # ── Female Employee Dark-Hour Boarding Block (Feature 12) ──────
+    # 'off'   → feature disabled (default; zero impact on existing tenants)
+    # 'warn'  → boarding proceeds, but response includes "dark_hour_no_escort" warning
+    # 'block' → boarding rejected with HTTP 423 when female employee in dark hours
+    #           without a boarded escort; also fires a security push notification
+    dark_hour_boarding_mode = Column(String(10), nullable=False, server_default="off")
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
