@@ -28,6 +28,8 @@ class CRUDTenantConfig(CRUDBase[TenantConfig, TenantConfigCreate, TenantConfigUp
                 # Feature 1: Driver Duty Hours & Rest-Time Enforcement
                 driver_max_duty_minutes=600,
                 driver_rest_enforcement="warn",
+                # Feature 12: Female Employee Dark-Hour Boarding Block
+                dark_hour_boarding_mode="off",
             )
             db.add(db_obj)
             db.flush()

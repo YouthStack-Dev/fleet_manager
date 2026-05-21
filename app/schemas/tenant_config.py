@@ -33,6 +33,9 @@ class TenantConfigBase(BaseModel):
     driver_max_duty_minutes: int = 600
     driver_rest_enforcement: str = "warn"
 
+    # Female Employee Dark-Hour Boarding Block (Feature 12)
+    dark_hour_boarding_mode: str = "off"
+
     @field_validator('escort_required_start_time', 'escort_required_end_time')
     def validate_time_format(cls, v):
         """Validate time format"""
@@ -75,6 +78,13 @@ class TenantConfigBase(BaseModel):
             raise ValueError("driver_rest_enforcement must be 'warn' or 'block'")
         return v
 
+    @field_validator('dark_hour_boarding_mode')
+    def validate_dark_hour_boarding_mode(cls, v):
+        """Dark-hour boarding mode must be 'off', 'warn', or 'block'"""
+        if v not in ("off", "warn", "block"):
+            raise ValueError("dark_hour_boarding_mode must be 'off', 'warn', or 'block'")
+        return v
+
 class TenantConfigCreate(TenantConfigBase):
     """Schema for creating tenant config"""
     tenant_id: str
@@ -96,7 +106,8 @@ class TenantConfigCreate(TenantConfigBase):
                 "delay_driver_grace_minutes": 10,
                 "delay_employee_grace_minutes": 5,
                 "driver_max_duty_minutes": 600,
-                "driver_rest_enforcement": "warn"
+                "driver_rest_enforcement": "warn",
+                "dark_hour_boarding_mode": "off"
             }
         }
     )
@@ -131,6 +142,9 @@ class TenantConfigUpdate(BaseModel):
     # Driver Duty Hours & Rest-Time Enforcement (Feature 1)
     driver_max_duty_minutes: Optional[int] = None
     driver_rest_enforcement: Optional[str] = None
+
+    # Female Employee Dark-Hour Boarding Block (Feature 12)
+    dark_hour_boarding_mode: Optional[str] = None
 
     @field_validator('escort_required_start_time', 'escort_required_end_time')
     def validate_time_format(cls, v):
@@ -174,6 +188,13 @@ class TenantConfigUpdate(BaseModel):
             raise ValueError("driver_rest_enforcement must be 'warn' or 'block'")
         return v
 
+    @field_validator('dark_hour_boarding_mode')
+    def validate_dark_hour_boarding_mode(cls, v):
+        """Dark-hour boarding mode must be 'off', 'warn', or 'block'"""
+        if v is not None and v not in ("off", "warn", "block"):
+            raise ValueError("dark_hour_boarding_mode must be 'off', 'warn', or 'block'")
+        return v
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
@@ -187,7 +208,8 @@ class TenantConfigUpdate(BaseModel):
                 "delay_driver_grace_minutes": 10,
                 "delay_employee_grace_minutes": 5,
                 "driver_max_duty_minutes": 600,
-                "driver_rest_enforcement": "warn"
+                "driver_rest_enforcement": "warn",
+                "dark_hour_boarding_mode": "off"
             }
         }
     )

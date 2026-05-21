@@ -1256,6 +1256,64 @@ async def start_trip(
             "pickup", booking_id
         )
 
+        # ── F12: Female Employee Dark-Hour Boarding Block ────────────────────
+        _dh_warnings: list = []
+        try:
+            from app.services.dark_hour_boarding_service import check_dark_hour_boarding
+            from app.models.user_session import UserSession
+            _cfg_dh = db.query(TenantConfig).filter(
+                TenantConfig.tenant_id == tenant_id
+            ).first()
+            _emp_dh = db.query(Employee).filter(
+                Employee.employee_id == booking.employee_id
+            ).first()
+            if _cfg_dh and _emp_dh:
+                _escort_ok = bool(
+                    route.assigned_escort_id
+                    and getattr(route, "escort_boarded", False)
+                )
+                _gender_val = (
+                    _emp_dh.gender.value
+                    if _emp_dh.gender is not None
+                    else None
+                )
+                _now_time = get_current_ist_time().time()
+                _dh = check_dark_hour_boarding(
+                    gender=_gender_val,
+                    escort_present_and_boarded=_escort_ok,
+                    cfg=_cfg_dh,
+                    now_time=_now_time,
+                )
+                if not _dh["ok"]:
+                    # Hard block — fire security notification before raising
+                    background_tasks.add_task(
+                        send_dark_hour_block_notification,
+                        db=db,
+                        tenant_id=tenant_id,
+                        booking_id=booking_id,
+                        employee_name=_emp_dh.name or "Female Employee",
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_423_LOCKED,
+                        detail=ResponseWrapper.error(
+                            message=(
+                                "Boarding blocked: female employee in dark hours "
+                                "without a boarded escort."
+                            ),
+                            error_code="DARK_HOUR_NO_ESCORT",
+                            details={"booking_id": booking_id, "route_id": route_id},
+                        ),
+                    )
+                _dh_warnings = _dh.get("warnings", [])
+        except HTTPException:
+            raise
+        except Exception as _dh_exc:
+            # Fail open — dark-hour check must never block a trip on error
+            logger.warning(
+                "[driver.start_trip] Dark-hour check failed (failing open): %s",
+                _dh_exc,
+            )
+
         # ── Boarding confirmation ────────────────────────────────────────────
         now = get_current_ist_time()
         if is_nodal_shift:
@@ -1315,6 +1373,7 @@ async def start_trip(
                 "current_status": booking.status.value,
                 "actual_pick_up_time": rb.actual_pick_up_time,
                 "next_stop": next_stop,
+                "warnings": _dh_warnings,
             },
         )
 
@@ -1997,3 +2056,88 @@ def send_drop_completion_notification(db: Session, booking_id: int, route_id: in
         
     except Exception as e:
         logger.exception(f"[notify.drop] Error: {str(e)}")
+
+
+def send_dark_hour_block_notification(
+    db: Session,
+    tenant_id: str,
+    booking_id: int,
+    employee_name: str,
+) -> None:
+    """
+    F12 — Female Employee Dark-Hour Boarding Block
+
+    Fires a security push notification to every active admin session for the
+    tenant when a female employee's boarding is hard-blocked due to dark-hour
+    rules and no boarded escort.
+
+    Queries UserSession for admin users and sends via UnifiedNotificationService.
+    Runs as a BackgroundTask — all errors are swallowed to avoid disrupting the
+    HTTP error response already raised in start_trip.
+    """
+    try:
+        from app.models.user_session import UserSession
+
+        admin_sessions = (
+            db.query(UserSession)
+            .filter(
+                UserSession.tenant_id == tenant_id,
+                UserSession.user_type == "admin",
+                UserSession.is_active == True,
+                UserSession.fcm_token.isnot(None),
+            )
+            .all()
+        )
+
+        if not admin_sessions:
+            logger.info(
+                "[notify.dark_hour_block] No active admin sessions for tenant %s",
+                tenant_id,
+            )
+            return
+
+        push_service = UnifiedNotificationService(db)
+        title = "Security Alert: Dark-Hour Boarding Blocked"
+        body = (
+            f"{employee_name} attempted to board without a safety escort "
+            f"during restricted hours (booking #{booking_id}). "
+            "Boarding was blocked by system policy."
+        )
+        data_payload = {
+            "type": "dark_hour_block",
+            "booking_id": str(booking_id),
+            "tenant_id": tenant_id,
+            "employee_name": employee_name,
+        }
+
+        for session in admin_sessions:
+            try:
+                push_service.send_to_user(
+                    user_type="admin",
+                    user_id=session.user_id,
+                    title=title,
+                    body=body,
+                    data=data_payload,
+                    priority="high",
+                )
+            except Exception as _e:
+                logger.warning(
+                    "[notify.dark_hour_block] Push failed for admin %s: %s",
+                    session.user_id,
+                    _e,
+                )
+
+        logger.info(
+            "[notify.dark_hour_block] Security notification sent to %d admin(s) "
+            "for tenant %s, booking %d",
+            len(admin_sessions),
+            tenant_id,
+            booking_id,
+        )
+
+    except Exception as e:
+        logger.exception(
+            "[notify.dark_hour_block] Unexpected error for booking %d: %s",
+            booking_id,
+            e,
+        )
