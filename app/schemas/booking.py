@@ -94,6 +94,30 @@ class BookingCreate(BaseModel):
         }
     )
 
+class BulkAllEmployeesBookingCreate(BaseModel):
+    """Request body for booking all (or selected) employees for a shift on a given date."""
+    tenant_id: Optional[str] = None
+    employee_ids: Optional[List[int]] = Field(
+        default=None,
+        description="List of employee IDs to book. If omitted or empty, all active employees are booked.",
+    )
+    shift_id: int
+    booking_date: date
+    booking_type: Optional[BookingTypeEnum] = BookingTypeEnum.REGULAR
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "tenant_id": "HS001",
+                "employee_ids": [],
+                "shift_id": 3,
+                "booking_date": "2026-05-22",
+                "booking_type": "regular",
+            }
+        }
+    )
+
+
 class UpdateBookingRequest(BaseModel):
     shift_id: Optional[int] = None
 

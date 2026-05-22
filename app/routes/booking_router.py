@@ -16,7 +16,7 @@ from typing import Optional, List
 from datetime import date, datetime, datetime, timedelta, timezone
 from app.database.session import get_db
 from app.models.booking import Booking
-from app.schemas.booking import BookingCreate, BookingUpdate, BookingResponse,  BookingStatusEnum ,UpdateBookingRequest
+from app.schemas.booking import BookingCreate, BookingUpdate, BookingResponse, BookingStatusEnum, UpdateBookingRequest, BulkAllEmployeesBookingCreate
 from app.utils.pagination import paginate_query
 from common_utils.auth.permission_checker import PermissionChecker
 from common_utils.auth.token_validation import validate_bearer_token
@@ -486,6 +486,310 @@ def create_booking(
             detail=ResponseWrapper.error(message="Internal Server Error", error_code="INTERNAL_ERROR")
         )
 
+
+# ============================================================
+# 🔁 Bulk Book All (or Selected) Employees for a Shift
+# POST /bookings/bulk-all-employees
+# ============================================================
+@router.post("/bulk-all-employees", status_code=status.HTTP_200_OK)
+def bulk_book_all_employees(
+    payload: BulkAllEmployeesBookingCreate,
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["booking.create"], check_tenant=True)),
+):
+    """
+    Book all active employees (or a selected subset) for a specific shift on a given date.
+
+    - If `employee_ids` is omitted or empty → books **all** active employees in the tenant.
+    - If `employee_ids` is provided → books only those employees.
+    - Duplicate bookings, weekoff violations, and other per-employee errors are captured
+      in `failed` without aborting the entire request.
+    - Returns a summary: `{ booked, skipped, failed_employees }`.
+    """
+    try:
+        user_type = user_data.get("user_type")
+
+        # --- Tenant resolution ---
+        if user_type == "admin":
+            tenant_id = payload.tenant_id
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="Admin must provide tenant_id",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+        elif user_type == "employee":
+            tenant_id = user_data.get("tenant_id")
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="You don't have permission to create bookings",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        # --- Validate booking_date is not in the past ---
+        if payload.booking_date < date.today():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="booking_date must be today or a future date",
+                    error_code="INVALID_DATE",
+                ),
+            )
+
+        # --- Shift validation ---
+        shift = get_shift_with_cache(db, tenant_id, payload.shift_id)
+        if not shift:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error("Shift not found for this tenant", "SHIFT_NOT_FOUND"),
+            )
+
+        # --- Shift time must not have already passed today ---
+        shift_time = get_shift_time(shift)
+        shift_datetime = datetime.combine(payload.booking_date, shift_time).replace(
+            tzinfo=timezone(timedelta(hours=5, minutes=30))
+        )
+        now = get_current_ist_time()
+        if payload.booking_date == date.today() and now >= shift_datetime:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message=f"Cannot create bookings for a shift that has already started or passed (Shift time: {shift_time})",
+                    error_code="PAST_SHIFT_TIME",
+                ),
+            )
+
+        # --- Tenant lookup ---
+        tenant = get_tenant_with_cache(db, tenant_id)
+        if not tenant:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+        # --- Cutoff config ---
+        cutoff = get_cutoff_with_cache(db, tenant_id)
+
+        # --- Fetch target employees ---
+        emp_query = db.query(Employee).filter(
+            Employee.tenant_id == tenant_id,
+            Employee.is_active.is_(True),
+        )
+        if payload.employee_ids:
+            emp_query = emp_query.filter(Employee.employee_id.in_(payload.employee_ids))
+        employees = emp_query.all()
+
+        if not employees:
+            return ResponseWrapper.success(
+                data={"booked": 0, "skipped": 0, "failed_employees": []},
+                message="No active employees found to book",
+            )
+
+        # --- Pre-fetch existing bookings for this shift+date to avoid N+1 duplicate checks ---
+        all_emp_ids = [e.employee_id for e in employees]
+        existing_bookings_set = set(
+            row[0]
+            for row in db.query(Booking.employee_id).filter(
+                Booking.employee_id.in_(all_emp_ids),
+                Booking.shift_id == payload.shift_id,
+                Booking.booking_date == payload.booking_date,
+                Booking.status != BookingStatusEnum.CANCELLED,
+            ).all()
+        )
+
+        # --- Pre-fetch weekoff configs ---
+        from app.models.weekoff_config import WeekoffConfig
+        weekoff_configs = {
+            wc.employee_id: wc
+            for wc in db.query(WeekoffConfig).filter(
+                WeekoffConfig.employee_id.in_(all_emp_ids)
+            ).all()
+        }
+
+        # --- Pre-fetch nodal assignments if shift is nodal ---
+        shift_pickup_type = (
+            shift.get("pickup_type") if isinstance(shift, dict)
+            else (shift.pickup_type.value if shift.pickup_type else None)
+        )
+        is_nodal = shift_pickup_type == PickupTypeEnum.NODAL.value
+        nodal_map: dict = {}
+        if is_nodal:
+            from app.models.nodal_point import EmployeeNodalPoint
+            assignments = (
+                db.query(EmployeeNodalPoint)
+                .filter(EmployeeNodalPoint.employee_id.in_(all_emp_ids))
+                .all()
+            )
+            nodal_map = {a.employee_id: a for a in assignments}
+
+        # --- Cutoff check (shared for all employees for the same shift/date) ---
+        shift_log_type = get_shift_log_type(shift)
+        cutoff_interval = None
+        if payload.booking_type == "adhoc":
+            if not cutoff or not cutoff.allow_adhoc_booking:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error("Ad-hoc booking is not enabled for this tenant", "ADHOC_BOOKING_DISABLED"),
+                )
+            cutoff_interval = cutoff.adhoc_booking_cutoff if cutoff else None
+        elif payload.booking_type == "medical_emergency":
+            if not cutoff or not cutoff.allow_medical_emergency_booking:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error("Medical emergency booking is not enabled for this tenant", "MEDICAL_EMERGENCY_BOOKING_DISABLED"),
+                )
+            cutoff_interval = cutoff.medical_emergency_booking_cutoff if cutoff else None
+        else:
+            if cutoff:
+                cutoff_interval = cutoff.booking_login_cutoff if shift_log_type == "IN" else cutoff.booking_logout_cutoff
+
+        if cutoff and cutoff_interval and cutoff_interval.total_seconds() > 0:
+            time_until_shift = shift_datetime - now
+            if time_until_shift < cutoff_interval:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        f"Booking cutoff time has passed for this shift (cutoff: {cutoff_interval})",
+                        "BOOKING_CUTOFF",
+                    ),
+                )
+
+        weekday_map = {0: "monday", 1: "tuesday", 2: "wednesday", 3: "thursday",
+                       4: "friday", 5: "saturday", 6: "sunday"}
+        booking_weekday = weekday_map[payload.booking_date.weekday()]
+
+        # --- Process each employee ---
+        bookings_to_create = []
+        failed_employees = []
+        skipped_count = 0
+
+        for employee in employees:
+            emp_id = employee.employee_id
+
+            # Skip if already booked
+            if emp_id in existing_bookings_set:
+                skipped_count += 1
+                logger.info(f"[bulk-all] Skipping employee {emp_id} — already booked")
+                continue
+
+            # Weekoff check
+            weekoff_config = weekoff_configs.get(emp_id)
+            if weekoff_config and getattr(weekoff_config, booking_weekday, False):
+                failed_employees.append({
+                    "employee_id": emp_id,
+                    "reason": f"Weekoff day ({booking_weekday})",
+                    "error_code": "WEEKOFF_DAY",
+                })
+                continue
+
+            # Compute pickup/drop
+            try:
+                nodal_point_id = None
+                if is_nodal:
+                    assignment = nodal_map.get(emp_id)
+                    if not assignment:
+                        failed_employees.append({
+                            "employee_id": emp_id,
+                            "reason": "No nodal point assigned",
+                            "error_code": "NO_NODAL_ASSIGNMENT",
+                        })
+                        continue
+                    nodal_point = assignment.nodal_point
+                    if not nodal_point or not nodal_point.is_active:
+                        failed_employees.append({
+                            "employee_id": emp_id,
+                            "reason": "Assigned nodal point is inactive",
+                            "error_code": "NODAL_POINT_INACTIVE",
+                        })
+                        continue
+                    nodal_point_id = nodal_point.nodal_point_id
+                    if shift_log_type == "IN":
+                        pickup_lat = float(nodal_point.latitude)
+                        pickup_lng = float(nodal_point.longitude)
+                        pickup_addr = nodal_point.address or nodal_point.name
+                        drop_lat = float(tenant.latitude) if tenant.latitude else None
+                        drop_lng = float(tenant.longitude) if tenant.longitude else None
+                        drop_addr = tenant.address
+                    else:
+                        pickup_lat = float(tenant.latitude) if tenant.latitude else None
+                        pickup_lng = float(tenant.longitude) if tenant.longitude else None
+                        pickup_addr = tenant.address
+                        drop_lat = float(nodal_point.latitude)
+                        drop_lng = float(nodal_point.longitude)
+                        drop_addr = nodal_point.address or nodal_point.name
+                elif shift_log_type == "IN":
+                    pickup_lat, pickup_lng = employee.latitude, employee.longitude
+                    pickup_addr = employee.address
+                    drop_lat, drop_lng = tenant.latitude, tenant.longitude
+                    drop_addr = tenant.address
+                else:
+                    pickup_lat, pickup_lng = tenant.latitude, tenant.longitude
+                    pickup_addr = tenant.address
+                    drop_lat, drop_lng = employee.latitude, employee.longitude
+                    drop_addr = employee.address
+
+                bookings_to_create.append({
+                    "tenant_id": tenant_id,
+                    "employee_id": emp_id,
+                    "employee_code": employee.employee_code,
+                    "team_id": employee.team_id,
+                    "shift_id": payload.shift_id,
+                    "booking_date": payload.booking_date,
+                    "pickup_latitude": pickup_lat,
+                    "pickup_longitude": pickup_lng,
+                    "pickup_location": pickup_addr,
+                    "drop_latitude": drop_lat,
+                    "drop_longitude": drop_lng,
+                    "drop_location": drop_addr,
+                    "status": BookingStatusEnum.REQUEST,
+                    "booking_type": payload.booking_type,
+                    "nodal_point_id": nodal_point_id,
+                })
+            except Exception as emp_err:
+                logger.warning(f"[bulk-all] Error preparing booking for employee {emp_id}: {emp_err}")
+                failed_employees.append({
+                    "employee_id": emp_id,
+                    "reason": str(emp_err),
+                    "error_code": "PREPARATION_ERROR",
+                })
+
+        # --- Bulk insert ---
+        booked_count = 0
+        if bookings_to_create:
+            db.bulk_insert_mappings(Booking, bookings_to_create)
+            db.commit()
+            booked_count = len(bookings_to_create)
+            logger.info(
+                f"[bulk-all] ✅ Created {booked_count} bookings for shift={payload.shift_id} "
+                f"date={payload.booking_date} tenant={tenant_id}"
+            )
+
+        return ResponseWrapper.success(
+            data={
+                "booked": booked_count,
+                "skipped": skipped_count,
+                "failed": len(failed_employees),
+                "failed_employees": failed_employees,
+            },
+            message=f"{booked_count} booking(s) created, {skipped_count} skipped (already booked), {len(failed_employees)} failed",
+        )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.exception("[bulk-all] Database error")
+        raise handle_db_error(e)
+    except Exception as e:
+        db.rollback()
+        logger.exception("[bulk-all] Unexpected error")
+        raise HTTPException(
+            status_code=500,
+            detail=ResponseWrapper.error(message="Internal Server Error", error_code="INTERNAL_ERROR"),
+        )
 
 
 # ============================================================
