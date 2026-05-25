@@ -383,6 +383,9 @@ def driver_open_chat(
         driver_id=driver_id,
     )
 
+    # Multi-vendor reconciliation: trust auth over route_management
+    session = chat_service.reconcile_session_driver(db, session, driver_id)
+
     return ResponseWrapper.success(
         data={
             **_serialize_session(session),
@@ -425,6 +428,9 @@ def driver_send_message(
         driver_id=driver_id,
         background_tasks=background_tasks,
     )
+
+    # Multi-vendor reconciliation: trust auth over route_management
+    session = chat_service.reconcile_session_driver(db, session, driver_id)
 
     msg = chat_service.send_message_sync(
         db=db,
@@ -489,6 +495,9 @@ def driver_get_messages(
             data={"messages": [], "total": 0},
             message="No chat session found for this booking",
         )
+
+    # Multi-vendor reconciliation: trust auth over route_management
+    session = chat_service.reconcile_session_driver(db, session, driver_id)
 
     messages = chat_crud.get_messages(db, tenant_id, booking_id, skip, limit)
     total    = chat_crud.get_message_count(db, booking_id)

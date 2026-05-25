@@ -106,6 +106,31 @@ def update_session_language(
     return session
 
 
+def update_session_driver_id(
+    db: Session,
+    session_id: int,
+    driver_id: int,
+) -> None:
+    """
+    Overwrite the driver_id on an existing ChatSession.
+
+    Called when a driver authenticates to a chat endpoint and their
+    driver_id (JWT / auth ground truth) differs from what route_management
+    stored on the session (e.g. multi-vendor driver: same physical person,
+    different DB row per vendor).  Without this, FCM pushes go to the wrong
+    driver_id and silently fail.
+    """
+    session = db.query(ChatSession).filter_by(id=session_id).first()
+    if session and session.driver_id != driver_id:
+        old_id = session.driver_id
+        session.driver_id = driver_id
+        db.commit()
+        logger.info(
+            "[chat_crud] session_id=%s driver_id reconciled: %s → %s",
+            session_id, old_id, driver_id,
+        )
+
+
 def close_session(db: Session, session_id: int) -> None:
     session = db.query(ChatSession).filter_by(id=session_id).first()
     if session:

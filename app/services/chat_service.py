@@ -38,6 +38,43 @@ from app.services.session_manager import SessionManager
 logger = get_logger(__name__)
 
 
+# ── Driver session reconciliation ─────────────────────────────────────────
+
+def reconcile_session_driver(
+    db: Session,
+    session: ChatSession,
+    auth_driver_id: int,
+) -> ChatSession:
+    """
+    Ensure the ChatSession's driver_id matches the authenticated driver.
+
+    Why this is needed
+    ──────────────────
+    Route management stores an assigned_driver_id that comes from one specific
+    vendor row.  In a multi-vendor setup the same physical driver can have
+    multiple DB rows (one per vendor) with different driver_ids.  The session
+    may have been created with the route-management driver_id (e.g. 14) while
+    the driver logged in through a different vendor row (e.g. 12).
+
+    When _push_notification() looks up `session.driver_id` to find the FCM
+    token, it finds no active app session for driver:14 — because the FCM
+    token was registered under driver:12.
+
+    Fix: whenever a driver successfully authenticates to a chat endpoint
+    (they already passed the assigned_driver_id check), trust the JWT
+    identity and overwrite the session driver_id if it differs.
+    """
+    if session.driver_id != auth_driver_id:
+        logger.info(
+            "[chat_service] Driver ID mismatch on session_id=%s "
+            "— updating %s → %s (multi-vendor reconciliation)",
+            session.id, session.driver_id, auth_driver_id,
+        )
+        chat_crud.update_session_driver_id(db, session.id, auth_driver_id)
+        session.driver_id = auth_driver_id   # keep in-memory object in sync
+    return session
+
+
 # ── Booking / driver helpers ───────────────────────────────────────────────
 
 def get_booking_or_404(
