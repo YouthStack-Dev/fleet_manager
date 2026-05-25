@@ -3,21 +3,24 @@ Chat Service — full message-send orchestration.
 
 Send-message flow
 ─────────────────
-1.  Validate booking belongs to tenant + caller
-2.  Get-or-create ChatSession (PostgreSQL + Firebase RTDB session node)
-3.  Write message to Firebase RTDB immediately → mobile sees it in real-time
-4.  Save message to PostgreSQL (audit trail)
-5.  Send FCM push notification to recipient (if app is backgrounded)
-6.  Return message to caller (HTTP response is now complete — sub-100 ms)
-  ↓ (async background task added by the router via FastAPI BackgroundTasks)
-7.  Translate original text → target language (async, ~100–400 ms)
-8.  Update Firebase RTDB message node with translated_text (mobile UI live-patches)
-9.  Update PostgreSQL translated_texts JSONB column
+1.  Validate booking belongs to tenant + caller                        (route)
+2.  Get-or-create ChatSession (PostgreSQL + optional RTDB session node)(service)
+3.  Pre-generate UUID for firebase_message_id
+4.  Save message to PostgreSQL with the pre-generated UUID             (sync)
+5.  Return HTTP response immediately  ← caller unblocked here (~20–50 ms)
+  ↓ (FastAPI BackgroundTasks — run after response is flushed to client)
+6.  Write message to Firebase RTDB   → mobile childAdded fires (~100–300 ms)
+7.  Send FCM push to recipient        (if app is backgrounded)
+8.  Translate original text → target language (~100–400 ms)
+9.  Patch RTDB message node with translated_text → mobile childChanged fires
+10. Update PostgreSQL translated_texts JSONB column (audit)
 """
 from __future__ import annotations
 
+import uuid
 from typing import Optional
 
+from fastapi import BackgroundTasks
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -82,11 +85,14 @@ def open_chat_session(
     booking_id: int,
     employee_id: int,
     driver_id: Optional[int],
+    background_tasks: Optional[BackgroundTasks] = None,
 ) -> tuple[ChatSession, bool]:
     """
     Get-or-create the ChatSession.  On first creation also:
     • Initialises the Firebase RTDB session node
     • Writes the system warning message to RTDB
+    Both Firebase calls are scheduled as BackgroundTasks when background_tasks
+    is provided (so they don't block the HTTP response on first-message).
     Returns (session, created).
     """
     session, created = chat_crud.get_or_create_session(
@@ -98,24 +104,46 @@ def open_chat_session(
     )
 
     if created:
-        # Mirror to Firebase RTDB
-        firebase_chat.init_chat_session(
-            tenant_id=tenant_id,
-            booking_id=booking_id,
-            employee_language=session.employee_language,
-            driver_language=session.driver_language,
-            warning_message=settings.CHAT_WARNING_MESSAGE,
-        )
-        # Write the warning as the first visible message in RTDB
-        firebase_chat.write_message(
-            tenant_id=tenant_id,
-            booking_id=booking_id,
-            sender_type=ChatSenderType.SYSTEM.value,
-            sender_id=None,
-            original_text=settings.CHAT_WARNING_MESSAGE,
-            original_language="en",
-            is_system=True,
-        )
+        warning_key = str(uuid.uuid4())
+        if background_tasks is not None:
+            background_tasks.add_task(
+                firebase_chat.init_chat_session,
+                tenant_id=tenant_id,
+                booking_id=booking_id,
+                employee_language=session.employee_language,
+                driver_language=session.driver_language,
+                warning_message=settings.CHAT_WARNING_MESSAGE,
+            )
+            background_tasks.add_task(
+                firebase_chat.write_message,
+                tenant_id=tenant_id,
+                booking_id=booking_id,
+                sender_type=ChatSenderType.SYSTEM.value,
+                sender_id=None,
+                original_text=settings.CHAT_WARNING_MESSAGE,
+                original_language="en",
+                is_system=True,
+                message_key=warning_key,
+            )
+        else:
+            # Fallback: run synchronously (e.g. called from tests or admin tools)
+            firebase_chat.init_chat_session(
+                tenant_id=tenant_id,
+                booking_id=booking_id,
+                employee_language=session.employee_language,
+                driver_language=session.driver_language,
+                warning_message=settings.CHAT_WARNING_MESSAGE,
+            )
+            firebase_chat.write_message(
+                tenant_id=tenant_id,
+                booking_id=booking_id,
+                sender_type=ChatSenderType.SYSTEM.value,
+                sender_id=None,
+                original_text=settings.CHAT_WARNING_MESSAGE,
+                original_language="en",
+                is_system=True,
+                message_key=warning_key,
+            )
         logger.info(
             "[chat_service] Chat session opened: booking_id=%s", booking_id
         )
@@ -133,27 +161,24 @@ def send_message_sync(
     sender_id: int,
     text: str,
     sender_language: str,
+    background_tasks: BackgroundTasks,
 ) -> ChatMessage:
     """
-    Steps 3–5 of the send flow (sync portion).
+    Sync portion of the send flow (steps 3–5 in the module docstring).
 
-    Returns the persisted ChatMessage.
-    The async translation step (steps 7-9) is scheduled by the router
-    using FastAPI BackgroundTasks to keep this function sync-friendly.
+    Saves the message to PostgreSQL immediately and schedules the Firebase
+    RTDB write + FCM push as BackgroundTasks so the HTTP response is returned
+    to the caller WITHOUT waiting for any network I/O to Firebase/FCM (~20–50 ms).
+
+    The firebase_message_id is pre-generated as a UUID so it can be stored in
+    PostgreSQL before the RTDB background task runs.  Mobile apps listen via
+    .childAdded on the messages/ path and sort by the timestamp field, so the
+    UUID key format is functionally identical to a Firebase push key.
     """
-    # ── Step 3: Write to Firebase RTDB (mobile receives in real-time) ─────
-    firebase_id = firebase_chat.write_message(
-        tenant_id=tenant_id,
-        booking_id=booking_id,
-        sender_type=sender_type.value,
-        sender_id=sender_id,
-        original_text=text,
-        original_language=sender_language,
-        is_system=False,
-        translated_text=text,   # placeholder until async translation completes
-    )
+    # ── Step 3: Pre-generate RTDB key ─────────────────────────────────────
+    firebase_message_id = str(uuid.uuid4())
 
-    # ── Step 4: Save to PostgreSQL ────────────────────────────────────────
+    # ── Step 4: Save to PostgreSQL (sync — we need msg.id before returning) ─
     msg = chat_crud.save_message(
         db=db,
         tenant_id=tenant_id,
@@ -163,11 +188,26 @@ def send_message_sync(
         sender_id=sender_id,
         text=text,
         language=sender_language,
-        firebase_message_id=firebase_id,
+        firebase_message_id=firebase_message_id,
     )
 
-    # ── Step 5: FCM push to recipient ─────────────────────────────────────
-    _push_notification(
+    # ── Step 5: Schedule RTDB write (background — ~600 ms, non-blocking) ──
+    background_tasks.add_task(
+        firebase_chat.write_message,
+        tenant_id=tenant_id,
+        booking_id=booking_id,
+        sender_type=sender_type.value,
+        sender_id=sender_id,
+        original_text=text,
+        original_language=sender_language,
+        is_system=False,
+        translated_text=text,   # placeholder; translation task patches this ~1 s later
+        message_key=firebase_message_id,
+    )
+
+    # ── Step 6: Schedule FCM push (background — ~170 ms, non-blocking) ────
+    background_tasks.add_task(
+        _push_notification,
         db=db,
         session=session,
         sender_type=sender_type,

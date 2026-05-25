@@ -222,6 +222,7 @@ def employee_send_message(
         booking_id=booking_id,
         employee_id=employee_id,
         driver_id=driver_id,
+        background_tasks=background_tasks,
     )
 
     msg = chat_service.send_message_sync(
@@ -233,6 +234,7 @@ def employee_send_message(
         sender_id=employee_id,
         text=body.text,
         sender_language=session.employee_language,
+        background_tasks=background_tasks,
     )
 
     # Schedule async translation (fires after HTTP response is sent)
@@ -421,6 +423,7 @@ def driver_send_message(
         booking_id=booking_id,
         employee_id=booking.employee_id,
         driver_id=driver_id,
+        background_tasks=background_tasks,
     )
 
     msg = chat_service.send_message_sync(
@@ -432,6 +435,7 @@ def driver_send_message(
         sender_id=driver_id,
         text=body.text,
         sender_language=session.driver_language,
+        background_tasks=background_tasks,
     )
 
     # Schedule async translation
