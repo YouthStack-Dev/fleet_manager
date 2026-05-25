@@ -332,7 +332,7 @@ def _push_notification(
             recipient_type, recipient_id, token_preview, booking_id, message_id,
         )
 
-        FCMService().send_notification(
+        result = FCMService().send_notification(
             token=rec_session.fcm_token,
             title="New Message",
             body=text[:100],
@@ -344,10 +344,26 @@ def _push_notification(
             },
             platform="app",
         )
-        logger.info(
-            "[FCM] ✅ Push delivered → %s:%s  booking_id=%s",
-            recipient_type, recipient_id, booking_id,
-        )
+
+        if result["success"]:
+            logger.info(
+                "[FCM] ✅ Push delivered → %s:%s  booking_id=%s  message_id=%s",
+                recipient_type, recipient_id, booking_id, message_id,
+            )
+        else:
+            error_code = result.get("error", "UNKNOWN")
+            error_msg  = result.get("error_message", "")
+            if result.get("should_delete"):
+                logger.warning(
+                    "[FCM] ❌ Push FAILED (invalid/expired token — should remove from DB) "
+                    "→ %s:%s  booking_id=%s  error=%s: %s",
+                    recipient_type, recipient_id, booking_id, error_code, error_msg,
+                )
+            else:
+                logger.error(
+                    "[FCM] ❌ Push FAILED → %s:%s  booking_id=%s  error=%s: %s",
+                    recipient_type, recipient_id, booking_id, error_code, error_msg,
+                )
 
     except Exception as exc:
         # FCM failure must never break the message send — RTDB already handled delivery
