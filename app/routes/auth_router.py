@@ -2869,23 +2869,12 @@ async def verify_driver_device(
                 })
         
         # Determine overall status and message
+        # A driver may have multiple records across vendors/tenants (same DL, different vendor).
+        # We do NOT flag that as a violation — the driver is allowed to switch freely.
         if active_drivers:
-            # Additional security: Check if this Android ID is used by OTHER license holders
-            # 🚀 USE CACHE for this check
-            other_driver_data = get_driver_by_android_id_with_cache(db, android_id)
-            logger.info(f"🔐 [DRIVER AUTH] Security check via cache | android_id={android_id[:8]}...{android_id[-4:]} | Found: {bool(other_driver_data)} | License match: {other_driver_data.get('license_number') == dl_number if other_driver_data else 'N/A'}")
-            
-            if other_driver_data and other_driver_data.get('license_number') != dl_number:
-                logger.warning(f"🚨 [DRIVER AUTH] SECURITY VIOLATION - Android ID {android_id[:8]}...{android_id[-4:]} is active for different license numbers")
-                message = "Device authorization conflict detected. Please contact your administrator."
-                status_text = "security_violation"
-                # Clear active drivers due to security violation
-                active_drivers = []
-                all_vendors = pending_drivers
-            else:
-                message = f"Device authorized. You have access to {len(active_drivers)} vendor(s). Please select one to continue."
-                status_text = "approved"
-                all_vendors = active_drivers + pending_drivers
+            message = f"Device authorized. You have access to {len(active_drivers)} vendor(s). Please select one to continue."
+            status_text = "approved"
+            all_vendors = active_drivers + pending_drivers
         else:
             message = "Your device is currently not active for any vendor. Please contact your administrator to activate this device."
             status_text = "pending_approval"
@@ -2962,19 +2951,9 @@ async def driver_select_tenant(
                 )
             )
         
-        # Additional security: Ensure Android ID is not active for any other driver with different license
-        # 🚀 USE CACHE for this check
-        other_driver_data = get_driver_by_android_id_with_cache(db, android_id)
-        
-        if other_driver_data and other_driver_data.get('license_number') != dl_number:
-            logger.warning(f"🚨 [DRIVER LOGIN] SECURITY VIOLATION - Android ID {android_id[:8]}...{android_id[-4:]} is active for different license holders during login")
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=ResponseWrapper.error(
-                    "Device authorization conflict detected. Please contact your administrator.",
-                    "DEVICE_CONFLICT"
-                )
-            )
+        # A driver may be registered under multiple vendors/tenants with the same DL.
+        # We intentionally skip a cross-license security check here — drivers are
+        # allowed to switch freely between any tenant they are active for.
         
         # Verify driver's vendor belongs to selected tenant
         if driver_data.get('tenant_id') != tenant_id:
