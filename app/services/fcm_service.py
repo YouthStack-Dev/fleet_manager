@@ -127,23 +127,14 @@ class FCMService:
             }
             
         except Exception as e:
-            # Handle any other Firebase or network errors
-            logger.error(f"[fcm_service] Error sending notification: {str(e)}")
+            # Handle any other Firebase or network errors (including HTTP 401 auth failures)
+            logger.error(f"[fcm_service] Error sending notification: {str(e)}", exc_info=True)
             return {
                 "success": False,
                 "error": "SEND_ERROR",
                 "error_message": str(e),
                 "token": token,
                 "should_retry": True
-            }
-            
-        except Exception as e:
-            logger.error(f"[fcm_service] Unexpected error sending notification: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": "UNKNOWN_ERROR",
-                "error_message": str(e),
-                "token": token
             }
     
     def send_batch(
