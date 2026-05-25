@@ -66,7 +66,7 @@ def EmployeeAuth(
 
 async def DriverAuth(
     user_data=Depends(
-        PermissionChecker(["app-driver.read", "app-driver.update"])
+        PermissionChecker(["driver_app.read", "driver_app.update"])
     ),
 ):
     if user_data.get("user_type") != "driver":
