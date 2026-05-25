@@ -187,10 +187,25 @@ def _push_notification(
     booking_id: int,
     message_id: int,
 ) -> None:
-    """Send FCM push to the *recipient* (opposite of sender)."""
+    """
+    Send FCM push to the *recipient* (the side that did NOT send this message).
+
+    FCM is only needed when the recipient's app is in the background / screen
+    is off — it delivers the system-tray notification.  When the chat screen
+    IS open, Firebase RTDB (write_message) already delivers the message live
+    via the persistent WebSocket listener, so FCM is purely a fallback for
+    background delivery.
+    """
     if not settings.FCM_ENABLED:
+        logger.debug(
+            "[FCM] Push skipped — FCM_ENABLED=False in config  "
+            "(booking_id=%s  message_id=%s)",
+            booking_id, message_id,
+        )
         return
+
     try:
+        # Determine recipient
         if sender_type == ChatSenderType.EMPLOYEE:
             recipient_type = "driver"
             recipient_id   = session.driver_id
@@ -199,16 +214,46 @@ def _push_notification(
             recipient_id   = session.employee_id
 
         if not recipient_id:
+            logger.warning(
+                "[FCM] ⚠️  Push SKIPPED — booking_id=%s  sender=%s  "
+                "reason: no %s assigned to this session yet",
+                booking_id, sender_type.value, recipient_type,
+            )
             return
 
+        # Look up the recipient's active session (holds the FCM device token)
         session_mgr = SessionManager(db, SessionCache())
         rec_session = session_mgr.get_active_session(
             user_type=recipient_type,
             user_id=recipient_id,
             platform="app",
         )
-        if not rec_session or not rec_session.fcm_token:
+
+        if not rec_session:
+            logger.warning(
+                "[FCM] ⚠️  Push SKIPPED — %s:%s has no active app session  "
+                "(booking_id=%s)  "
+                "→ Device may be offline or the user has not logged in via the app yet.",
+                recipient_type, recipient_id, booking_id,
+            )
             return
+
+        if not rec_session.fcm_token:
+            logger.warning(
+                "[FCM] ⚠️  Push SKIPPED — %s:%s has no FCM token registered  "
+                "(booking_id=%s)  "
+                "→ The app must call the FCM token registration endpoint after login "
+                "so push notifications can be delivered.",
+                recipient_type, recipient_id, booking_id,
+            )
+            return
+
+        # Token present — attempt push
+        token_preview = rec_session.fcm_token[:20] + "…"
+        logger.info(
+            "[FCM] Sending push → %s:%s  token=%s  booking_id=%s  message_id=%s",
+            recipient_type, recipient_id, token_preview, booking_id, message_id,
+        )
 
         FCMService().send_notification(
             token=rec_session.fcm_token,
@@ -223,11 +268,17 @@ def _push_notification(
             platform="app",
         )
         logger.info(
-            "[chat_service] FCM push sent to %s:%s", recipient_type, recipient_id
+            "[FCM] ✅ Push delivered → %s:%s  booking_id=%s",
+            recipient_type, recipient_id, booking_id,
         )
+
     except Exception as exc:
-        # FCM failure must never break the message send
-        logger.warning("[chat_service] FCM push failed (non-critical): %s", exc)
+        # FCM failure must never break the message send — RTDB already handled delivery
+        logger.warning(
+            "[FCM] ❌ Push FAILED (non-critical — RTDB still delivered the message) "
+            "booking_id=%s  error: %s",
+            booking_id, exc,
+        )
 
 
 # ── Background translation task ────────────────────────────────────────────
