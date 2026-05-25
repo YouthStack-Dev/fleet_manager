@@ -42,6 +42,9 @@ from app.models.alert import (
     AlertConfiguration
 )
 
+# Import Chat models
+from app.models.chat import ChatSession, ChatMessage
+
 # Import IAM models if they exist
 try:
     from app.models.iam.role import Role

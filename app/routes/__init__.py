@@ -61,5 +61,8 @@ from app.routes.announcement_router import router as announcement_router
 # ── Speed Violations ──────────────────────────────────────────
 from app.routes.speed_violation_router import router as speed_violation_router
 
+# ── Chat (Employee ↔ Driver) ──────────────────────────────────
+from app.routes.chat_router import router as chat_router
+
 # ── Seed & development utilities ──────────────────────────────
 from app.routes.dev_testing_routes import router as dev_testing_router

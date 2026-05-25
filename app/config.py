@@ -132,6 +132,18 @@ class Settings(BaseSettings):
     SESSION_CACHE_TTL: int = 3600   # seconds
     SESSION_EXPIRY_DAYS: int = 30
 
+    # ── Chat / Translation ────────────────────────────────────────
+    # Translation uses the free Google Translate endpoint via httpx.
+    # No API key required for basic/dev use.
+    # Set TRANSLATION_ENABLED=False to disable translation entirely.
+    TRANSLATION_ENABLED: bool = True
+    TRANSLATION_CACHE_TTL: int = 86400          # 24 h — Redis TTL for translated strings
+    CHAT_MAX_MESSAGE_LENGTH: int = 500           # max chars per chat message
+    CHAT_WARNING_MESSAGE: str = (
+        "Warning: Please do not share personal details or sensitive "
+        "information in the chat."
+    )
+
     # ── Observability ─────────────────────────────────────────────
     # Leave blank in development to allow open access; set both in production.
     METRICS_USER: str = ""

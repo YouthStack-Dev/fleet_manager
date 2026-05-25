@@ -42,5 +42,8 @@ from app.models.iam.permission import Permission
 from app.models.iam.policy import Policy, policy_permission
 from app.models.iam.role import Role, role_policy
 
+# Chat (Employee ↔ Driver real-time messaging)
+from app.models.chat import ChatSession, ChatMessage, ChatSenderType
+
 # DO NOT IMPORT ANY ROUTE-RELATED MODELS HERE
 # The error suggests there's still a conflicting route model being imported
