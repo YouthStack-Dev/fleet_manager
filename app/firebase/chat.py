@@ -180,17 +180,25 @@ def write_message(
     original_language: str,
     is_system: bool = False,
     translated_text: Optional[str] = None,
+    message_key: Optional[str] = None,
 ) -> Optional[str]:
     """
-    Push a new message node to RTDB.
-    Returns the Firebase push key (firebase_message_id) or None on failure/skip.
+    Write a new message node to RTDB.
+    Returns the message key (firebase_message_id) or None on failure/skip.
+
+    message_key — optional pre-generated UUID.  When supplied the message is
+    written to a *known* path (.child(key).set()) instead of letting Firebase
+    auto-generate a push key (.push()).  This allows the caller to persist the
+    key to PostgreSQL *before* this function runs (i.e. inside a BackgroundTask)
+    so the HTTP response can be returned immediately without waiting for the
+    Firebase network round-trip.
 
     ── What happens on the mobile side ───────────────────────────────────────
     The recipient's device has an open WebSocket to Firebase servers.
-    The moment this .push() call completes, Firebase servers broadcast a
-    childAdded event to every listener on the messages/ path — typically
-    within 100–300 ms regardless of whether the app is open or backgrounded
-    (backgrounded apps also receive FCM separately for the system tray alert).
+    The moment this write completes, Firebase servers broadcast a childAdded
+    event to every listener on the messages/ path — typically within 100–300 ms
+    regardless of whether the app is open or backgrounded (backgrounded apps
+    also receive FCM separately for the system tray alert).
     ─────────────────────────────────────────────────────────────────────────
     """
     if not _firebase_ready():
@@ -215,15 +223,23 @@ def write_message(
             "timestamp": int(datetime.utcnow().timestamp() * 1000),
             "is_system": is_system,
         }
-        new_ref = _messages_ref(tenant_id, booking_id).push(payload)
+        if message_key:
+            # Write to a pre-determined path so the key was already persisted
+            # in PostgreSQL before this background-task runs.
+            _messages_ref(tenant_id, booking_id).child(message_key).set(payload)
+            key = message_key
+        else:
+            new_ref = _messages_ref(tenant_id, booking_id).push(payload)
+            key = new_ref.key
+
         logger.info(
             "[Firebase/RTDB] ✅ Message written — path: %s/%s  "
             "sender=%s:%s  text_preview='%s'",
-            path, new_ref.key,
+            path, key,
             sender_type, sender_id,
             original_text[:40] + ("…" if len(original_text) > 40 else ""),
         )
-        return new_ref.key
+        return key
     except Exception as exc:
         logger.error(
             "[Firebase/RTDB] ❌ write_message FAILED — path: %s  "

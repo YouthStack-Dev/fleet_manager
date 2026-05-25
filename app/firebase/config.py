@@ -64,6 +64,26 @@ def init_firebase():
                 "[Firebase] ✅ Admin SDK initialised — FCM: ready | RTDB: %s",
                 "ready" if rtdb_url else "DISABLED (no RTDB URL)",
             )
+
+            # ── Pre-warm OAuth2 credentials ───────────────────────────────
+            # The google-auth library fetches an access token lazily on the
+            # first RTDB/FCM call, adding ~80-100 ms to that request.
+            # Calling get_access_token() here at startup caches the token
+            # for its 1-hour lifetime so the first background task runs
+            # without a blocking OAuth2 round-trip.
+            try:
+                app = firebase_admin.get_app()
+                token_info = app.credential.get_access_token()
+                logger.info(
+                    "[Firebase] ✅ OAuth2 token pre-warmed — expires at %s",
+                    token_info.expiry,
+                )
+            except Exception as warm_err:
+                logger.warning(
+                    "[Firebase] ⚠️  OAuth2 pre-warm failed (non-fatal): %s  "
+                    "→ First RTDB/FCM call will still refresh automatically.",
+                    warm_err,
+                )
         else:
             logger.debug("[Firebase] Admin SDK already initialised — skipping re-init.")
     except Exception as e:
