@@ -37,6 +37,10 @@ from app.services.session_manager import SessionManager
 
 logger = get_logger(__name__)
 
+# Module-level singleton — Firebase Admin SDK is already a singleton internally,
+# but reusing this object avoids per-call allocation and log noise.
+_fcm = FCMService()
+
 
 # ── Driver session reconciliation ─────────────────────────────────────────
 
@@ -332,7 +336,7 @@ def _push_notification(
             recipient_type, recipient_id, token_preview, booking_id, message_id,
         )
 
-        result = FCMService().send_notification(
+        result = _fcm.send_notification(
             token=rec_session.fcm_token,
             title="New Message",
             body=text[:100],
