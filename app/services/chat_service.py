@@ -336,15 +336,22 @@ def _push_notification(
             recipient_type, recipient_id, token_preview, booking_id, message_id,
         )
 
+        # Include firebase_path and tenant_id so the mobile app can open the
+        # correct RTDB listener directly from the FCM data without needing to
+        # construct the path manually (prevents tenant_id / prefix mismatches).
+        firebase_path = f"chats/{session.tenant_id}/booking_{booking_id}/messages"
+
         result = _fcm.send_notification(
             token=rec_session.fcm_token,
             title="New Message",
             body=text[:100],
             data={
-                "type":        "chat_message",
-                "booking_id":  str(booking_id),
-                "sender_type": sender_type.value,
-                "message_id":  str(message_id),
+                "type":           "chat_message",
+                "booking_id":     str(booking_id),
+                "sender_type":    sender_type.value,
+                "message_id":     str(message_id),
+                "tenant_id":      str(session.tenant_id),
+                "firebase_path":  firebase_path,
             },
             platform="app",
         )
