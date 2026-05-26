@@ -105,8 +105,10 @@ jobs:
             if [ "${{ env.ENV }}" = "staging" ]; then
               echo "📝 Writing service.staging.env ..."
               cat <<EOF > ~/service.staging.env
-            FIREBASE_KEY_PATH=/app/firebase/firebase_key.json
+            FIREBASE_KEY_PATH=/app/app/firebase/firebase_key.json
             FIREBASE_DATABASE_URL=https://ets-1-ccb71-default-rtdb.firebaseio.com
+            FCM_ENABLED=true
+            TRANSLATION_ENABLED=true
             DATABASE_URL=postgresql://fleetstaging:${{ secrets.STAGING_POSTGRES_PASSWORD || 'stagingpass' }}@postgres_staging:5432/fleet_db_staging
             STAGING_POSTGRES_PASSWORD=${{ secrets.STAGING_POSTGRES_PASSWORD || 'stagingpass' }}
             POSTGRES_PASSWORD=${{ secrets.STAGING_POSTGRES_PASSWORD || 'stagingpass' }}
@@ -142,8 +144,10 @@ jobs:
             else
               echo "📝 Writing service.prod.env ..."
               cat <<EOF > ~/service.prod.env
-            FIREBASE_KEY_PATH=/app/firebase/firebase_key.json
+            FIREBASE_KEY_PATH=/app/app/firebase/firebase_key.json
             FIREBASE_DATABASE_URL=https://ets-1-ccb71-default-rtdb.firebaseio.com
+            FCM_ENABLED=true
+            TRANSLATION_ENABLED=true
             DATABASE_URL=postgresql://fleetadmin:${{ secrets.POSTGRES_PASSWORD }}@host.docker.internal:5432/fleet_db
             POSTGRES_USER=fleetadmin
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}

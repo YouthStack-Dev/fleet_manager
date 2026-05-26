@@ -222,6 +222,7 @@ def employee_send_message(
         booking_id=booking_id,
         employee_id=employee_id,
         driver_id=driver_id,
+        background_tasks=background_tasks,
     )
 
     msg = chat_service.send_message_sync(
@@ -233,6 +234,7 @@ def employee_send_message(
         sender_id=employee_id,
         text=body.text,
         sender_language=session.employee_language,
+        background_tasks=background_tasks,
     )
 
     # Schedule async translation (fires after HTTP response is sent)
@@ -381,6 +383,9 @@ def driver_open_chat(
         driver_id=driver_id,
     )
 
+    # Multi-vendor reconciliation: trust auth over route_management
+    session = chat_service.reconcile_session_driver(db, session, driver_id)
+
     return ResponseWrapper.success(
         data={
             **_serialize_session(session),
@@ -421,7 +426,11 @@ def driver_send_message(
         booking_id=booking_id,
         employee_id=booking.employee_id,
         driver_id=driver_id,
+        background_tasks=background_tasks,
     )
+
+    # Multi-vendor reconciliation: trust auth over route_management
+    session = chat_service.reconcile_session_driver(db, session, driver_id)
 
     msg = chat_service.send_message_sync(
         db=db,
@@ -432,6 +441,7 @@ def driver_send_message(
         sender_id=driver_id,
         text=body.text,
         sender_language=session.driver_language,
+        background_tasks=background_tasks,
     )
 
     # Schedule async translation
@@ -485,6 +495,9 @@ def driver_get_messages(
             data={"messages": [], "total": 0},
             message="No chat session found for this booking",
         )
+
+    # Multi-vendor reconciliation: trust auth over route_management
+    session = chat_service.reconcile_session_driver(db, session, driver_id)
 
     messages = chat_crud.get_messages(db, tenant_id, booking_id, skip, limit)
     total    = chat_crud.get_message_count(db, booking_id)
