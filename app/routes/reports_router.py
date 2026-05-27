@@ -263,15 +263,6 @@ async def export_bookings_report(
         # --- Execute Query ---
         results = query.all()
 
-        if not results:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail=ResponseWrapper.error(
-                    message="No bookings found matching the specified filters",
-                    error_code="NO_DATA_FOUND"
-                )
-            )
-
         logger.info(f"[export_bookings_report] Found {len(results)} records")
 
         # --- Create Excel Workbook ---
@@ -412,7 +403,10 @@ async def export_bookings_report(
         # --- Generate filename ---
         filename = f"bookings_report_{tenant_id}_{start_date}_to_{end_date}.xlsx"
 
-        logger.info(f"[export_bookings_report] Generated report with {len(results)} records for user {user_id}")
+        if not results:
+            logger.info(f"[export_bookings_report] No records found — returning empty report for user {user_id}")
+        else:
+            logger.info(f"[export_bookings_report] Generated report with {len(results)} records for user {user_id}")
 
         # --- Return as StreamingResponse ---
         return StreamingResponse(

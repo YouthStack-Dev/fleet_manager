@@ -171,6 +171,7 @@ if _cors_origins == ["*"]:
         "*",
         "http://localhost:3000",
         "http://localhost:5173",
+        "http://localhost:5174",
         "https://test.euronext.gocab.tech",
         "https://euronext.gocab.tech",
         "https://api.gocab.tech",
