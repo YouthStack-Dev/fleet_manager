@@ -914,36 +914,50 @@ async def get_driver_trips(
 
 @router.get("/history/report", status_code=status.HTTP_200_OK)
 async def driver_history_report(
-    start_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
-    end_date: date = Query(..., description="End date (YYYY-MM-DD)"),
+    # Date range — accept both naming conventions so driver app and web frontend
+    # both work without a coordinated rename.
+    start_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date:   Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
+    from_date:  Optional[date] = Query(None, description="Start date alias used by web frontend (YYYY-MM-DD)"),
+    to_date:    Optional[date] = Query(None, description="End date alias used by web frontend (YYYY-MM-DD)"),
+    # Driver ID — required for admin / manager callers; auto-resolved from JWT for drivers
+    driver_id: Optional[int] = Query(None, description="Driver ID (required for admin/manager; ignored for driver JWT)"),
     format: str = Query("json", pattern="^(json|excel)$", description="Response format: json or excel"),
     db: Session = Depends(get_db),
-    ctx=Depends(DriverAuth),
+    # Accept EITHER driver_app.read (driver JWT) OR report.read (admin / transport manager)
+    user_data=Depends(PermissionChecker(["driver_app.read", "report.read"], check_tenant=False)),
 ):
     """
     Driver trip history report for a date range.
 
-    Returns every booking the driver handled between start_date and end_date,
-    with route, timing, and distance details.
+    Accessible by:
+    - **Driver** (JWT with driver_app.read) — sees only their own trips; driver_id
+      is resolved from the JWT, the query param is ignored.
+    - **Admin / Transport Manager / Employee** (JWT with report.read) — must supply
+      an explicit `driver_id` query param.
 
-    Use `format=json` for in-app view, `format=excel` to download an XLSX file.
+    Date params accept two naming conventions:
+    - `start_date` / `end_date`  (driver app)
+    - `from_date`  / `to_date`   (web frontend)
 
-    Response fields per booking row:
-    - route_id, route_code, route_status
-    - booking_id, booking_date, booking_status
-    - employee_name, employee_code
-    - estimated_pickup_time, actual_pickup_time
-    - estimated_drop_time, actual_drop_time
-    - estimated_distance_km, actual_distance_km
-    - estimated_total_distance_km (route level)
-    - actual_total_distance_km (route level)
+    Use `format=excel` to download an XLSX file instead of JSON.
     """
     import io
     try:
-        tenant_id = ctx["tenant_id"]
-        driver_id = ctx["driver_id"]
+        # ── Resolve dates (accept either naming convention) ──────────────────────
+        resolved_start = start_date or from_date
+        resolved_end   = end_date   or to_date
 
-        if start_date > end_date:
+        if not resolved_start or not resolved_end:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    message="start_date (or from_date) and end_date (or to_date) are required",
+                    error_code="MISSING_DATE_RANGE",
+                ),
+            )
+
+        if resolved_start > resolved_end:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ResponseWrapper.error(
@@ -952,9 +966,37 @@ async def driver_history_report(
                 ),
             )
 
+        # ── Resolve caller identity ───────────────────────────────────────────────
+        user_type = user_data.get("user_type")
+        tenant_id = user_data.get("tenant_id")
+
+        if user_type == "driver":
+            # Driver: always use their own ID from the JWT
+            resolved_driver_id = user_data.get("user_id")
+        else:
+            # Admin / employee (transport manager) / vendor
+            if not driver_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="driver_id is required for admin and manager users",
+                        error_code="DRIVER_ID_REQUIRED",
+                    ),
+                )
+            resolved_driver_id = driver_id
+
+        if not tenant_id or not resolved_driver_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Could not resolve tenant or driver from token",
+                    error_code="AUTH_CONTEXT_MISSING",
+                ),
+            )
+
         logger.info(
-            f"[driver.history_report] driver={driver_id}, tenant={tenant_id}, "
-            f"{start_date} → {end_date}, format={format}"
+            "[driver.history_report] caller_type=%s driver=%s tenant=%s %s→%s format=%s",
+            user_type, resolved_driver_id, tenant_id, resolved_start, resolved_end, format,
         )
 
         # ── Single optimised query: join Route ▸ RMBooking ▸ Booking ▸ Employee ─
@@ -970,10 +1012,10 @@ async def driver_history_report(
             .outerjoin(Employee, Employee.employee_id == Booking.employee_id)
             .filter(
                 RouteManagement.tenant_id == tenant_id,
-                RouteManagement.assigned_driver_id == driver_id,
+                RouteManagement.assigned_driver_id == resolved_driver_id,
                 RouteManagement.status == RouteManagementStatusEnum.COMPLETED,
-                Booking.booking_date >= start_date,
-                Booking.booking_date <= end_date,
+                Booking.booking_date >= resolved_start,
+                Booking.booking_date <= resolved_end,
             )
             .order_by(Booking.booking_date.asc(), RouteManagementBooking.order_id.asc())
             .all()
@@ -1017,8 +1059,8 @@ async def driver_history_report(
         unique_routes = len(set(r["route_id"] for r in records))
 
         summary = {
-            "start_date": start_date.isoformat(),
-            "end_date": end_date.isoformat(),
+            "start_date": resolved_start.isoformat(),
+            "end_date": resolved_end.isoformat(),
             "total_routes": unique_routes,
             "total_bookings": total_bookings,
             "completed": completed,
@@ -1031,7 +1073,7 @@ async def driver_history_report(
         if format == "json":
             return ResponseWrapper.success(
                 data={"summary": summary, "bookings": records},
-                message=f"Driver history report: {start_date} to {end_date}",
+                message=f"Driver history report: {resolved_start} to {resolved_end}",
             )
 
         # ── Excel response ───────────────────────────────────────────────────────
@@ -1148,7 +1190,7 @@ async def driver_history_report(
         wb.save(buffer)
         buffer.seek(0)
 
-        filename = f"driver_{driver_id}_report_{start_date}_to_{end_date}.xlsx"
+        filename = f"driver_{resolved_driver_id}_report_{resolved_start}_to_{resolved_end}.xlsx"
         from fastapi.responses import StreamingResponse as SR
         return SR(
             content=buffer,

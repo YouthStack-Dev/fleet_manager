@@ -36,6 +36,15 @@ class TenantConfigBase(BaseModel):
     # Female Employee Dark-Hour Boarding Block (Feature 12)
     dark_hour_boarding_mode: str = "off"
 
+    # IMP-7: Geofence arrival radius (metres)
+    geofence_arrival_radius_meters: int = 300
+
+    # IMP-6: ETA recalculation — minimum delta before FCM is sent
+    eta_change_threshold_minutes: int = 5
+
+    # IMP-5: Stale driver alerting — minutes without GPS ping before alert
+    stale_driver_threshold_minutes: int = 5
+
     @field_validator('escort_required_start_time', 'escort_required_end_time')
     def validate_time_format(cls, v):
         """Validate time format"""
@@ -145,6 +154,11 @@ class TenantConfigUpdate(BaseModel):
 
     # Female Employee Dark-Hour Boarding Block (Feature 12)
     dark_hour_boarding_mode: Optional[str] = None
+
+    # IMP-7 / IMP-6 / IMP-5 — GPS tracking knobs
+    geofence_arrival_radius_meters: Optional[int] = None
+    eta_change_threshold_minutes: Optional[int] = None
+    stale_driver_threshold_minutes: Optional[int] = None
 
     @field_validator('escort_required_start_time', 'escort_required_end_time')
     def validate_time_format(cls, v):
