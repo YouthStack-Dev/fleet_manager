@@ -119,6 +119,7 @@ jobs:
             USE_REDIS=1
             SECRET_KEY=${{ secrets.SECRET_KEY }}
             TOKEN_EXPIRY_HOURS=${{ secrets.TOKEN_EXPIRY_HOURS || '1' }}
+            GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}
             TWILIO_ENABLED=${{ secrets.TWILIO_ENABLED || 'false' }}
             TWILIO_ACCOUNT_SID=${{ secrets.TWILIO_ACCOUNT_SID }}
             TWILIO_AUTH_TOKEN=${{ secrets.TWILIO_AUTH_TOKEN }}
@@ -158,6 +159,7 @@ jobs:
             USE_REDIS=1
             SECRET_KEY=${{ secrets.SECRET_KEY }}
             TOKEN_EXPIRY_HOURS=${{ secrets.TOKEN_EXPIRY_HOURS || '1' }}
+            GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}
             TWILIO_ENABLED=${{ secrets.TWILIO_ENABLED || 'false' }}
             TWILIO_ACCOUNT_SID=${{ secrets.TWILIO_ACCOUNT_SID }}
             TWILIO_AUTH_TOKEN=${{ secrets.TWILIO_AUTH_TOKEN }}

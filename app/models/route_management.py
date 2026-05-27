@@ -82,6 +82,14 @@ class RouteManagementBooking(Base):
     estimated_drop_time = Column(String(10), nullable=True)  # New column
     actual_drop_time = Column(String(10), nullable=True)  # New column
 
+    # IMP-7: timestamp set when "Driver arriving" FCM is sent for this stop
+    # NULL = not yet notified; set once; never reset (prevents duplicate pushes)
+    geofence_notified_at = Column(DateTime, nullable=True)
+
+    # IMP-6: timestamp of the last ETA update from a live GPS ping (rate-limiter)
+    # NULL = ETA never updated by a live ping
+    eta_updated_at = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
     route_management = relationship("RouteManagement", back_populates="route_management_bookings")
