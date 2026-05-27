@@ -83,6 +83,301 @@ def style_excel_report(ws, headers):
     return ws
 
 
+@router.get("/bookings", status_code=http_status.HTTP_200_OK)
+async def list_bookings_report(
+    start_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: date = Query(..., description="End date (YYYY-MM-DD)"),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (required for admin users)"),
+    shift_id: Optional[int] = Query(None, description="Filter by shift ID"),
+    booking_status: Optional[List[BookingStatusEnum]] = Query(None, description="Filter by booking status (multi-select)"),
+    route_status: Optional[List[RouteManagementStatusEnum]] = Query(None, description="Filter by route status (multi-select)"),
+    vendor_id: Optional[int] = Query(None, description="Filter by vendor ID"),
+    include_unrouted: Optional[bool] = Query(True, description="Include bookings without routes"),
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(100, ge=1, le=500, description="Records per page (max 500)"),
+    db: Session = Depends(get_db),
+    user_data=Depends(PermissionChecker(["report.read"], check_tenant=True)),
+):
+    """
+    Return bookings report data as JSON for frontend table display.
+
+    Identical filters to GET /bookings/export.  Supports pagination so the
+    frontend can render large date ranges in pages without waiting for a full
+    Excel build.
+
+    Use GET /bookings/export with the same filters to download the Excel file.
+
+    Response shape
+    --------------
+    {
+      "data": {
+        "bookings": [ { ...one row per booking... }, ... ],
+        "pagination": { "total": 1234, "page": 1, "page_size": 100, "total_pages": 13 },
+        "summary":    { "total_bookings": ..., "routed_bookings": ...,
+                        "unrouted_bookings": ..., "status_breakdown": {...} },
+        "meta":       { "start_date": ..., "end_date": ..., "generated_at": ... }
+      }
+    }
+    """
+    try:
+        user_type       = user_data.get("user_type")
+        token_tenant_id = user_data.get("tenant_id")
+        token_vendor_id = user_data.get("vendor_id")
+        user_id         = user_data.get("user_id")
+
+        logger.info(
+            "[list_bookings_report] user_id=%s user_type=%s date_range=%s to %s page=%s",
+            user_id, user_type, start_date, end_date, page,
+        )
+
+        # --- Tenant / vendor resolution (same rules as export) ---
+        if user_type == "employee":
+            tenant_id = token_tenant_id
+        elif user_type == "vendor":
+            tenant_id = token_tenant_id
+            vendor_id = token_vendor_id
+        elif user_type == "admin":
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        message="tenant_id is required for admin users",
+                        error_code="TENANT_ID_REQUIRED",
+                    ),
+                )
+        else:
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Insufficient permissions to view reports",
+                    error_code="FORBIDDEN",
+                ),
+            )
+
+        if not tenant_id:
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail=ResponseWrapper.error(
+                    message="Tenant context not available",
+                    error_code="TENANT_ID_REQUIRED",
+                ),
+            )
+
+        validate_date_range(start_date, end_date)
+
+        from app.utils.cache_manager import get_tenant_with_cache, get_shift_with_cache
+        tenant = get_tenant_with_cache(db, tenant_id)
+        if not tenant:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail=ResponseWrapper.error(
+                    message=f"Tenant {tenant_id} not found",
+                    error_code="TENANT_NOT_FOUND",
+                ),
+            )
+
+        if shift_id:
+            shift = get_shift_with_cache(db, tenant_id, shift_id)
+            if not shift:
+                raise HTTPException(
+                    status_code=http_status.HTTP_404_NOT_FOUND,
+                    detail=ResponseWrapper.error(
+                        message=f"Shift {shift_id} not found for this tenant",
+                        error_code="SHIFT_NOT_FOUND",
+                    ),
+                )
+
+        # --- Build query (mirrors export_bookings_report exactly) ---
+        query = (
+            db.query(
+                Booking.booking_id,
+                Booking.booking_date,
+                Booking.status.label("booking_status"),
+                Booking.pickup_location,
+                Booking.drop_location,
+                Booking.pickup_latitude,
+                Booking.pickup_longitude,
+                Booking.drop_latitude,
+                Booking.drop_longitude,
+                Booking.reason,
+                Booking.employee_id,
+                Booking.employee_code,
+                Employee.name.label("employee_name"),
+                Employee.phone.label("employee_phone"),
+                Employee.gender.label("employee_gender"),
+                Shift.shift_id,
+                Shift.shift_code,
+                Shift.shift_time,
+                Shift.log_type.label("shift_type"),
+                RouteManagement.route_id,
+                RouteManagement.route_code,
+                RouteManagement.status.label("route_status"),
+                RouteManagementBooking.order_id,
+                RouteManagementBooking.estimated_pick_up_time,
+                RouteManagementBooking.estimated_drop_time,
+                RouteManagementBooking.actual_pick_up_time,
+                RouteManagementBooking.actual_drop_time,
+                RouteManagementBooking.estimated_distance,
+                RouteManagement.actual_total_distance,
+                Driver.driver_id,
+                Driver.name.label("driver_name"),
+                Driver.phone.label("driver_phone"),
+                Driver.license_number,
+                Vehicle.vehicle_id,
+                Vehicle.rc_number,
+                Vendor.vendor_id,
+                Vendor.name.label("vendor_name"),
+                Vendor.phone.label("vendor_phone"),
+            )
+            .outerjoin(Employee, Booking.employee_id == Employee.employee_id)
+            .join(Shift, Booking.shift_id == Shift.shift_id)
+            .outerjoin(RouteManagementBooking, Booking.booking_id == RouteManagementBooking.booking_id)
+            .outerjoin(RouteManagement, RouteManagementBooking.route_id == RouteManagement.route_id)
+            .outerjoin(Driver, RouteManagement.assigned_driver_id == Driver.driver_id)
+            .outerjoin(Vehicle, RouteManagement.assigned_vehicle_id == Vehicle.vehicle_id)
+            .outerjoin(Vendor, RouteManagement.assigned_vendor_id == Vendor.vendor_id)
+            .filter(
+                Booking.tenant_id == tenant_id,
+                Booking.booking_date >= start_date,
+                Booking.booking_date <= end_date,
+            )
+        )
+
+        if shift_id:
+            query = query.filter(Booking.shift_id == shift_id)
+        if booking_status:
+            query = query.filter(Booking.status.in_(booking_status))
+        if route_status:
+            query = query.filter(RouteManagement.status.in_(route_status))
+        if vendor_id:
+            query = query.filter(RouteManagement.assigned_vendor_id == vendor_id)
+        if not include_unrouted:
+            query = query.filter(RouteManagement.route_id.isnot(None))
+
+        query = query.order_by(
+            Booking.booking_date.desc(),
+            Shift.shift_id,
+            RouteManagement.route_id,
+            RouteManagementBooking.order_id,
+        )
+
+        # --- Pagination ---
+        total = query.count()
+        offset = (page - 1) * page_size
+        results = query.offset(offset).limit(page_size).all()
+
+        # --- Serialise rows ---
+        def _fmt_time(t):
+            """Convert time/timedelta stored in DB to HH:MM string, or return as-is."""
+            if t is None:
+                return None
+            if hasattr(t, "strftime"):
+                return t.strftime("%H:%M")
+            # timedelta (common for TIME columns in some drivers)
+            total_secs = int(t.total_seconds())
+            return f"{total_secs // 3600:02d}:{(total_secs % 3600) // 60:02d}"
+
+        bookings = []
+        for r in results:
+            bookings.append({
+                "booking_id":               r.booking_id,
+                "booking_date":             r.booking_date.strftime("%Y-%m-%d") if r.booking_date else None,
+                "booking_status":           r.booking_status.value if r.booking_status else None,
+                "employee_id":              r.employee_id,
+                "employee_code":            r.employee_code,
+                "employee_name":            r.employee_name,
+                "employee_phone":           r.employee_phone,
+                "employee_gender":          r.employee_gender.value if r.employee_gender and hasattr(r.employee_gender, "value") else str(r.employee_gender) if r.employee_gender else None,
+                "shift_id":                 r.shift_id,
+                "shift_code":               r.shift_code,
+                "shift_time":               _fmt_time(r.shift_time),
+                "shift_type":               r.shift_type.value if r.shift_type and hasattr(r.shift_type, "value") else str(r.shift_type) if r.shift_type else None,
+                "pickup_location":          r.pickup_location,
+                "pickup_latitude":          r.pickup_latitude,
+                "pickup_longitude":         r.pickup_longitude,
+                "drop_location":            r.drop_location,
+                "drop_latitude":            r.drop_latitude,
+                "drop_longitude":           r.drop_longitude,
+                "route_id":                 r.route_id,
+                "route_code":               r.route_code,
+                "route_status":             r.route_status.value if r.route_status else None,
+                "stop_order":               r.order_id,
+                "estimated_pickup_time":    _fmt_time(r.estimated_pick_up_time),
+                "estimated_drop_time":      _fmt_time(r.estimated_drop_time),
+                "actual_pickup_time":       _fmt_time(r.actual_pick_up_time),
+                "actual_drop_time":         _fmt_time(r.actual_drop_time),
+                "estimated_distance_km":    float(r.estimated_distance) if r.estimated_distance is not None else None,
+                "actual_total_distance_km": float(r.actual_total_distance) if r.actual_total_distance is not None else None,
+                "driver_id":                r.driver_id,
+                "driver_name":              r.driver_name,
+                "driver_phone":             r.driver_phone,
+                "driver_license":           r.license_number,
+                "vehicle_id":               r.vehicle_id,
+                "vehicle_number":           r.rc_number,
+                "vendor_id":                r.vendor_id,
+                "vendor_name":              r.vendor_name,
+                "vendor_phone":             r.vendor_phone,
+                "reason":                   r.reason,
+            })
+
+        # --- Summary stats across the full date-range result set (not just this page) ---
+        # We need counts over ALL matching rows, so fetch id+status+route_id only.
+        summary_rows = (
+            db.query(
+                Booking.status.label("booking_status"),
+                RouteManagement.route_id,
+            )
+            .outerjoin(RouteManagementBooking, Booking.booking_id == RouteManagementBooking.booking_id)
+            .outerjoin(RouteManagement, RouteManagementBooking.route_id == RouteManagement.route_id)
+            .join(Shift, Booking.shift_id == Shift.shift_id)
+            .filter(
+                Booking.tenant_id == tenant_id,
+                Booking.booking_date >= start_date,
+                Booking.booking_date <= end_date,
+            )
+            .all()
+        )
+        status_breakdown: dict = {}
+        routed = 0
+        for r in summary_rows:
+            s = r.booking_status.value if r.booking_status else "UNKNOWN"
+            status_breakdown[s] = status_breakdown.get(s, 0) + 1
+            if r.route_id is not None:
+                routed += 1
+
+        import math
+        return ResponseWrapper.success(
+            data={
+                "bookings": bookings,
+                "pagination": {
+                    "total":       total,
+                    "page":        page,
+                    "page_size":   page_size,
+                    "total_pages": math.ceil(total / page_size) if total else 1,
+                },
+                "summary": {
+                    "total_bookings":    total,
+                    "routed_bookings":   routed,
+                    "unrouted_bookings": total - routed,
+                    "status_breakdown":  status_breakdown,
+                },
+                "meta": {
+                    "start_date":    str(start_date),
+                    "end_date":      str(end_date),
+                    "tenant_id":     tenant_id,
+                    "tenant_name":   tenant.name,
+                    "generated_at":  get_current_ist_time().isoformat(),
+                },
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[list_bookings_report] Error: %s", e)
+        raise handle_db_error(e)
+
+
 @router.get("/bookings/export", status_code=http_status.HTTP_200_OK)
 async def export_bookings_report(
     start_date: date = Query(..., description="Start date for the report (YYYY-MM-DD)"),
