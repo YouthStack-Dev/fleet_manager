@@ -211,6 +211,7 @@ async def export_bookings_report(
                 RouteManagementBooking.actual_pick_up_time,
                 RouteManagementBooking.actual_drop_time,
                 RouteManagementBooking.estimated_distance,
+                RouteManagement.actual_total_distance,
                 Driver.driver_id,
                 Driver.name.label('driver_name'),
                 Driver.phone.label('driver_phone'),
@@ -298,7 +299,8 @@ async def export_bookings_report(
             "Estimated Drop Time",
             "Actual Pickup Time",
             "Actual Drop Time",
-            "Distance (km)",
+            "Estimated Distance (km)",
+            "Actual Total Distance (km)",
             "Driver ID",
             "Driver Name",
             "Driver Phone",
@@ -343,16 +345,17 @@ async def export_bookings_report(
             ws.cell(row=row_num, column=25, value=str(record.actual_pick_up_time) if record.actual_pick_up_time else '')
             ws.cell(row=row_num, column=26, value=str(record.actual_drop_time) if record.actual_drop_time else '')
             ws.cell(row=row_num, column=27, value=record.estimated_distance)
-            ws.cell(row=row_num, column=28, value=record.driver_id or '')
-            ws.cell(row=row_num, column=29, value=record.driver_name or '')
-            ws.cell(row=row_num, column=30, value=record.driver_phone or '')
-            ws.cell(row=row_num, column=31, value=record.license_number or '')
-            ws.cell(row=row_num, column=32, value=record.vehicle_id or '')
-            ws.cell(row=row_num, column=33, value=record.rc_number or '')
-            ws.cell(row=row_num, column=34, value=record.vendor_id or '')
-            ws.cell(row=row_num, column=35, value=record.vendor_name or '')
-            ws.cell(row=row_num, column=36, value=record.vendor_phone or '')
-            ws.cell(row=row_num, column=37, value=record.reason or '')
+            ws.cell(row=row_num, column=28, value=float(record.actual_total_distance) if record.actual_total_distance is not None else '')
+            ws.cell(row=row_num, column=29, value=record.driver_id or '')
+            ws.cell(row=row_num, column=30, value=record.driver_name or '')
+            ws.cell(row=row_num, column=31, value=record.driver_phone or '')
+            ws.cell(row=row_num, column=32, value=record.license_number or '')
+            ws.cell(row=row_num, column=33, value=record.vehicle_id or '')
+            ws.cell(row=row_num, column=34, value=record.rc_number or '')
+            ws.cell(row=row_num, column=35, value=record.vendor_id or '')
+            ws.cell(row=row_num, column=36, value=record.vendor_name or '')
+            ws.cell(row=row_num, column=37, value=record.vendor_phone or '')
+            ws.cell(row=row_num, column=38, value=record.reason or '')
 
         # --- Create Summary Sheet ---
         summary_ws = wb.create_sheet(title="Summary")
