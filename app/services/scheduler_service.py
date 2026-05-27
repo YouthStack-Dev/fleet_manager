@@ -30,11 +30,15 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from app.core.logging_config import get_logger
 from app.services.reminder_service import run_reminder_job
+from app.services.stale_driver_service import run_stale_driver_check_job
 
 logger = get_logger(__name__)
 
 # How often the reminder job fires (seconds).
 _REMINDER_INTERVAL_SECONDS: int = 5 * 60  # 5 minutes
+
+# How often the stale-driver check fires (seconds).
+_STALE_DRIVER_INTERVAL_SECONDS: int = 2 * 60  # 2 minutes
 
 
 class SchedulerService:
@@ -81,8 +85,9 @@ class SchedulerService:
         self._scheduler.start()
         self._running = True
         logger.info(
-            "[scheduler_service] Started. reminder_job interval=%ds",
+            "[scheduler_service] Started. reminder_job interval=%ds, stale_driver_job interval=%ds",
             _REMINDER_INTERVAL_SECONDS,
+            _STALE_DRIVER_INTERVAL_SECONDS,
         )
 
     def stop(self, wait: bool = True) -> None:
@@ -121,6 +126,18 @@ class SchedulerService:
         logger.debug(
             "[scheduler_service] Registered reminder_job (every %ds).",
             _REMINDER_INTERVAL_SECONDS,
+        )
+
+        self._scheduler.add_job(
+            func=run_stale_driver_check_job,
+            trigger=IntervalTrigger(seconds=_STALE_DRIVER_INTERVAL_SECONDS, timezone="UTC"),
+            id="stale_driver_job",
+            name="Stale Driver Location Alerting",
+            replace_existing=True,
+        )
+        logger.debug(
+            "[scheduler_service] Registered stale_driver_job (every %ds).",
+            _STALE_DRIVER_INTERVAL_SECONDS,
         )
 
     # ------------------------------------------------------------------

@@ -59,6 +59,21 @@ class TenantConfig(Base):
     #           without a boarded escort; also fires a security push notification
     dark_hour_boarding_mode = Column(String(10), nullable=False, server_default="off")
 
+    # ── IMP-7: Geofence Arrival Triggers ───────────────────────────
+    # Radius (metres) within which the driver is considered "arriving" at a stop.
+    # When the driver enters this zone, an FCM is sent to the waiting employee.
+    geofence_arrival_radius_meters = Column(Integer, nullable=False, server_default="300")
+
+    # ── IMP-6: ETA Recalculation from Live Location ─────────────────
+    # Minimum ETA change (minutes) required before a new estimate is pushed
+    # to the employee via FCM.  Prevents notification spam for tiny fluctuations.
+    eta_change_threshold_minutes = Column(Integer, nullable=False, server_default="5")
+
+    # ── IMP-5: Stale Driver Alerting ─────────────────────────────────
+    # Minutes without a GPS ping before an ONGOING route's driver is flagged
+    # as "stale" and ops admins are alerted via FCM.  Default 5 min.
+    stale_driver_threshold_minutes = Column(Integer, nullable=False, server_default="5")
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 

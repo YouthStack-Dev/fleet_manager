@@ -45,5 +45,8 @@ from app.models.iam.role import Role, role_policy
 # Chat (Employee ↔ Driver real-time messaging)
 from app.models.chat import ChatSession, ChatMessage, ChatSenderType
 
+# GPS breadcrumb trail (IMP-1 / IMP-2 / IMP-9)
+from app.models.driver_location_history import DriverLocationHistory
+
 # DO NOT IMPORT ANY ROUTE-RELATED MODELS HERE
 # The error suggests there's still a conflicting route model being imported

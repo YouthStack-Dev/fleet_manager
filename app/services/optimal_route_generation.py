@@ -7,20 +7,29 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 from datetime import datetime, time
+import os
+import sys
 import requests
 from fastapi import HTTPException
 
-import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-URL = f"https://maps.googleapis.com/maps/api/directions/json"
-GOOGLE_MAPS_API_KEY = "AIzaSyCI7CwlYJ6Qt5pQGW--inSsJmdEManW-K0" 
+
+URL = "https://maps.googleapis.com/maps/api/directions/json"
+
+# BUG-4 fixed: load API key from environment variable — never hardcode secrets in source
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
+if not GOOGLE_MAPS_API_KEY:
+    raise RuntimeError(
+        "GOOGLE_MAPS_API_KEY environment variable is not set. "
+        "Add it to your .env file or deployment environment."
+    )
 
 def calculate_distance(lat1, lng1, lat2, lng2):
     import math
     # Haversine formula for distance calculation
     R = 6371  # Earth's radius in km
     dlat = math.radians(lat2 - lat1)
-    dlng = math.radians(lat2 - lng1)
+    dlng = math.radians(lng2 - lng1)  # BUG-3 fixed: was lat2 - lng1 (wrong variable)
     a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng/2)**2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     return R * c
