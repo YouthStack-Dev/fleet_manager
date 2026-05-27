@@ -40,11 +40,12 @@ def push_driver_location_to_firebase(
 
         ref = db.reference(ref_path)
 
-        # Build explicit structure (use None to create nulls in RTDB)
+        # BUG-1 fixed: use the actual latitude/longitude params instead of hardcoded coords
+        # BUG-2 fixed: always overwrite lat/lng/updated_at so live location stays current
         location_data = {
             "driver_id": driver_id,
-            "latitude": 12.9734,
-            "longitude": 77.6140,
+            "latitude": latitude,
+            "longitude": longitude,
             "updated_at": datetime.utcnow().isoformat()
         }
 
@@ -53,16 +54,13 @@ def push_driver_location_to_firebase(
             logger.info("Creating driver node at %s", ref_path)
             ref.set(location_data)
         else:
-            # ensure keys exist without overwriting other keys
-            # only set keys that are missing (so we keep existing data intact)
-            missing = {k: v for k, v in location_data.items() if k not in existing}
-            if missing:
-                logger.info("Updating missing keys for %s: %s", ref_path, missing.keys())
-                ref.update(missing)
-            else:
-                logger.info("Driver node exists and keys present for %s", ref_path)
+            # Always update coordinates and timestamp — never skip if keys already exist
+            ref.update(location_data)
 
-        logger.info("Driver node ensured at %s", ref_path)
+        logger.info(
+            "Driver location updated at %s — lat=%.6f, lng=%.6f",
+            ref_path, latitude, longitude
+        )
 
     except Exception as exc:
         logger.exception("Error pushing driver location to Firebase for %s: %s", ref_path, exc)
