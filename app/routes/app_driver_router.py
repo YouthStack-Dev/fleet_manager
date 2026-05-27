@@ -1596,6 +1596,11 @@ async def update_driver_location(
       2. Writes the coordinates to driver_location_history (PostgreSQL — full trail).
       3. Pushes the latest position to Firebase RTDB in a BackgroundTask
          (non-blocking — a Firebase failure never fails the HTTP response).
+      4. IMP-7: Runs geofence check — if driver is within arrival radius of next
+         stop, pushes "Driver arriving" FCM to the waiting employee (BackgroundTask).
+      5. IMP-6: Recalculates ETAs for all remaining stops and pushes FCM to
+         affected employees if ETA changed by more than the tenant threshold
+         (BackgroundTask).
 
     Returns a minimal 200 so the mobile client can ACK and move on quickly.
     """
@@ -1649,6 +1654,43 @@ async def update_driver_location(
             longitude  = longitude,
         )
 
+        # --- IMP-7: Geofence arrival check (non-blocking) ---
+        background_tasks.add_task(
+            _geofence_check_bg,
+            tenant_id  = tenant_id,
+            route_id   = route_id,
+            driver_lat = latitude,
+            driver_lng = longitude,
+            db         = db,
+        )
+
+        # --- IMP-6: ETA recalculation for remaining stops (non-blocking) ---
+        background_tasks.add_task(
+            _eta_recalc_bg,
+            tenant_id          = tenant_id,
+            route_id           = route_id,
+            driver_lat         = latitude,
+            driver_lng         = longitude,
+            driver_speed_kmph  = speed,
+            now                = now,
+            db                 = db,
+        )
+
+        # --- IMP-10: Server-side speed violation check (non-blocking, only when speed reported) ---
+        if speed is not None:
+            background_tasks.add_task(
+                _speed_violation_check_bg,
+                tenant_id   = tenant_id,
+                route_id    = route_id,
+                driver_id   = driver_id,
+                vehicle_id  = route.assigned_vehicle_id,
+                speed_kmph  = speed,
+                latitude    = latitude,
+                longitude   = longitude,
+                recorded_at = now,
+                db          = db,
+            )
+
         return ResponseWrapper.success(
             message="Location updated",
             data={
@@ -1694,6 +1736,64 @@ def _push_location_to_firebase_bg(
         )
 
 
+def _geofence_check_bg(
+    tenant_id: str,
+    route_id: int,
+    driver_lat: float,
+    driver_lng: float,
+    db: Session,
+) -> None:
+    """
+    IMP-7 — Background task wrapper for geofence arrival check.
+    Swallows all exceptions so a geofence failure never propagates to the HTTP layer.
+    """
+    try:
+        from app.services.geofence_service import check_and_fire_arrival_geofence
+        check_and_fire_arrival_geofence(
+            db         = db,
+            tenant_id  = tenant_id,
+            route_id   = route_id,
+            driver_lat = driver_lat,
+            driver_lng = driver_lng,
+        )
+    except Exception as exc:
+        logger.exception(
+            "[driver.location] Geofence check failed for route %s: %s",
+            route_id, exc,
+        )
+
+
+def _eta_recalc_bg(
+    tenant_id: str,
+    route_id: int,
+    driver_lat: float,
+    driver_lng: float,
+    driver_speed_kmph: Optional[float],
+    now: "datetime",
+    db: Session,
+) -> None:
+    """
+    IMP-6 — Background task wrapper for ETA recalculation.
+    Swallows all exceptions so an ETA failure never propagates to the HTTP layer.
+    """
+    try:
+        from app.services.eta_service import recalculate_eta_for_remaining_stops
+        recalculate_eta_for_remaining_stops(
+            db                = db,
+            tenant_id         = tenant_id,
+            route_id          = route_id,
+            driver_lat        = driver_lat,
+            driver_lng        = driver_lng,
+            driver_speed_kmph = driver_speed_kmph,
+            now               = now,
+        )
+    except Exception as exc:
+        logger.exception(
+            "[driver.location] ETA recalc failed for route %s: %s",
+            route_id, exc,
+        )
+
+
 def _clear_firebase_location_bg(
     tenant_id: str,
     vendor_id: int,
@@ -1715,6 +1815,42 @@ def _clear_firebase_location_bg(
         logger.exception(
             "[driver.end_duty] Firebase cleanup failed for driver %s: %s",
             driver_id, exc,
+        )
+
+
+def _speed_violation_check_bg(
+    tenant_id: str,
+    route_id: int,
+    driver_id: int,
+    vehicle_id: Optional[int],
+    speed_kmph: float,
+    latitude: float,
+    longitude: float,
+    recorded_at: "datetime",
+    db: Session,
+) -> None:
+    """
+    IMP-10 — Background task wrapper for server-side speed violation detection.
+    Swallows all exceptions so a violation check failure never propagates to
+    the HTTP layer.
+    """
+    try:
+        from app.services.speed_violation_service import detect_and_record_speed_violation
+        detect_and_record_speed_violation(
+            db          = db,
+            tenant_id   = tenant_id,
+            route_id    = route_id,
+            driver_id   = driver_id,
+            vehicle_id  = vehicle_id,
+            speed_kmph  = speed_kmph,
+            latitude    = latitude,
+            longitude   = longitude,
+            recorded_at = recorded_at,
+        )
+    except Exception as exc:
+        logger.exception(
+            "[driver.location] Speed violation check failed for route %s: %s",
+            route_id, exc,
         )
 
 
@@ -1797,6 +1933,16 @@ async def end_duty(
             logger.warning(
                 "[driver.end_duty] Delay tagging failed for route %s (non-fatal): %s",
                 route_id, delay_err,
+            )
+
+        # --- IMP-8: Compute actual GPS distance (best-effort; never blocks duty completion) ---
+        try:
+            from app.services.distance_service import compute_and_persist_actual_distance
+            compute_and_persist_actual_distance(db=db, route=route)
+        except Exception as dist_err:
+            logger.warning(
+                "[driver.end_duty] Distance computation failed for route %s (non-fatal): %s",
+                route_id, dist_err,
             )
 
         db.add(route)
