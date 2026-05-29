@@ -52,6 +52,9 @@ from app.routes.audit_log_router import router as audit_log_router
 from app.routes.reports_router import router as reports_router
 from app.routes.log_stream_router import router as log_stream_router
 
+# ── Admin & System Management ─────────────────────────────────
+from app.routes.admin_router import router as admin_router
+
 # ── Ride Reviews ──────────────────────────────────────────────
 from app.routes.review_router import router as review_router
 

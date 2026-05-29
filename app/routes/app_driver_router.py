@@ -517,6 +517,18 @@ async def start_duty(
 
         logger.info(f"[driver.start_duty] Duty started for route {route_id} by driver {driver_id}")
 
+        # --- Initialize Firebase node for real-time tracking ---
+        background_tasks.add_task(
+            _initialize_firebase_node_bg,
+            tenant_id = tenant_id,
+            vendor_id = ctx.get("vendor_id"),
+            driver_id = driver_id,
+            driver_name = route.driver.name if route.driver else "Unknown",
+            driver_code = route.driver.code if route.driver else "N/A",
+            route_id = route.route_id,
+            route_code = route.route_code,
+        )
+
         # Send notifications to all employees on this route
         background_tasks.add_task(
             send_duty_start_notifications,
@@ -1694,6 +1706,11 @@ async def update_driver_location(
             driver_id  = driver_id,
             latitude   = latitude,
             longitude  = longitude,
+            speed      = speed,
+            driver_name = route.driver.name if route.driver else None,
+            driver_code = route.driver.code if route.driver else None,
+            route_id   = route.route_id,
+            route_code = route.route_code,
         )
 
         # --- IMP-7: Geofence arrival check (non-blocking) ---
@@ -1757,6 +1774,11 @@ def _push_location_to_firebase_bg(
     driver_id: int,
     latitude: float,
     longitude: float,
+    speed: float = None,
+    driver_name: str = None,
+    driver_code: str = None,
+    route_id: int = None,
+    route_code: str = None,
 ) -> None:
     """
     Background task wrapper for Firebase location push.
@@ -1770,10 +1792,46 @@ def _push_location_to_firebase_bg(
             driver_id = driver_id,
             latitude  = latitude,
             longitude = longitude,
+            speed     = speed,
+            driver_name = driver_name,
+            driver_code = driver_code,
+            route_id  = route_id,
+            route_code = route_code,
         )
     except Exception as exc:
         logger.exception(
             "[driver.location] Firebase background push failed for driver %s: %s",
+            driver_id, exc,
+        )
+
+
+def _initialize_firebase_node_bg(
+    tenant_id: str,
+    vendor_id: int,
+    driver_id: int,
+    driver_name: str,
+    driver_code: str,
+    route_id: int,
+    route_code: str,
+) -> None:
+    """
+    Background task wrapper for Firebase node initialization on duty start.
+    Swallows all exceptions so a Firebase failure never propagates to the HTTP layer.
+    """
+    try:
+        from app.firebase.driver_location import initialize_driver_node_on_duty_start
+        initialize_driver_node_on_duty_start(
+            tenant_id = tenant_id,
+            vendor_id = vendor_id,
+            driver_id = driver_id,
+            driver_name = driver_name,
+            driver_code = driver_code,
+            route_id = route_id,
+            route_code = route_code,
+        )
+    except Exception as exc:
+        logger.exception(
+            "[driver.start_duty] Firebase node initialization failed for driver %s: %s",
             driver_id, exc,
         )
 
