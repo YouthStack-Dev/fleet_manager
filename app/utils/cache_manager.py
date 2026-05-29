@@ -80,32 +80,55 @@ cache = CacheManager()
 
 def cached(ttl_seconds: int = 300, key_prefix: str = ""):
     """
-    Decorator to cache function results
+    Decorator to cache function results. Supports both sync and async functions.
 
     @cached(ttl_seconds=600, key_prefix="driver_locations")
-    def get_driver_locations(tenant_id: str, vendor_id: int):
+    async def get_driver_locations(tenant_id: str, vendor_id: int):
         return fetch_from_db(tenant_id, vendor_id)
     """
+    import asyncio
+
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
-        @wraps(func)
-        def wrapper(*args, **kwargs) -> T:
-            # Generate cache key from function name and arguments
-            key_parts = [key_prefix or func.__name__]
-            key_parts.extend(str(arg) for arg in args)
-            key_parts.extend(f"{k}:{v}" for k, v in kwargs.items())
-            cache_key = ":".join(key_parts)
+        if asyncio.iscoroutinefunction(func):
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs) -> T:
+                # Generate cache key from function name and arguments
+                key_parts = [key_prefix or func.__name__]
+                key_parts.extend(str(arg) for arg in args)
+                key_parts.extend(f"{k}:{v}" for k, v in sorted(kwargs.items()))
+                cache_key = ":".join(key_parts)
 
-            # Try to get from cache first
-            cached_result = cache.get(cache_key)
-            if cached_result is not None:
-                return cached_result
+                # Try to get from cache first
+                cached_result = cache.get(cache_key)
+                if cached_result is not None:
+                    return cached_result
 
-            # Execute function and cache result
-            result = func(*args, **kwargs)
-            cache.set(cache_key, result, ttl_seconds)
-            return result
+                # Execute async function and cache result
+                result = await func(*args, **kwargs)
+                cache.set(cache_key, result, ttl_seconds)
+                return result
 
-        return wrapper
+            return async_wrapper  # type: ignore[return-value]
+        else:
+            @wraps(func)
+            def wrapper(*args, **kwargs) -> T:
+                # Generate cache key from function name and arguments
+                key_parts = [key_prefix or func.__name__]
+                key_parts.extend(str(arg) for arg in args)
+                key_parts.extend(f"{k}:{v}" for k, v in sorted(kwargs.items()))
+                cache_key = ":".join(key_parts)
+
+                # Try to get from cache first
+                cached_result = cache.get(cache_key)
+                if cached_result is not None:
+                    return cached_result
+
+                # Execute function and cache result
+                result = func(*args, **kwargs)
+                cache.set(cache_key, result, ttl_seconds)
+                return result
+
+            return wrapper
     return decorator
 
 # Specific caching functions for common operations
