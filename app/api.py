@@ -32,6 +32,8 @@ from app.routes import (
     permission_router, policy_router, policy_package_router, role_router,
     # Observability & reporting
     monitoring_router, audit_log_router, reports_router, log_stream_router,
+    # Admin & System Management
+    admin_router,
     # Ride Reviews
     review_router,
     # Announcements
@@ -111,6 +113,9 @@ api_router.include_router(monitoring_router, prefix=V1)
 api_router.include_router(audit_log_router,  prefix=V1)
 api_router.include_router(reports_router,    prefix=V1)
 api_router.include_router(log_stream_router, prefix=V1)
+
+# Admin & System Management
+api_router.include_router(admin_router,      prefix=V1)
 
 # Ride reviews
 api_router.include_router(review_router,        prefix=V1)

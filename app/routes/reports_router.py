@@ -19,6 +19,8 @@ from app.models.vendor import Vendor
 from app.models.employee import Employee
 from app.models.shift import Shift
 from app.models.tenant import Tenant
+from app.models.escort import Escort
+from app.models.vehicle_type import VehicleType
 from app.utils.response_utils import ResponseWrapper, handle_db_error
 from common_utils.auth.permission_checker import PermissionChecker
 from common_utils import get_current_ist_time
@@ -513,9 +515,14 @@ async def export_bookings_report(
                 Driver.license_number,
                 Vehicle.vehicle_id,
                 Vehicle.rc_number,
+                VehicleType.name.label('vehicle_type_name'),
                 Vendor.vendor_id,
                 Vendor.name.label('vendor_name'),
-                Vendor.phone.label('vendor_phone')
+                Vendor.phone.label('vendor_phone'),
+                Escort.escort_id,
+                Escort.name.label('escort_name'),
+                Escort.phone.label('escort_phone'),
+                Escort.gender.label('escort_gender')
             )
             .outerjoin(Employee, Booking.employee_id == Employee.employee_id)
             .join(Shift, Booking.shift_id == Shift.shift_id)
@@ -523,7 +530,9 @@ async def export_bookings_report(
             .outerjoin(RouteManagement, RouteManagementBooking.route_id == RouteManagement.route_id)
             .outerjoin(Driver, RouteManagement.assigned_driver_id == Driver.driver_id)
             .outerjoin(Vehicle, RouteManagement.assigned_vehicle_id == Vehicle.vehicle_id)
+            .outerjoin(VehicleType, Vehicle.vehicle_type_id == VehicleType.vehicle_type_id)
             .outerjoin(Vendor, RouteManagement.assigned_vendor_id == Vendor.vendor_id)
+            .outerjoin(Escort, RouteManagement.assigned_escort_id == Escort.escort_id)
             .filter(
                 Booking.tenant_id == tenant_id,
                 Booking.booking_date >= start_date,
@@ -602,55 +611,118 @@ async def export_bookings_report(
             "Driver License",
             "Vehicle ID",
             "Vehicle Number",
+            "Vehicle Type",
             "Vendor ID",
             "Vendor Name",
             "Vendor Phone",
+            "Escort ID",
+            "Escort Name",
+            "Escort Phone",
+            "Escort Gender",
             "Reason"
         ]
 
         # Apply styling
         ws = style_excel_report(ws, headers)
 
-        # --- Populate Data ---
-        for row_num, record in enumerate(results, 2):
-            ws.cell(row=row_num, column=1, value=record.booking_id)
-            ws.cell(row=row_num, column=2, value=record.booking_date.strftime('%Y-%m-%d') if record.booking_date else '')
-            ws.cell(row=row_num, column=3, value=record.booking_status.value if record.booking_status else '')
-            ws.cell(row=row_num, column=4, value=record.employee_id)
-            ws.cell(row=row_num, column=5, value=record.employee_code or '')
-            ws.cell(row=row_num, column=6, value=record.employee_name or '')
-            ws.cell(row=row_num, column=7, value=record.employee_phone or '')
-            ws.cell(row=row_num, column=8, value=record.employee_gender or '')
-            ws.cell(row=row_num, column=9, value=record.shift_id)
-            ws.cell(row=row_num, column=10, value=record.shift_code or '')
-            ws.cell(row=row_num, column=11, value=str(record.shift_time) if record.shift_time else '')
-            ws.cell(row=row_num, column=12, value=record.shift_type.value if record.shift_type else '')
-            ws.cell(row=row_num, column=13, value=record.pickup_location or '')
-            ws.cell(row=row_num, column=14, value=record.pickup_latitude)
-            ws.cell(row=row_num, column=15, value=record.pickup_longitude)
-            ws.cell(row=row_num, column=16, value=record.drop_location or '')
-            ws.cell(row=row_num, column=17, value=record.drop_latitude)
-            ws.cell(row=row_num, column=18, value=record.drop_longitude)
-            ws.cell(row=row_num, column=19, value=record.route_id or '')
-            ws.cell(row=row_num, column=20, value=record.route_code or '')
-            ws.cell(row=row_num, column=21, value=record.route_status.value if record.route_status else '')
-            ws.cell(row=row_num, column=22, value=record.order_id if record.order_id is not None else '')
-            ws.cell(row=row_num, column=23, value=str(record.estimated_pick_up_time) if record.estimated_pick_up_time else '')
-            ws.cell(row=row_num, column=24, value=str(record.estimated_drop_time) if record.estimated_drop_time else '')
-            ws.cell(row=row_num, column=25, value=str(record.actual_pick_up_time) if record.actual_pick_up_time else '')
-            ws.cell(row=row_num, column=26, value=str(record.actual_drop_time) if record.actual_drop_time else '')
-            ws.cell(row=row_num, column=27, value=record.estimated_distance)
-            ws.cell(row=row_num, column=28, value=float(record.actual_total_distance) if record.actual_total_distance is not None else '')
-            ws.cell(row=row_num, column=29, value=record.driver_id or '')
-            ws.cell(row=row_num, column=30, value=record.driver_name or '')
-            ws.cell(row=row_num, column=31, value=record.driver_phone or '')
-            ws.cell(row=row_num, column=32, value=record.license_number or '')
-            ws.cell(row=row_num, column=33, value=record.vehicle_id or '')
-            ws.cell(row=row_num, column=34, value=record.rc_number or '')
-            ws.cell(row=row_num, column=35, value=record.vendor_id or '')
-            ws.cell(row=row_num, column=36, value=record.vendor_name or '')
-            ws.cell(row=row_num, column=37, value=record.vendor_phone or '')
-            ws.cell(row=row_num, column=38, value=record.reason or '')
+        # --- Group bookings by route and populate data ---
+        from itertools import groupby
+        from openpyxl.styles import Alignment
+        
+        # Sort results by route_id to group them
+        sorted_results = sorted(results, key=lambda r: (r.route_id if r.route_id else 0))
+        
+        row_num = 2
+        current_route_start_row = None
+        current_route_id = None
+        route_cell_ranges = []  # Track which cells need to be merged
+        
+        for route_id, group_records in groupby(sorted_results, key=lambda r: r.route_id):
+            group_list = list(group_records)
+            route_record_start = row_num
+            
+            # Store route details from first booking in group (route details are same for all bookings in route)
+            first_record = group_list[0]
+            
+            for booking_index, record in enumerate(group_list):
+                # Booking-specific columns (non-merged)
+                ws.cell(row=row_num, column=1, value=record.booking_id)
+                ws.cell(row=row_num, column=2, value=record.booking_date.strftime('%Y-%m-%d') if record.booking_date else '')
+                ws.cell(row=row_num, column=3, value=record.booking_status.value if record.booking_status else '')
+                ws.cell(row=row_num, column=4, value=record.employee_id)
+                ws.cell(row=row_num, column=5, value=record.employee_code or '')
+                ws.cell(row=row_num, column=6, value=record.employee_name or '')
+                ws.cell(row=row_num, column=7, value=record.employee_phone or '')
+                ws.cell(row=row_num, column=8, value=record.employee_gender.value if record.employee_gender else '')
+                ws.cell(row=row_num, column=9, value=record.shift_id)
+                ws.cell(row=row_num, column=10, value=record.shift_code or '')
+                ws.cell(row=row_num, column=11, value=str(record.shift_time) if record.shift_time else '')
+                ws.cell(row=row_num, column=12, value=record.shift_type.value if record.shift_type else '')
+                ws.cell(row=row_num, column=13, value=record.pickup_location or '')
+                ws.cell(row=row_num, column=14, value=record.pickup_latitude)
+                ws.cell(row=row_num, column=15, value=record.pickup_longitude)
+                ws.cell(row=row_num, column=16, value=record.drop_location or '')
+                ws.cell(row=row_num, column=17, value=record.drop_latitude)
+                ws.cell(row=row_num, column=18, value=record.drop_longitude)
+                
+                # Route-level columns (will be merged for same route)
+                ws.cell(row=row_num, column=19, value=record.route_id or '')
+                ws.cell(row=row_num, column=20, value=record.route_code or '')
+                ws.cell(row=row_num, column=21, value=record.route_status.value if record.route_status else '')
+                
+                # Booking stop-specific columns
+                ws.cell(row=row_num, column=22, value=record.order_id if record.order_id is not None else '')
+                ws.cell(row=row_num, column=23, value=str(record.estimated_pick_up_time) if record.estimated_pick_up_time else '')
+                ws.cell(row=row_num, column=24, value=str(record.estimated_drop_time) if record.estimated_drop_time else '')
+                ws.cell(row=row_num, column=25, value=str(record.actual_pick_up_time) if record.actual_pick_up_time else '')
+                ws.cell(row=row_num, column=26, value=str(record.actual_drop_time) if record.actual_drop_time else '')
+                ws.cell(row=row_num, column=27, value=record.estimated_distance)
+                
+                # Route-level columns
+                ws.cell(row=row_num, column=28, value=float(record.actual_total_distance) if record.actual_total_distance is not None else '')
+                
+                # Driver and vehicle columns (route-level)
+                ws.cell(row=row_num, column=29, value=record.driver_id or '')
+                ws.cell(row=row_num, column=30, value=record.driver_name or '')
+                ws.cell(row=row_num, column=31, value=record.driver_phone or '')
+                ws.cell(row=row_num, column=32, value=record.license_number or '')
+                ws.cell(row=row_num, column=33, value=record.vehicle_id or '')
+                ws.cell(row=row_num, column=34, value=record.rc_number or '')
+                ws.cell(row=row_num, column=35, value=record.vehicle_type_name or '')
+                
+                # Vendor and Escort columns (route-level)
+                ws.cell(row=row_num, column=36, value=record.vendor_id or '')
+                ws.cell(row=row_num, column=37, value=record.vendor_name or '')
+                ws.cell(row=row_num, column=38, value=record.vendor_phone or '')
+                ws.cell(row=row_num, column=39, value=record.escort_id or '')
+                ws.cell(row=row_num, column=40, value=record.escort_name or '')
+                ws.cell(row=row_num, column=41, value=record.escort_phone or '')
+                ws.cell(row=row_num, column=42, value=record.escort_gender or '')
+                
+                ws.cell(row=row_num, column=43, value=record.reason or '')
+                
+                row_num += 1
+            
+            # Merge route-level columns (columns 19-21, 28-29, 33-42) if multiple bookings in same route
+            if len(group_list) > 1:
+                route_record_end = row_num - 1
+                
+                # Merge route ID, route code, route status columns
+                for col in [19, 20, 21]:
+                    ws.merge_cells(f'{openpyxl.utils.get_column_letter(col)}{route_record_start}:{openpyxl.utils.get_column_letter(col)}{route_record_end}')
+                
+                # Merge actual total distance, driver, vehicle columns
+                for col in [28, 29, 30, 31, 32, 33, 34, 35]:
+                    ws.merge_cells(f'{openpyxl.utils.get_column_letter(col)}{route_record_start}:{openpyxl.utils.get_column_letter(col)}{route_record_end}')
+                
+                # Merge vendor and escort columns
+                for col in [36, 37, 38, 39, 40, 41, 42]:
+                    ws.merge_cells(f'{openpyxl.utils.get_column_letter(col)}{route_record_start}:{openpyxl.utils.get_column_letter(col)}{route_record_end}')
+                
+                # Center-align merged cells
+                for col in [19, 20, 21, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42]:
+                    merged_cell = ws[f'{openpyxl.utils.get_column_letter(col)}{route_record_start}']
+                    merged_cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
         # --- Create Summary Sheet ---
         summary_ws = wb.create_sheet(title="Summary")
