@@ -13,8 +13,8 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from app.database.session import get_db
 from app.core.logging_config import get_logger
-from app.utils.response_wrapper import ResponseWrapper
-from app.middleware.admin_auth import AdminAuth  # You'll need to create this or use existing auth
+from app.utils.response_utils import ResponseWrapper
+from common_utils.auth.permission_checker import PermissionChecker
 from datetime import datetime
 
 logger = get_logger(__name__)
