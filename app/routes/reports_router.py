@@ -590,11 +590,7 @@ async def export_bookings_report(
             "Shift Time",
             "Shift Type",
             "Pickup Location",
-            "Pickup Latitude",
-            "Pickup Longitude",
             "Drop Location",
-            "Drop Latitude",
-            "Drop Longitude",
             "Route Status",
             "Stop Order",
             "Estimated Pickup Time",
@@ -645,29 +641,25 @@ async def export_bookings_report(
                 ws.cell(row=row_num, column=11, value=str(record.shift_time) if record.shift_time else '')
                 ws.cell(row=row_num, column=12, value=record.shift_type.value if record.shift_type else '')
                 ws.cell(row=row_num, column=13, value=record.pickup_location or '')
-                ws.cell(row=row_num, column=14, value=record.pickup_latitude)
-                ws.cell(row=row_num, column=15, value=record.pickup_longitude)
-                ws.cell(row=row_num, column=16, value=record.drop_location or '')
-                ws.cell(row=row_num, column=17, value=record.drop_latitude)
-                ws.cell(row=row_num, column=18, value=record.drop_longitude)
-                ws.cell(row=row_num, column=19, value=record.route_status.value if record.route_status else '')
-                ws.cell(row=row_num, column=20, value=record.order_id if record.order_id is not None else '')
-                ws.cell(row=row_num, column=21, value=str(record.estimated_pick_up_time) if record.estimated_pick_up_time else '')
-                ws.cell(row=row_num, column=22, value=str(record.estimated_drop_time) if record.estimated_drop_time else '')
-                ws.cell(row=row_num, column=23, value=str(record.actual_pick_up_time) if record.actual_pick_up_time else '')
-                ws.cell(row=row_num, column=24, value=str(record.actual_drop_time) if record.actual_drop_time else '')
-                ws.cell(row=row_num, column=25, value=record.estimated_distance)
-                ws.cell(row=row_num, column=26, value=float(record.actual_total_distance) if record.actual_total_distance is not None else '')
-                ws.cell(row=row_num, column=27, value=record.driver_name or '')
-                ws.cell(row=row_num, column=28, value=record.driver_phone or '')
-                ws.cell(row=row_num, column=29, value=record.rc_number or '')
-                ws.cell(row=row_num, column=30, value=record.vehicle_type_name or '')
-                ws.cell(row=row_num, column=31, value=record.vendor_name or '')
-                ws.cell(row=row_num, column=32, value=record.vendor_phone or '')
-                ws.cell(row=row_num, column=33, value=record.escort_name or '')
-                ws.cell(row=row_num, column=34, value=record.escort_phone or '')
-                ws.cell(row=row_num, column=35, value=record.escort_gender or '')
-                ws.cell(row=row_num, column=36, value=record.reason or '')
+                ws.cell(row=row_num, column=14, value=record.drop_location or '')
+                ws.cell(row=row_num, column=15, value=record.route_status.value if record.route_status else '')
+                ws.cell(row=row_num, column=16, value=record.order_id if record.order_id is not None else '')
+                ws.cell(row=row_num, column=17, value=str(record.estimated_pick_up_time) if record.estimated_pick_up_time else '')
+                ws.cell(row=row_num, column=18, value=str(record.estimated_drop_time) if record.estimated_drop_time else '')
+                ws.cell(row=row_num, column=19, value=str(record.actual_pick_up_time) if record.actual_pick_up_time else '')
+                ws.cell(row=row_num, column=20, value=str(record.actual_drop_time) if record.actual_drop_time else '')
+                ws.cell(row=row_num, column=21, value=record.estimated_distance)
+                ws.cell(row=row_num, column=22, value=float(record.actual_total_distance) if record.actual_total_distance is not None else '')
+                ws.cell(row=row_num, column=23, value=record.driver_name or '')
+                ws.cell(row=row_num, column=24, value=record.driver_phone or '')
+                ws.cell(row=row_num, column=25, value=record.rc_number or '')
+                ws.cell(row=row_num, column=26, value=record.vehicle_type_name or '')
+                ws.cell(row=row_num, column=27, value=record.vendor_name or '')
+                ws.cell(row=row_num, column=28, value=record.vendor_phone or '')
+                ws.cell(row=row_num, column=29, value=record.escort_name or '')
+                ws.cell(row=row_num, column=30, value=record.escort_phone or '')
+                ws.cell(row=row_num, column=31, value=record.escort_gender or '')
+                ws.cell(row=row_num, column=32, value=record.reason or '')
 
                 row_num += 1
 
@@ -675,7 +667,7 @@ async def export_bookings_report(
 
             # Merge route-level columns for same route (except unrouted records)
             if len(group_list) > 1 and group_list[0].route_id is not None:
-                merge_cols = [1, 19, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+                merge_cols = [1, 15, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
                 for col in merge_cols:
                     ws.merge_cells(
                         f'{get_column_letter(col)}{route_record_start}:{get_column_letter(col)}{route_record_end}'
