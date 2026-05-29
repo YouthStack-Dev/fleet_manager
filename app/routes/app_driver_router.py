@@ -518,13 +518,14 @@ async def start_duty(
         logger.info(f"[driver.start_duty] Duty started for route {route_id} by driver {driver_id}")
 
         # --- Initialize Firebase node for real-time tracking ---
+        driver_obj = db.query(Driver).filter(Driver.driver_id == route.assigned_driver_id).first() if route.assigned_driver_id else None
         background_tasks.add_task(
             _initialize_firebase_node_bg,
             tenant_id = tenant_id,
             vendor_id = ctx.get("vendor_id"),
             driver_id = driver_id,
-            driver_name = route.driver.name if route.driver else "Unknown",
-            driver_code = route.driver.code if route.driver else "N/A",
+            driver_name = driver_obj.name if driver_obj else "Unknown",
+            driver_code = driver_obj.code if driver_obj else "N/A",
             route_id = route.route_id,
             route_code = route.route_code,
         )
@@ -1699,6 +1700,7 @@ async def update_driver_location(
         db.commit()
 
         # --- Push latest position to Firebase RTDB (best-effort, non-blocking) ---
+        driver_obj = db.query(Driver).filter(Driver.driver_id == route.assigned_driver_id).first() if route.assigned_driver_id else None
         background_tasks.add_task(
             _push_location_to_firebase_bg,
             tenant_id  = tenant_id,
@@ -1707,8 +1709,8 @@ async def update_driver_location(
             latitude   = latitude,
             longitude  = longitude,
             speed      = speed,
-            driver_name = route.driver.name if route.driver else None,
-            driver_code = route.driver.code if route.driver else None,
+            driver_name = driver_obj.name if driver_obj else None,
+            driver_code = driver_obj.code if driver_obj else None,
             route_id   = route.route_id,
             route_code = route.route_code,
         )
