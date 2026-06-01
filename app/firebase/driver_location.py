@@ -27,27 +27,25 @@ def push_driver_location_to_firebase(
     driver_code: str = None,
     driver_name: str = None,
     route_id: int = None,
-    route_code: str = None,
 ):
     """
     Update driver location data in Firebase with auto-recovery.
     
     Enhanced features:
     - Automatically recovers missing/deleted nodes
-    - Updates complete metadata (location + speed + route info)
+    - Updates complete metadata (location + speed + driver info)
     - Safe-checks: ensures firebase_admin is initialized
     
     Args:
         tenant_id: Tenant identifier
         vendor_id: Vendor ID
-        driver_id: Driver ID
+        driver_id: Driver ID (stored as int in Firebase)
         latitude: Current latitude
         longitude: Current longitude
         speed: Current speed in km/h (optional)
         driver_code: Driver code (for recovery)
         driver_name: Driver name (for recovery)
         route_id: Current route ID (for recovery)
-        route_code: Current route code (for recovery)
     """
 
     ref_path = f"drivers/{tenant_id}/{vendor_id}/{driver_id}"
@@ -73,7 +71,7 @@ def push_driver_location_to_firebase(
                 "[firebase.push] Node missing at %s — initializing before update",
                 ref_path
             )
-            if driver_name and driver_code and route_id and route_code:
+            if driver_name and driver_code and route_id:
                 initialize_driver_node_on_duty_start(
                     tenant_id=tenant_id,
                     vendor_id=vendor_id,
@@ -81,7 +79,6 @@ def push_driver_location_to_firebase(
                     driver_name=driver_name,
                     driver_code=driver_code,
                     route_id=route_id,
-                    route_code=route_code,
                     initial_latitude=latitude,
                     initial_longitude=longitude,
                 )
@@ -97,8 +94,9 @@ def push_driver_location_to_firebase(
                 )
         
         # Prepare location update data
+        # driver_id cast to int: JWT encodes all claims as strings, we always want int in Firebase
         location_data = {
-            "driver_id": driver_id,
+            "driver_id": int(driver_id),
             "latitude": latitude,
             "longitude": longitude,
             "updated_at": datetime.utcnow().isoformat()
@@ -115,8 +113,6 @@ def push_driver_location_to_firebase(
             location_data["driver_code"] = driver_code
         if route_id:
             location_data["route_id"] = route_id
-        if route_code:
-            location_data["route_code"] = route_code
         
         # Ensure is_active flag is set
         location_data["is_active"] = True
@@ -199,7 +195,6 @@ def initialize_driver_node_on_duty_start(
     driver_name: str,
     driver_code: str,
     route_id: int,
-    route_code: str,
     initial_latitude: Optional[float] = None,
     initial_longitude: Optional[float] = None,
 ):
@@ -208,7 +203,7 @@ def initialize_driver_node_on_duty_start(
     
     Creates a complete driver node with all metadata:
     - Driver info (id, name, code)
-    - Route info (id, code)
+    - Route info (id)
     - Initial location (if available)
     - Status flags (is_active, created_at)
     
@@ -218,11 +213,10 @@ def initialize_driver_node_on_duty_start(
     Args:
         tenant_id: Tenant identifier
         vendor_id: Vendor ID
-        driver_id: Driver ID
+        driver_id: Driver ID (stored as int in Firebase)
         driver_name: Driver full name
         driver_code: Driver unique code
         route_id: Assigned route ID
-        route_code: Route code
         initial_latitude: Optional initial latitude
         initial_longitude: Optional initial longitude
     """
@@ -242,12 +236,12 @@ def initialize_driver_node_on_duty_start(
         now = datetime.utcnow().isoformat()
         
         # Complete node structure with all metadata
+        # driver_id cast to int: JWT encodes all claims as strings, we always want int in Firebase
         node_data = {
-            "driver_id": driver_id,
+            "driver_id": int(driver_id),
             "driver_name": driver_name,
             "driver_code": driver_code,
             "route_id": route_id,
-            "route_code": route_code,
             "is_active": True,
             "created_at": now,
             "updated_at": now,
@@ -290,7 +284,6 @@ def ensure_driver_node_exists(
     driver_name: str,
     driver_code: str,
     route_id: int,
-    route_code: str,
 ) -> bool:
     """
     Auto-recovery: Ensures driver node exists in Firebase.
@@ -331,7 +324,6 @@ def ensure_driver_node_exists(
                 driver_name=driver_name,
                 driver_code=driver_code,
                 route_id=route_id,
-                route_code=route_code,
             )
             return True
         
@@ -345,7 +337,6 @@ def ensure_driver_node_exists(
                 "driver_name": driver_name,
                 "driver_code": driver_code,
                 "route_id": route_id,
-                "route_code": route_code,
                 "is_active": True,
                 "updated_at": datetime.utcnow().isoformat(),
             })
@@ -423,7 +414,6 @@ def sync_all_active_drivers_to_firebase(db_session):
                     driver_name=driver.name,
                     driver_code=driver.code,
                     route_id=route.route_id,
-                    route_code=route.route_code,
                     initial_latitude=latest_location.latitude if latest_location else None,
                     initial_longitude=latest_location.longitude if latest_location else None,
                 )
