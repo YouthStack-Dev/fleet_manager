@@ -527,7 +527,6 @@ async def start_duty(
             driver_name = driver_obj.name if driver_obj else "Unknown",
             driver_code = driver_obj.code if driver_obj else "N/A",
             route_id = route.route_id,
-            route_code = route.route_code,
         )
 
         # Send notifications to all employees on this route
@@ -1712,7 +1711,6 @@ async def update_driver_location(
             driver_name = driver_obj.name if driver_obj else None,
             driver_code = driver_obj.code if driver_obj else None,
             route_id   = route.route_id,
-            route_code = route.route_code,
         )
 
         # --- IMP-7: Geofence arrival check (non-blocking) ---
@@ -1780,7 +1778,6 @@ def _push_location_to_firebase_bg(
     driver_name: str = None,
     driver_code: str = None,
     route_id: int = None,
-    route_code: str = None,
 ) -> None:
     """
     Background task wrapper for Firebase location push.
@@ -1798,7 +1795,6 @@ def _push_location_to_firebase_bg(
             driver_name = driver_name,
             driver_code = driver_code,
             route_id  = route_id,
-            route_code = route_code,
         )
     except Exception as exc:
         logger.exception(
@@ -1814,7 +1810,6 @@ def _initialize_firebase_node_bg(
     driver_name: str,
     driver_code: str,
     route_id: int,
-    route_code: str,
 ) -> None:
     """
     Background task wrapper for Firebase node initialization on duty start.
@@ -1829,7 +1824,7 @@ def _initialize_firebase_node_bg(
             driver_name = driver_name,
             driver_code = driver_code,
             route_id = route_id,
-            route_code = route_code,
+        )
         )
     except Exception as exc:
         logger.exception(
