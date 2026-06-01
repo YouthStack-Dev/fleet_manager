@@ -378,7 +378,6 @@ def sync_all_active_drivers_to_firebase(db_session):
             db_session.query(RouteManagement)
             .join(Driver, RouteManagement.assigned_driver_id == Driver.driver_id)
             .filter(RouteManagement.status == RouteManagementStatusEnum.ONGOING)
-            .options(joinedload(RouteManagement.driver))
             .all()
         )
         
