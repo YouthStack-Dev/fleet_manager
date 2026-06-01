@@ -1825,7 +1825,7 @@ def _initialize_firebase_node_bg(
             driver_code = driver_code,
             route_id = route_id,
         )
-        )
+        
     except Exception as exc:
         logger.exception(
             "[driver.start_duty] Firebase node initialization failed for driver %s: %s",
