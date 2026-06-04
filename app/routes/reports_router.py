@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
 from typing import Optional, List
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from io import BytesIO
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -270,14 +270,26 @@ async def list_bookings_report(
 
         # --- Serialise rows ---
         def _fmt_time(t):
-            """Convert time/timedelta stored in DB to HH:MM string, or return as-is."""
+            """Convert DB time value to HH:MM format."""
+
             if t is None:
                 return None
-            if hasattr(t, "strftime"):
+
+            # Your RouteManagementBooking fields are String(10)
+            if isinstance(t, str):
+                return t[:5] if len(t) >= 5 else t
+
+            # datetime.time
+            if isinstance(t, time):
                 return t.strftime("%H:%M")
-            # timedelta (common for TIME columns in some drivers)
-            total_secs = int(t.total_seconds())
-            return f"{total_secs // 3600:02d}:{(total_secs % 3600) // 60:02d}"
+
+            # timedelta
+            if isinstance(t, timedelta):
+                total_secs = int(t.total_seconds())
+                return f"{total_secs // 3600:02d}:{(total_secs % 3600) // 60:02d}"
+
+            # fallback
+            return str(t)
 
         bookings = []
         for r in results:
