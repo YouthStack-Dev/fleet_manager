@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status as http_status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, func
+from sqlalchemy import and_, case, or_, func
 from typing import Optional, List
 from datetime import date, datetime, time, timedelta
 from io import BytesIO
@@ -920,19 +920,39 @@ async def get_bookings_analytics(
         assignment_daily_breakdown = (
             db.query(
                 Booking.booking_date,
+
                 func.count(
                     func.distinct(
-                        Booking.booking_id
-                    ).filter(RouteManagement.assigned_vendor_id.isnot(None))
+                        case(
+                            (
+                                RouteManagement.assigned_vendor_id.isnot(None),
+                                Booking.booking_id,
+                            ),
+                            else_=None,
+                        )
+                    )
                 ).label("vendor_assigned_count"),
+
                 func.count(
                     func.distinct(
-                        Booking.booking_id
-                    ).filter(RouteManagement.assigned_driver_id.isnot(None))
+                        case(
+                            (
+                                RouteManagement.assigned_driver_id.isnot(None),
+                                Booking.booking_id,
+                            ),
+                            else_=None,
+                        )
+                    )
                 ).label("driver_assigned_count"),
             )
-            .join(RouteManagementBooking, Booking.booking_id == RouteManagementBooking.booking_id)
-            .join(RouteManagement, RouteManagementBooking.route_id == RouteManagement.route_id)
+            .join(
+                RouteManagementBooking,
+                Booking.booking_id == RouteManagementBooking.booking_id,
+            )
+            .join(
+                RouteManagement,
+                RouteManagementBooking.route_id == RouteManagement.route_id,
+            )
             .filter(
                 RouteManagement.tenant_id == tenant_id,
                 Booking.booking_date >= start_date,
@@ -941,6 +961,7 @@ async def get_bookings_analytics(
             .group_by(Booking.booking_date)
             .all()
         )
+
         for booking_date, vendor_count, driver_count in assignment_daily_breakdown:
             date_str = booking_date.strftime('%Y-%m-%d')
             if date_str not in daily_data:
