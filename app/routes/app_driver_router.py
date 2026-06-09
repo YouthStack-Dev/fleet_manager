@@ -35,7 +35,7 @@ from typing import Optional, List
 from datetime import date, datetime, timedelta
 
 from app.core.logging_config import get_logger
-from app.database.session import get_db
+from app.database.session import SessionLocal, get_db
 from app.models.employee import Employee
 from app.models.shift import Shift, PickupTypeEnum
 from app.models.nodal_point import NodalPoint
@@ -1615,7 +1615,6 @@ async def verify_drop_and_complete_route(
         # Send drop completion notification to employee
         background_tasks.add_task(
             send_drop_completion_notification,
-            db=db,
             booking_id=booking_id,
             route_id=route_id
         )
@@ -2369,10 +2368,11 @@ def send_no_show_notification(db: Session, booking_id: int, reason: str):
         logger.exception(f"[notify.no_show] Error: {str(e)}")
 
 
-def send_drop_completion_notification(db: Session, booking_id: int, route_id: int):
+def send_drop_completion_notification(booking_id: int, route_id: int):
     """
     Send notification to employee when successfully dropped off.
     """
+    db = SessionLocal()
     try:
         logger.info(f"[notify.drop] Sending notification for booking {booking_id}")
         
@@ -2464,6 +2464,8 @@ def send_drop_completion_notification(db: Session, booking_id: int, route_id: in
         
     except Exception as e:
         logger.exception(f"[notify.drop] Error: {str(e)}")
+    finally:
+        db.close()
 
 
 def send_dark_hour_block_notification(
