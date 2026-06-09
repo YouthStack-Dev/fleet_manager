@@ -519,6 +519,15 @@ async def start_duty(
 
         # --- Initialize Firebase node for real-time tracking ---
         driver_obj = db.query(Driver).filter(Driver.driver_id == route.assigned_driver_id).first() if route.assigned_driver_id else None
+
+        vehicle_rc_number = None
+        vehicle_type = None
+        if route.assigned_vehicle_id:
+            vehicle = db.query(Vehicle).filter(Vehicle.vehicle_id == route.assigned_vehicle_id).first()
+            if vehicle:
+                vehicle_rc_number = vehicle.rc_number
+                vehicle_type = vehicle.vehicle_type_name
+
         background_tasks.add_task(
             _initialize_firebase_node_bg,
             tenant_id = tenant_id,
@@ -527,6 +536,8 @@ async def start_duty(
             driver_name = driver_obj.name if driver_obj else "Unknown",
             driver_code = driver_obj.code if driver_obj else "N/A",
             route_id = route.route_id,
+            vehicle_rc_number = vehicle_rc_number,
+            vehicle_type = vehicle_type,
         )
 
         # Send notifications to all employees on this route
@@ -1810,6 +1821,8 @@ def _initialize_firebase_node_bg(
     driver_name: str,
     driver_code: str,
     route_id: int,
+    vehicle_rc_number: Optional[str] = None,
+    vehicle_type: Optional[str] = None,
 ) -> None:
     """
     Background task wrapper for Firebase node initialization on duty start.
@@ -1824,6 +1837,8 @@ def _initialize_firebase_node_bg(
             driver_name = driver_name,
             driver_code = driver_code,
             route_id = route_id,
+            vehicle_rc_number = vehicle_rc_number,
+            vehicle_type = vehicle_type,
         )
         
     except Exception as exc:
