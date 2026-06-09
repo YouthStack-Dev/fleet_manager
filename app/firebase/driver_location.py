@@ -197,6 +197,8 @@ def initialize_driver_node_on_duty_start(
     route_id: int,
     initial_latitude: Optional[float] = None,
     initial_longitude: Optional[float] = None,
+    vehicle_rc_number: Optional[str] = None,
+    vehicle_type: Optional[str] = None,
 ):
     """
     Initialize Firebase node when driver starts duty.
@@ -204,6 +206,7 @@ def initialize_driver_node_on_duty_start(
     Creates a complete driver node with all metadata:
     - Driver info (id, name, code)
     - Route info (id)
+    - Vehicle info (rc_number, type)
     - Initial location (if available)
     - Status flags (is_active, created_at)
     
@@ -219,6 +222,8 @@ def initialize_driver_node_on_duty_start(
         route_id: Assigned route ID
         initial_latitude: Optional initial latitude
         initial_longitude: Optional initial longitude
+        vehicle_rc_number: Optional vehicle registration number
+        vehicle_type: Optional vehicle type name (e.g. Sedan, SUV)
     """
     ref_path = f"drivers/{tenant_id}/{vendor_id}/{driver_id}"
     
@@ -246,6 +251,12 @@ def initialize_driver_node_on_duty_start(
             "created_at": now,
             "updated_at": now,
         }
+        
+        # Add vehicle info if available
+        if vehicle_rc_number is not None:
+            node_data["vehicle_rc_number"] = vehicle_rc_number
+        if vehicle_type is not None:
+            node_data["vehicle_type"] = vehicle_type
         
         # Add initial location if available
         if initial_latitude is not None and initial_longitude is not None:
