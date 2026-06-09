@@ -27,15 +27,28 @@ class MetricsAuthMiddleware(BaseHTTPMiddleware):
     in edge-case startup orderings.
     """
 
+    async def _call_next(self, request: Request, call_next: callable) -> Response:
+        try:
+            return await call_next(request)
+        except RuntimeError as exc:
+            if str(exc) == "No response returned." and await request.is_disconnected():
+                logger.debug(
+                    "Client disconnected before response was returned: %s %s",
+                    request.method,
+                    request.url.path,
+                )
+                return Response(status_code=204)
+            raise
+
     async def dispatch(self, request: Request, call_next: callable) -> Response:
         if request.url.path != _METRICS_PATH:
-            return await call_next(request)
+            return await self._call_next(request, call_next)
 
         from app.config import settings  # local import avoids circular deps at module level
 
         # If no credentials are configured, allow the request through.
         if not settings.METRICS_USER or not settings.METRICS_PASSWORD:
-            return await call_next(request)
+            return await self._call_next(request, call_next)
 
         # Validate Basic Auth header.
         auth_header = request.headers.get("Authorization", "")
@@ -44,7 +57,7 @@ class MetricsAuthMiddleware(BaseHTTPMiddleware):
                 decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
                 username, _, password = decoded.partition(":")
                 if username == settings.METRICS_USER and password == settings.METRICS_PASSWORD:
-                    return await call_next(request)
+                    return await self._call_next(request, call_next)
             except Exception:
                 pass  # fall through to 401
 
