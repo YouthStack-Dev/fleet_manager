@@ -1984,7 +1984,7 @@ async def end_duty(
         tenant_id = ctx["tenant_id"]
         driver_id = ctx["driver_id"]
         vendor_id = ctx.get("vendor_id")
-        now = get_current_ist_time()
+        now = get_current_ist_time().replace(tzinfo=None)
 
         logger.info(f"[driver.end_duty] tenant={tenant_id}, driver={driver_id}, route={route_id}")
         route = validate_route_for_driver(db, route_id, driver_id, tenant_id)
