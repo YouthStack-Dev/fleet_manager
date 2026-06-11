@@ -32,6 +32,7 @@ class PermissionUpdate(BaseModel):
 
 class PermissionResponse(PermissionBase):
     permission_id: int
+    action: str
     created_at: datetime
     updated_at: datetime
 
