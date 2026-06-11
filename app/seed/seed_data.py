@@ -150,6 +150,11 @@ def seed_iam(db: Session):
         "policy_package",
         "nodal_point",
         "speed_violation",
+        "cost_center",
+        "costing_rate_card",
+        "route_cost",
+        "route_expense",
+        "route_cost.report",
     ]
 
     actions = ["create", "read", "update", "delete"]
@@ -159,6 +164,10 @@ def seed_iam(db: Session):
     module_actions_override = {
         "alert":          ["create", "read", "respond", "close", "escalate", "update", "delete"],
         "tenant_config":  ["create", "read", "update", "delete", "escort"],
+        "costing_rate_card": ["create", "read", "update", "delete", "approve"],
+        "route_cost":     ["calculate", "read", "update", "submit", "approve", "finalize"],
+        "route_expense":  ["create", "read", "update", "submit", "approve"],
+        "route_cost.report": ["read"],
     }
 
     permissions_map = {}
@@ -247,6 +256,11 @@ def seed_iam(db: Session):
             "RouteVendorAssignmentPolicy",
             "RouteVehicleAssignmentPolicy",
             "AlertPolicy",
+            "Cost_centerPolicy",
+            "Costing_rate_cardPolicy",
+            "Route_costPolicy",
+            "Route_expensePolicy",
+            "Route_costreportPolicy",
         ],
         "Driver": ["AppdriverPolicy"],
         "VendorAdmin": [
@@ -262,6 +276,8 @@ def seed_iam(db: Session):
             "PolicyPolicy",
             "RolePolicy",
             "AlertPolicy",
+            "Route_expensePolicy",
+            "Route_costreportPolicy",
         ],
     }
 

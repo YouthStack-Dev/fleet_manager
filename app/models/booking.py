@@ -34,6 +34,7 @@ class Booking(Base):
     employee_code = Column(String(50), nullable=False)
     shift_id = Column(Integer, ForeignKey("shifts.shift_id", ondelete="CASCADE"), nullable=True)
     team_id = Column(Integer, ForeignKey("teams.team_id", ondelete="SET NULL"), nullable=True)  
+    cost_center_id = Column(Integer, ForeignKey("cost_centers.cost_center_id", ondelete="SET NULL"), nullable=True, index=True)
     boarding_otp = Column(Integer, nullable=True)
     deboarding_otp = Column(Integer, nullable=True)
 
