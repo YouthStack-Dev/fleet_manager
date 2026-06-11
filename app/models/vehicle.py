@@ -18,6 +18,7 @@ class Vehicle(Base):
 
     vehicle_id = Column(Integer, primary_key=True, index=True)
     vehicle_type_id = Column(Integer, ForeignKey("vehicle_types.vehicle_type_id", ondelete="CASCADE"), nullable=False)
+    contract_id = Column(Integer, ForeignKey("contracts.contract_id", ondelete="SET NULL"), nullable=True)
     vendor_id = Column(Integer, ForeignKey("vendors.vendor_id", ondelete="CASCADE"), nullable=False)
     driver_id = Column(Integer, ForeignKey("drivers.driver_id", ondelete="SET NULL"))
 
@@ -56,6 +57,7 @@ class Vehicle(Base):
 
     # Relationships
     vehicle_type = relationship("app.models.vehicle_type.VehicleType", back_populates="vehicles")
+    contract = relationship("Contract", back_populates="vehicles")
     vendor = relationship("app.models.vendor.Vendor", back_populates="vehicles")
     driver = relationship("app.models.driver.Driver", back_populates="vehicles")
     reviews = relationship("RideReview", back_populates="vehicle", foreign_keys="RideReview.vehicle_id")

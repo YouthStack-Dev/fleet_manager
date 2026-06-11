@@ -33,6 +33,7 @@ from app.models.vehicle import Vehicle
 from app.models.vendor_user import VendorUser
 from app.models.vendor import Vendor
 from app.models.weekoff_config import WeekoffConfig
+from app.models.contract import Contract, ContractSlab
 
 # Import Alert models
 from app.models.alert import (

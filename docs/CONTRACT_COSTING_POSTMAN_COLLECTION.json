@@ -1,0 +1,306 @@
+{
+  "info": {
+    "name": "Fleet Manager - Contract Costing API",
+    "description": "Postman collection for Contract + Slab-Based Costing APIs. Import this file, set base_url/token/vendor_id/vehicle_type_id/vehicle_id/route_id variables, then run the requests in order.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8000" },
+    { "key": "token", "value": "PASTE_JWT_TOKEN_HERE" },
+    { "key": "vendor_id", "value": "1" },
+    { "key": "vehicle_type_id", "value": "2" },
+    { "key": "contract_id", "value": "" },
+    { "key": "slab_id", "value": "" },
+    { "key": "vehicle_id", "value": "15" },
+    { "key": "route_id", "value": "42" }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      { "key": "token", "value": "{{token}}", "type": "string" }
+    ]
+  },
+  "item": [
+    {
+      "name": "01 - Create Contract",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Contract created', function () { pm.response.to.have.status(201); });",
+              "const json = pm.response.json();",
+              "if (json.data && json.data.contract && json.data.contract.contract_id) {",
+              "  pm.collectionVariables.set('contract_id', json.data.contract.contract_id);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"vendor_id\": {{vendor_id}},\n  \"vehicle_type_id\": {{vehicle_type_id}},\n  \"contract_name\": \"Sedan City Contract\",\n  \"cost_center_id\": null,\n  \"is_active\": true\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/contracts/",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "contracts", ""]
+        }
+      }
+    },
+    {
+      "name": "02 - List Contracts",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/v1/contracts/?vendor_id={{vendor_id}}&active_only=true&vehicle_type_id={{vehicle_type_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "contracts", ""],
+          "query": [
+            { "key": "vendor_id", "value": "{{vendor_id}}" },
+            { "key": "active_only", "value": "true" },
+            { "key": "vehicle_type_id", "value": "{{vehicle_type_id}}" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "03 - Get Contract By ID",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/v1/contracts/{{contract_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "contracts", "{{contract_id}}"]
+        }
+      }
+    },
+    {
+      "name": "04 - Add Slab 0-10",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Slab created', function () { pm.response.to.have.status(201); });",
+              "const json = pm.response.json();",
+              "if (json.data && json.data.slab && json.data.slab.slab_id) {",
+              "  pm.collectionVariables.set('slab_id', json.data.slab.slab_id);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"min_km\": 0,\n  \"max_km\": 10,\n  \"rate\": 10,\n  \"is_active\": true\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/contracts/{{contract_id}}/slabs",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "contracts", "{{contract_id}}", "slabs"]
+        }
+      }
+    },
+    {
+      "name": "05 - Add Slab 10-20",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"min_km\": 10,\n  \"max_km\": 20,\n  \"rate\": 15,\n  \"is_active\": true\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/contracts/{{contract_id}}/slabs",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "contracts", "{{contract_id}}", "slabs"]
+        }
+      }
+    },
+    {
+      "name": "06 - Add Final Open-Ended Slab 20+",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"min_km\": 20,\n  \"max_km\": null,\n  \"rate\": 20,\n  \"is_active\": true\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/contracts/{{contract_id}}/slabs",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "contracts", "{{contract_id}}", "slabs"]
+        }
+      }
+    },
+    {
+      "name": "07 - Update Slab",
+      "request": {
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"min_km\": 0,\n  \"max_km\": 10,\n  \"rate\": 12,\n  \"is_active\": true\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/contracts/{{contract_id}}/slabs/{{slab_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "contracts", "{{contract_id}}", "slabs", "{{slab_id}}"]
+        }
+      }
+    },
+    {
+      "name": "08 - Assign Contract To Vehicle",
+      "request": {
+        "method": "PUT",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            { "key": "contract_id", "value": "{{contract_id}}", "type": "text" }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/vehicles/{{vehicle_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "vehicles", "{{vehicle_id}}"]
+        }
+      }
+    },
+    {
+      "name": "09 - Get Vehicle With Contract",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/v1/vehicles/{{vehicle_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "vehicles", "{{vehicle_id}}"]
+        }
+      }
+    },
+    {
+      "name": "10 - List Vendor Vehicle Contract Summary",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/v1/contracts/vendor/{{vendor_id}}/contract-summary?active_only=true",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "contracts", "vendor", "{{vendor_id}}", "contract-summary"],
+          "query": [
+            { "key": "active_only", "value": "true" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "11 - Calculate Route Cost",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/v1/contracts/calculate/{{route_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "contracts", "calculate", "{{route_id}}"]
+        }
+      }
+    },
+    {
+      "name": "12 - Update Contract",
+      "request": {
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contract_name\": \"Updated Sedan City Contract\",\n  \"cost_center_id\": null,\n  \"is_active\": true\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/contracts/{{contract_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "contracts", "{{contract_id}}"]
+        }
+      }
+    },
+    {
+      "name": "13 - Toggle Contract Status",
+      "request": {
+        "method": "PATCH",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/v1/contracts/{{contract_id}}/toggle-status",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "contracts", "{{contract_id}}", "toggle-status"]
+        }
+      }
+    },
+    {
+      "name": "14 - Clear Contract From Vehicle",
+      "request": {
+        "method": "PUT",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            { "key": "contract_id", "value": "0", "type": "text" }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/vehicles/{{vehicle_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "vehicles", "{{vehicle_id}}"]
+        }
+      }
+    },
+    {
+      "name": "15 - Delete Slab",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/v1/contracts/{{contract_id}}/slabs/{{slab_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "contracts", "{{contract_id}}", "slabs", "{{slab_id}}"]
+        }
+      }
+    },
+    {
+      "name": "16 - Delete Contract Soft",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/v1/contracts/{{contract_id}}?force=false",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "contracts", "{{contract_id}}"],
+          "query": [
+            { "key": "force", "value": "false" }
+          ]
+        }
+      }
+    }
+  ]
+}

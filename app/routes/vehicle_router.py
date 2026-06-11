@@ -16,6 +16,7 @@ from app.crud.vehicle_type import vehicle_type_crud
 from app.crud.driver import driver_crud
 from sqlalchemy.exc import SQLAlchemyError
 from app.models.vehicle import Vehicle
+from app.models.contract import Contract
 from app.schemas.vehicle import VehicleCreate, VehicleUpdate, VehicleResponse, VehiclePaginationResponse
 from app.utils.pagination import paginate_query
 from app.utils.response_utils import ResponseWrapper, handle_db_error, handle_http_error
@@ -33,6 +34,7 @@ router = APIRouter(prefix="/vehicles", tags=["vehicles"])
 async def create_vehicle(
     request: Request,
     vehicle_type_id: int = Form(...),
+    contract_id: int = Form(..., gt=0),
     vendor_id: Optional[int] = Form(None),
     rc_number: str = Form(...),
     driver_id: Optional[int] = Form(None),
@@ -175,6 +177,7 @@ async def create_vehicle(
         # --- Build the VehicleCreate schema ---
         vehicle_in = VehicleCreate(
             vehicle_type_id=vehicle_type_id,
+            contract_id=contract_id,
             vendor_id=vendor_id,
             rc_number=rc_number,
             driver_id=driver_id,
@@ -199,8 +202,8 @@ async def create_vehicle(
         db.commit()
         db.refresh(db_obj)
         
-        # Explicitly load vehicle_type relationship
-        db.refresh(db_obj, ["vehicle_type"])
+        # Explicitly load display relationships
+        db.refresh(db_obj, ["vehicle_type", "contract"])
 
         # 🔍 Audit Log: Vehicle Creation
         try:
@@ -208,6 +211,7 @@ async def create_vehicle(
                 "vehicle_id": db_obj.vehicle_id,
                 "rc_number": db_obj.rc_number,
                 "vehicle_type_id": db_obj.vehicle_type_id,
+                "contract_id": db_obj.contract_id,
                 "vendor_id": db_obj.vendor_id,
                 "driver_id": db_obj.driver_id,
                 "rc_expiry_date": str(db_obj.rc_expiry_date) if db_obj.rc_expiry_date else None,
@@ -264,7 +268,7 @@ def read_vehicle(
         token_vendor_id = user_data.get("vendor_id")
         token_tenant_id = user_data.get("tenant_id")
 
-        query = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type), joinedload(Vehicle.driver)).filter(Vehicle.vehicle_id == vehicle_id)
+        query = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type), joinedload(Vehicle.contract), joinedload(Vehicle.driver)).filter(Vehicle.vehicle_id == vehicle_id)
 
         if user_type == "vendor":
             query = query.filter(Vehicle.vendor_id == token_vendor_id)
@@ -332,7 +336,7 @@ def read_vehicles(
         token_vendor_id = user_data.get("vendor_id")
         token_tenant_id = user_data.get("tenant_id")
 
-        query = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type), joinedload(Vehicle.driver))
+        query = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type), joinedload(Vehicle.contract), joinedload(Vehicle.driver))
 
         if user_type == "vendor":
             vendor_id = token_vendor_id
@@ -397,6 +401,7 @@ async def update_vehicle(
     vehicle_id: int,
     request: Request,
     vehicle_type_id: Optional[int] = Form(None),
+    contract_id: Optional[int] = Form(None),
     vendor_id: Optional[int] = Form(None),
     rc_number: Optional[str] = Form(None),
     driver_id: Optional[int] = Form(None),
@@ -449,7 +454,7 @@ async def update_vehicle(
         )
 
         # --- Fetch vehicle ---
-        db_vehicle = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type), joinedload(Vehicle.driver)).filter(Vehicle.vehicle_id == vehicle_id).first()
+        db_vehicle = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type), joinedload(Vehicle.contract), joinedload(Vehicle.driver)).filter(Vehicle.vehicle_id == vehicle_id).first()
         if not db_vehicle:
             logger.warning(f"[VehicleUpdate] Vehicle ID={vehicle_id} not found")
             raise HTTPException(
@@ -516,6 +521,47 @@ async def update_vehicle(
                     detail=ResponseWrapper.error("Invalid vehicle_type_id for this vendor", "INVALID_VEHICLE_TYPE"),
                 )
 
+        contract_id_provided = contract_id is not None
+        normalized_contract_id = None
+        if contract_id_provided:
+            normalized_contract_id = None if contract_id in [0, "0"] else contract_id
+            if normalized_contract_id:
+                final_vehicle_type_id = vehicle_type_id or db_vehicle.vehicle_type_id
+                valid_contract = db.query(Contract).filter(Contract.contract_id == normalized_contract_id).first()
+                if not valid_contract:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=ResponseWrapper.error("Contract not found", "INVALID_CONTRACT"),
+                    )
+                if not valid_contract.is_active:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=ResponseWrapper.error("Contract is inactive", "CONTRACT_INACTIVE"),
+                    )
+                if valid_contract.vendor_id != vendor_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=ResponseWrapper.error("Contract does not belong to this vendor", "INVALID_CONTRACT_VENDOR"),
+                    )
+                if valid_contract.vehicle_type_id != final_vehicle_type_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=ResponseWrapper.error(
+                            "Contract does not match this vehicle type",
+                            "INVALID_CONTRACT_VEHICLE_TYPE",
+                        ),
+                    )
+        elif vehicle_type_id and db_vehicle.contract_id:
+            current_contract = db.query(Contract).filter(Contract.contract_id == db_vehicle.contract_id).first()
+            if current_contract and current_contract.vehicle_type_id != vehicle_type_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ResponseWrapper.error(
+                        "Current contract does not match the new vehicle type. Provide a matching contract_id or pass contract_id=0 to clear it.",
+                        "CONTRACT_VEHICLE_TYPE_MISMATCH",
+                    ),
+                )
+
         # --- Validate driver if provided ---
         if driver_id not in [None, 0, "0", ""]:
             # Check driver exists for this vendor
@@ -574,6 +620,7 @@ async def update_vehicle(
         # --- Update other fields ---
         update_fields = {
             "vehicle_type_id": vehicle_type_id,
+            "contract_id": normalized_contract_id if contract_id_provided else None,
             "rc_number": rc_number,
             "driver_id": driver_id,
             "rc_expiry_date": rc_expiry_date,
@@ -589,13 +636,14 @@ async def update_vehicle(
         # 🔍 Capture old values before update
         old_values = {}
         for key, value in update_fields.items():
-            if value is not None and key != "password":
+            should_update = value is not None or (key == "contract_id" and contract_id_provided)
+            if should_update and key != "password":
                 old_val = getattr(db_vehicle, key, None)
-                if old_val is not None:
-                    old_values[key] = str(old_val) if not isinstance(old_val, (str, int, float, bool)) else old_val
+                old_values[key] = str(old_val) if old_val is not None and not isinstance(old_val, (str, int, float, bool)) else old_val
         
         for key, value in update_fields.items():
-            if value is not None:
+            should_update = value is not None or (key == "contract_id" and contract_id_provided)
+            if should_update:
                 setattr(db_vehicle, key, value)
 
         db.commit()
@@ -604,14 +652,17 @@ async def update_vehicle(
         # 🔍 Capture new values after update
         new_values = {}
         for key, value in update_fields.items():
-            if value is not None and key != "password":
+            should_update = value is not None or (key == "contract_id" and contract_id_provided)
+            if should_update and key != "password":
                 new_val = getattr(db_vehicle, key, None)
-                if new_val is not None:
-                    new_values[key] = str(new_val) if not isinstance(new_val, (str, int, float, bool)) else new_val
+                new_values[key] = str(new_val) if new_val is not None and not isinstance(new_val, (str, int, float, bool)) else new_val
 
         # 🔍 Audit Log: Vehicle Update
         try:
-            changed_fields = [k for k, v in update_fields.items() if v is not None]
+            changed_fields = [
+                k for k, v in update_fields.items()
+                if v is not None or (k == "contract_id" and contract_id_provided)
+            ]
             fields_str = ", ".join(changed_fields) if changed_fields else "details"
             
             log_audit(
@@ -673,7 +724,7 @@ def update_vehicle_status(
         logger.info(f"[VehicleStatusUpdate] user_id={user_id}, vehicle_id={vehicle_id}, user_type={user_type}, set_active={is_active}")
 
         # --- Fetch vehicle ---
-        db_vehicle = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type), joinedload(Vehicle.driver)).filter(Vehicle.vehicle_id == vehicle_id).first()
+        db_vehicle = db.query(Vehicle).options(joinedload(Vehicle.vehicle_type), joinedload(Vehicle.contract), joinedload(Vehicle.driver)).filter(Vehicle.vehicle_id == vehicle_id).first()
         if not db_vehicle:
             logger.warning(f"[VehicleStatusUpdate] Vehicle ID={vehicle_id} not found")
             raise HTTPException(
