@@ -440,6 +440,27 @@ def seed_permissions(test_db):
             action="delete",
             description="Delete merge routes"
         ),
+        Permission(permission_id=41, module="cost_center", action="create", description="Create cost center"),
+        Permission(permission_id=42, module="cost_center", action="read", description="Read cost center"),
+        Permission(permission_id=43, module="cost_center", action="update", description="Update cost center"),
+        Permission(permission_id=44, module="cost_center", action="delete", description="Delete cost center"),
+        Permission(permission_id=45, module="costing_rate_card", action="create", description="Create costing rate card"),
+        Permission(permission_id=46, module="costing_rate_card", action="read", description="Read costing rate card"),
+        Permission(permission_id=47, module="costing_rate_card", action="update", description="Update costing rate card"),
+        Permission(permission_id=48, module="costing_rate_card", action="delete", description="Delete costing rate card"),
+        Permission(permission_id=49, module="costing_rate_card", action="approve", description="Approve costing rate card"),
+        Permission(permission_id=50, module="route_cost", action="calculate", description="Calculate route cost"),
+        Permission(permission_id=51, module="route_cost", action="read", description="Read route cost"),
+        Permission(permission_id=52, module="route_cost", action="update", description="Update route cost"),
+        Permission(permission_id=53, module="route_cost", action="submit", description="Submit route cost"),
+        Permission(permission_id=54, module="route_cost", action="approve", description="Approve route cost"),
+        Permission(permission_id=55, module="route_cost", action="finalize", description="Finalize route cost"),
+        Permission(permission_id=56, module="route_expense", action="create", description="Create route expense"),
+        Permission(permission_id=57, module="route_expense", action="read", description="Read route expense"),
+        Permission(permission_id=58, module="route_expense", action="update", description="Update route expense"),
+        Permission(permission_id=59, module="route_expense", action="submit", description="Submit route expense"),
+        Permission(permission_id=60, module="route_expense", action="approve", description="Approve route expense"),
+        Permission(permission_id=61, module="route_cost.report", action="read", description="Read route cost report"),
     ]
     
     for perm in permissions:
@@ -712,6 +733,11 @@ def admin_token(admin_user):
                 "escort.create", "escort.read", "escort.update", "escort.delete",
                 "tenant_config.read", "tenant_config.update", "tenant_config.escort",
                 "report.read",
+                "cost_center.create", "cost_center.read", "cost_center.update", "cost_center.delete",
+                "costing_rate_card.create", "costing_rate_card.read", "costing_rate_card.update", "costing_rate_card.delete", "costing_rate_card.approve",
+                "route_cost.calculate", "route_cost.read", "route_cost.update", "route_cost.submit", "route_cost.approve", "route_cost.finalize",
+                "route_expense.create", "route_expense.read", "route_expense.update", "route_expense.submit", "route_expense.approve",
+                "route_cost.report.read",
                 # Dict format permissions (for alert module)
                 {"module": "alert", "action": ["create", "read", "update", "delete", "respond", "close", "escalate"]}
             ]
@@ -748,6 +774,11 @@ def employee_token(employee_user):
                 "route_merge.create", "route_merge.read", "route_merge.update", "route_merge.delete",
                 "escort.create", "escort.read", "escort.update", "escort.delete",
                 "tenant_config.read", "tenant_config.update", "tenant_config.escort",
+                "cost_center.create", "cost_center.read", "cost_center.update", "cost_center.delete",
+                "costing_rate_card.create", "costing_rate_card.read", "costing_rate_card.update", "costing_rate_card.delete", "costing_rate_card.approve",
+                "route_cost.calculate", "route_cost.read", "route_cost.update", "route_cost.submit", "route_cost.approve", "route_cost.finalize",
+                "route_expense.create", "route_expense.read", "route_expense.update", "route_expense.submit", "route_expense.approve",
+                "route_cost.report.read",
                 "app-employee.read", "app-employee.write",
                 "employee_app.read", "employee_app.create",
                 # Dict format permissions (for alert module)

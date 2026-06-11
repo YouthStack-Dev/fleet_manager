@@ -16,6 +16,18 @@ from app.models.cutoff import Cutoff
 from app.models.audit_log import AuditLog
 from app.models.tenant_config import TenantConfig
 from app.models.escort import Escort
+from app.models.costing import (
+    CostCenter,
+    CostCenterAssignment,
+    GarageConfig,
+    RateCard,
+    RateCardSlot,
+    RouteCost,
+    RouteCostAllocation,
+    RouteBookingCost,
+    RouteCostLineItem,
+    RouteExpense,
+)
 
 # Speed violations
 from app.models.speed_violation import SpeedViolation
