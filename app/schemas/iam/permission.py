@@ -9,6 +9,7 @@ class ActionEnum(str, Enum):
     UPDATE = "update"
     DELETE = "delete"
     ALL = "*"
+    APPROVE = "approve"
     CLOSE = "close"
     RESPOND = "respond"
     ESCALATE = "escalate"
