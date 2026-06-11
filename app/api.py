@@ -24,8 +24,6 @@ from app.routes import (
     booking_router, grouping, route_management,
     # Nodal Points
     nodal_point_router,
-    # Cost centers & route costing
-    cost_center_router, costing_router,
     # Alerts
     alert_router, alert_config_router,
     # Notifications
@@ -96,10 +94,6 @@ api_router.include_router(route_management.router,   prefix=V1)
 
 # Nodal Points
 api_router.include_router(nodal_point_router,        prefix=V1)
-
-# Cost centers & route costing
-api_router.include_router(cost_center_router,        prefix=V1)
-api_router.include_router(costing_router,            prefix=V1)
 
 # Alerts — carry /api/v1/... prefix internally
 api_router.include_router(alert_router)

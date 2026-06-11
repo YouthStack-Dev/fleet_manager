@@ -36,10 +36,6 @@ from app.routes import route_management
 # ── Nodal Points ──────────────────────────────────────────────
 from app.routes.nodal_point_router import router as nodal_point_router
 
-# ── Cost centers & route costing ──────────────────────────────
-from app.routes.cost_center_router import router as cost_center_router
-from app.routes.costing_router import router as costing_router
-
 # ── Alerts (SOS) ──────────────────────────────────────────────
 from app.routes.alert_router import router as alert_router
 from app.routes.alert_config_router import router as alert_config_router
