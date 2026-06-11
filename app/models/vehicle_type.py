@@ -20,3 +20,4 @@ class VehicleType(Base):
     # Relationships
     vendor = relationship("Vendor", back_populates="vehicle_types")
     vehicles = relationship("Vehicle", back_populates="vehicle_type", cascade="all, delete-orphan")
+    contracts = relationship("Contract", back_populates="vehicle_type", cascade="all, delete-orphan")

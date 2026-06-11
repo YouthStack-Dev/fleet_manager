@@ -131,6 +131,7 @@ def seed_iam(db: Session):
         "admin_tenant",
         "vehicle",
         "vehicle_type",
+        "contract",
         "vendor",
         "vendor_user",
         "weekoff_config",
@@ -233,7 +234,7 @@ def seed_iam(db: Session):
         "SuperAdmin": list(policies_map.keys()),  # all policies
         "Admin": [
             p for p in policies_map.keys()
-            if p not in ["PermissionsPolicy", "PolicyPolicy", "RolePolicy"]
+            if p not in ["PermissionsPolicy", "PolicyPolicy", "RolePolicy", "ContractPolicy"]
         ],  # Includes AlertPolicy
         "Employee": [
             "BookingPolicy",

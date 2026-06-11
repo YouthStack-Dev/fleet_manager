@@ -6,6 +6,7 @@ from fastapi import HTTPException, status
 from app.models.vehicle import Vehicle
 from app.models.vehicle_type import VehicleType
 from app.models.driver import Driver
+from app.models.contract import Contract
 from app.schemas.vehicle import VehicleCreate, VehicleUpdate
 from app.utils.response_utils import ResponseWrapper, handle_db_error
 from app.crud.base import CRUDBase
@@ -53,7 +54,7 @@ class CRUDVehicle(CRUDBase[Vehicle, VehicleCreate, VehicleUpdate]):
     ) -> Vehicle:
         """Create a vehicle under a vendor with relationship validation and logging."""
         logger.info(
-            f"[VehicleCreate] Initiating vehicle creation | vendor_id={vendor_id}, vehicle_type_id={obj_in.vehicle_type_id}, driver_id={obj_in.driver_id}"
+            f"[VehicleCreate] Initiating vehicle creation | vendor_id={vendor_id}, vehicle_type_id={obj_in.vehicle_type_id}, driver_id={obj_in.driver_id}, contract_id={obj_in.contract_id}"
         )
 
         # ✅ Check if vehicle type exists
@@ -125,11 +126,21 @@ class CRUDVehicle(CRUDBase[Vehicle, VehicleCreate, VehicleUpdate]):
                     ),
                 )
 
+        contract_id = self._normalize_optional_id(getattr(obj_in, "contract_id", None))
+        if contract_id:
+            self._validate_contract_for_vehicle(
+                db,
+                vendor_id=vendor_id,
+                vehicle_type_id=obj_in.vehicle_type_id,
+                contract_id=contract_id,
+            )
+
 
         # ✅ Create vehicle record
         db_obj = Vehicle(
             vendor_id=vendor_id,
             vehicle_type_id=obj_in.vehicle_type_id, 
+            contract_id=contract_id,
             driver_id=driver_id,
             rc_number=obj_in.rc_number.strip(),
             rc_expiry_date=obj_in.rc_expiry_date,
@@ -194,6 +205,19 @@ class CRUDVehicle(CRUDBase[Vehicle, VehicleCreate, VehicleUpdate]):
         for field in protected_fields:
             update_data.pop(field, None)
 
+        if "contract_id" in update_data:
+            update_data["contract_id"] = self._normalize_optional_id(update_data.get("contract_id"))
+
+        final_vehicle_type_id = update_data.get("vehicle_type_id", db_obj.vehicle_type_id)
+        final_contract_id = update_data.get("contract_id", db_obj.contract_id)
+        if final_contract_id:
+            self._validate_contract_for_vehicle(
+                db,
+                vendor_id=db_obj.vendor_id,
+                vehicle_type_id=final_vehicle_type_id,
+                contract_id=final_contract_id,
+            )
+
         for field, value in update_data.items():
             setattr(db_obj, field, value)
 
@@ -208,6 +232,42 @@ class CRUDVehicle(CRUDBase[Vehicle, VehicleCreate, VehicleUpdate]):
                 ),
             )
         return db_obj
+
+    @staticmethod
+    def _normalize_optional_id(value):
+        if value in [0, "0", "", None]:
+            return None
+        return int(value)
+
+    @staticmethod
+    def _validate_contract_for_vehicle(
+        db: Session, *, vendor_id: int, vehicle_type_id: int, contract_id: int
+    ) -> Contract:
+        contract = db.query(Contract).filter(Contract.contract_id == contract_id).first()
+        if not contract:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error("Contract not found", "INVALID_CONTRACT"),
+            )
+        if not contract.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error("Contract is inactive", "CONTRACT_INACTIVE"),
+            )
+        if contract.vendor_id != vendor_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error("Contract does not belong to this vendor", "INVALID_CONTRACT_VENDOR"),
+            )
+        if contract.vehicle_type_id != vehicle_type_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ResponseWrapper.error(
+                    "Contract does not match this vehicle type",
+                    "INVALID_CONTRACT_VEHICLE_TYPE",
+                ),
+            )
+        return contract
 
     def delete_with_vendor(self, db: Session, *, vehicle_id: int, vendor_id: int) -> bool:
         """Soft delete a vehicle by marking inactive"""

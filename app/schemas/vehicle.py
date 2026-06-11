@@ -1,9 +1,10 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List
 from datetime import datetime, date
 
 class VehicleBase(BaseModel):
     vehicle_type_id: int
+    contract_id: Optional[int] = None
     vendor_id: Optional[int] = None
     rc_number: str
     driver_id: Optional[int] = None
@@ -22,10 +23,13 @@ class VehicleBase(BaseModel):
     is_active: bool = True
 
 class VehicleCreate(VehicleBase):
+    contract_id: int = Field(..., gt=0)
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
                 "vehicle_type_id": 1,
+                "contract_id": 1,
                 "vendor_id": 2,
                 "rc_number": "KA05MX1234",
                 "driver_id": 10,
@@ -42,6 +46,7 @@ class VehicleCreate(VehicleBase):
 
 class VehicleUpdate(BaseModel):
     vehicle_type_id: Optional[int] = None
+    contract_id: Optional[int] = None
     driver_id: Optional[int] = None
     rc_number: Optional[str] = None
     rc_expiry_date: Optional[date] = None
@@ -62,6 +67,7 @@ class VehicleUpdate(BaseModel):
         json_schema_extra={
             "example": {
                 "driver_id": 12,
+                "contract_id": 1,
                 "rc_expiry_date": "2028-06-30",
                 "puc_expiry_date": "2027-06-30",
                 "insurance_expiry_date": "2027-12-31",
@@ -73,6 +79,7 @@ class VehicleUpdate(BaseModel):
 class VehicleResponse(VehicleBase):
     vehicle_id: int
     vehicle_type_name: Optional[str] = None
+    contract_name: Optional[str] = None
     driver_name: Optional[str] = None
     driver_phone: Optional[str] = None
     created_at: datetime
@@ -86,6 +93,8 @@ class VehicleResponse(VehicleBase):
         if hasattr(obj, "driver") and obj.driver is not None:
             instance.driver_name = obj.driver.name
             instance.driver_phone = obj.driver.phone
+        if hasattr(obj, "contract") and obj.contract is not None:
+            instance.contract_name = obj.contract.contract_name
         return instance
 
 class VehiclePaginationResponse(BaseModel):
